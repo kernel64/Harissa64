@@ -11,7 +11,10 @@
 
 ## To test on the console
 
-1. `platform\xbox360\tools\execmem\execmem.xex` (build it with `tools\execmem\build.cmd` or `run_all.ps1 -ExecMem`). Launch it from Aurora. Note the bar colours (green = OK, red = allocation failed, magenta = write fault, orange = call fault, yellow = wrong value, grey = not run; bars 1 to 10 from top to bottom), the summary in the message box, and send back `execmem.log` (written next to the `.xex`). If the console freezes or the program quits early, the log shows the last method reached.
+1. `platform\xbox360\tools\execmem\execmem.xex` (build it with `tools\execmem\build.cmd` or `run_all.ps1 -ExecMem`).
+   - First console run (2026-10-05): method 1 (VirtualAlloc RWX) allocated `0x00070000`, then the title died without the `__except` handler firing, so the other methods never ran.
+   - The tool now survives crashes: relaunch it until the summary screen appears. Each relaunch resumes after the method that crashed (`execmem_state.txt`, `execmem_results.txt` and `execmem.log` next to the `.xex`; Y resets). Checked in Xenia: 8 launches cover the 10 methods.
+   - Send back `execmem.log` and `execmem_results.txt`, and say what each crash looked like (back to Aurora, error screen, or frozen console).
 2. Done (console OK). `platform\xbox360\Release\harissa64v2.xex`: should show "HARISSA64 V2", version 2.0.0-dev, "Big-endian, 32-bit pointers" and "Unit tests: PASSED" in green; Back returns to Aurora. Send back `harissa64v2.log` (next to the `.xex`).
 
 ## Next
