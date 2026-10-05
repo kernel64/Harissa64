@@ -1,0 +1,68 @@
+# Publishes a GitHub release for the version in VERSION, attaching the zip
+# that build_release.ps1 wrote and that was committed under release/.
+#
+# Runs when a release zip, VERSION or this file is pushed to master, or by
+# hand (Actions > Release > Run workflow). The Xbox 360 build needs the XDK
+# and VS2010, so it is not rebuilt here: the committed zip is the release.
+# A version that already has a release is left alone.
+name: Release
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'release/*.zip'
+      - 'VERSION'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read version
+        id: version
+        run: |
+          version="$(tr -d ' \r\n' < VERSION)"
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION must look like 1.2.3 (got '$version')" >&2
+            exit 1
+          fi
+          zip="release/Harissa64-$version.zip"
+          if [ ! -f "$zip" ]; then
+            echo "$zip is missing: run build_release.ps1 and commit the zip" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          ZIP: ${{ steps.version.outputs.zip }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists, nothing to do."
+            exit 0
+          fi
+
+          # Notes: the message of the last commit that touched the zip,
+          # without the co-author trailer.
+          git fetch --quiet --unshallow || true
+          {
+            git log -1 --format=%B -- "$ZIP" | grep -v '^Co-Authored-By:'
+            echo
+            echo "Download \`Harissa64-$VERSION.zip\`, extract it and copy the \`Harissa64\` folder to the console (see INSTALL.txt in the zip)."
+          } > notes.md
+
+          gh release create "$tag" "$ZIP" \
+            --target "$GITHUB_SHA" \
+            --title "Harissa64 $VERSION" \
+            --notes-file notes.md

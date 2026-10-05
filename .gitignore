@@ -1,0 +1,65 @@
+# ---- Build outputs (all targets) ----
+*.obj
+*.o
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+*.map
+*.exe
+*.xex
+*.xdb
+*.pch
+*.idb
+*.tlog
+*.lastbuildstate
+*.unsuccessfulbuild
+*.cache
+*.log
+spa.bin
+*.spa.h
+Debug/
+Release/
+Profile/
+build/
+build-*/
+out/
+CMakeUserPresets.json
+
+# ---- Visual Studio per-user / intermediate files ----
+.vs/
+ipch/
+*.sdf
+*.suo
+*.opensdf
+*.vcxproj.user
+*Zone.Identifier
+
+# ---- Local data: never commit ROMs, saves or downloaded test ROMs ----
+*.z64
+*.n64
+*.v64
+*.zip
+*.eep
+*.sra
+*.fla
+*.mpk
+*.st[0-9]
+roms/
+tests/roms/
+local.cfg
+
+# ---- V1 leftovers that stay in the working tree when switching from master ----
+# (V1 build outputs, its ROM folder and files Xenia writes next to the
+# current directory; V1 itself lives on master.)
+/xbox64/
+/files/
+/release/
+/1/
+/2/
+/cache/
+/cache0/
+/cache1/
+/source/
+/xenon/
