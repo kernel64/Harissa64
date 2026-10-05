@@ -15,7 +15,8 @@ if(MSVC)
   add_compile_options(/W4 /permissive- /utf-8 /wd4100 /wd4127)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
-  add_compile_options(-Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing)
+  # -frounding-math: the reference FPU changes the rounding mode at run time.
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -frounding-math)
 endif()
 
 # ---- Portable core ----

@@ -48,6 +48,8 @@
       <PreprocessorDefinitions>_XBOX;H64_VERSION=$(H64Version);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(H64RepoRoot);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
+      <!-- The reference FPU changes the rounding mode at run time (#pragma fenv_access). -->
+      <FloatingPointModel>Precise</FloatingPointModel>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
