@@ -156,20 +156,24 @@ static void sp_status_write(H64System *sys, u32 v)
     u32 s = sys->sp.regs[4];
     int wasHalted = s & SP_STATUS_HALT;
     int i;
-    if (v & 0x0001) s &= ~SP_STATUS_HALT;
-    if (v & 0x0002) s |= SP_STATUS_HALT;
+    // Each clear/set pair: setting both bits at once changes nothing.
+#define SP_PAIR(clr, set) ((v & (clr)) && !(v & (set)) ? -1 : (v & (set)) && !(v & (clr)) ? 1 : 0)
+    if (SP_PAIR(0x0001, 0x0002) < 0) s &= ~SP_STATUS_HALT;
+    if (SP_PAIR(0x0001, 0x0002) > 0) s |= SP_STATUS_HALT;
     if (v & 0x0004) s &= ~SP_STATUS_BROKE;
-    if (v & 0x0008) h64_mi_clear(sys, MI_INTR_SP);
-    if (v & 0x0010) h64_mi_raise(sys, MI_INTR_SP);
-    if (v & 0x0020) s &= ~0x0020u;
-    if (v & 0x0040) s |= 0x0020u;
-    if (v & 0x0080) s &= ~SP_STATUS_INTR_BREAK;
-    if (v & 0x0100) s |= SP_STATUS_INTR_BREAK;
+    if (SP_PAIR(0x0008, 0x0010) < 0) h64_mi_clear(sys, MI_INTR_SP);
+    if (SP_PAIR(0x0008, 0x0010) > 0) h64_mi_raise(sys, MI_INTR_SP);
+    if (SP_PAIR(0x0020, 0x0040) < 0) s &= ~0x0020u;
+    if (SP_PAIR(0x0020, 0x0040) > 0) s |= 0x0020u;
+    if (SP_PAIR(0x0080, 0x0100) < 0) s &= ~SP_STATUS_INTR_BREAK;
+    if (SP_PAIR(0x0080, 0x0100) > 0) s |= SP_STATUS_INTR_BREAK;
     for (i = 0; i < 8; i++)
     {
-        if (v & (0x0200u << (2 * i))) s &= ~(0x0080u << i);
-        if (v & (0x0400u << (2 * i))) s |= (0x0080u << i);
+        int p = SP_PAIR(0x0200u << (2 * i), 0x0400u << (2 * i));
+        if (p < 0) s &= ~(0x0080u << i);
+        if (p > 0) s |= (0x0080u << i);
     }
+#undef SP_PAIR
     sys->sp.regs[4] = s;
     if (wasHalted && !(s & SP_STATUS_HALT))
         sp_start_task(sys);
@@ -268,7 +272,10 @@ u32 h64_mmio_read(H64System *sys, u32 paddr)
                    0x00100000u;
         default: return 0;   // other AI registers are write-only
         }
-    case 0x046: return (reg & 0xF) < 13 ? sys->pi.regs[reg & 0xF] : 0;
+    case 0x046:
+        if ((reg & 0xF) == 4)   // PI_STATUS: bit 1 = IO busy while a CPU write is latched
+            return sys->pi.regs[4] | (now(sys) < sys->pi.latchUntil ? 2u : 0u);
+        return (reg & 0xF) < 13 ? sys->pi.regs[reg & 0xF] : 0;
     case 0x047: return sys->ri.regs[reg & 7];
     case 0x048:
         switch (reg & 7)

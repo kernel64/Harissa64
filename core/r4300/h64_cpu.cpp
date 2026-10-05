@@ -95,7 +95,7 @@ void h64_cpu_exception(H64Cpu *cpu, int code, u32 vectorOffset)
         vectorOffset = 0x180;   // nested: TLB refills go to the general vector
     *cause = (*cause & ~0x7Cull) | ((u64)code << 2);
     if (code != EXC_CPU)
-        *cause &= ~0x30000000ull;   // CE only meaningful for coprocessor unusable
+        *cause &= ~0x30000000ull;   // CE: only set for coprocessor-unusable (and COP2 reserved, by the caller)
     cpu->cop0[CP0_STATUS] |= SR_EXL;
     base = (sr & SR_BEV) ? 0xFFFFFFFFBFC00200ull : 0xFFFFFFFF80000000ull;
     cpu->pc = base + vectorOffset;
@@ -114,11 +114,12 @@ void h64_cpu_exception_cop(H64Cpu *cpu, int copNumber)
 
 static void address_error(H64Cpu *cpu, u64 vaddr, int write)
 {
-    // Address errors also load Context and XContext from the address (n64-systemtest).
+    // Address errors also load Context, XContext and EntryHi from the address (n64-systemtest).
     cpu->cop0[CP0_BADVADDR] = vaddr;
     cpu->cop0[CP0_CONTEXT] = (cpu->cop0[CP0_CONTEXT] & 0xFFFFFFFFFF800000ull) | ((vaddr >> 9) & 0x7FFFF0ull);
     cpu->cop0[CP0_XCONTEXT] = (cpu->cop0[CP0_XCONTEXT] & 0xFFFFFFFE00000000ull) |
                               (((vaddr >> 62) & 3) << 31) | (((vaddr >> 13) & 0x7FFFFFFull) << 4);
+    cpu->cop0[CP0_ENTRYHI] = (vaddr & 0xC00000FFFFFFE000ull) | (cpu->cop0[CP0_ENTRYHI] & 0xFF);
     h64_cpu_exception(cpu, write ? EXC_ADES : EXC_ADEL, 0x180);
 }
 
@@ -185,8 +186,9 @@ static int translate(H64Cpu *cpu, u64 vaddr, int access, u32 *paddr)
     if (vaddr == SEXT32(vaddr))
     {
         u32 a = (u32)vaddr;
+        // The refill vector is XTLB (0x080) when the segment uses 64-bit addressing.
         if (a < 0x80000000u)
-            return tlb_translate(cpu, vaddr, access, 0, paddr);
+            return tlb_translate(cpu, vaddr, access, (sr & SR_UX) != 0, paddr);
         if (!kernel && !(super && a >= 0xC0000000u && a < 0xE0000000u))
         {
             address_error(cpu, vaddr, access == ACC_WRITE);
@@ -194,7 +196,7 @@ static int translate(H64Cpu *cpu, u64 vaddr, int access, u32 *paddr)
         }
         if (a < 0xA0000000u) { *paddr = a - 0x80000000u; return 0; }
         if (a < 0xC0000000u) { *paddr = a - 0xA0000000u; return 0; }
-        return tlb_translate(cpu, vaddr, access, 0, paddr);
+        return tlb_translate(cpu, vaddr, access, a < 0xE0000000u ? (sr & SR_SX) != 0 : (sr & SR_KX) != 0, paddr);
     }
     // 64-bit addresses: only valid with the matching extended-addressing bit.
     {
@@ -260,13 +262,13 @@ int h64_cpu_read64(H64System *sys, u64 vaddr, u64 *v)
     if (translate(&sys->cpu, vaddr, ACC_READ, &p)) return -1;
     return h64_bus_read64(sys, p, v);
 }
-int h64_cpu_write8(H64System *sys, u64 vaddr, u8 v)
+int h64_cpu_write8(H64System *sys, u64 vaddr, u32 v)
 {
     u32 p;
     if (translate(&sys->cpu, vaddr, ACC_WRITE, &p)) return -1;
     return h64_bus_write8(sys, p, v);
 }
-int h64_cpu_write16(H64System *sys, u64 vaddr, u16 v)
+int h64_cpu_write16(H64System *sys, u64 vaddr, u32 v)
 {
     u32 p;
     CHECK_ALIGN(&sys->cpu, vaddr, 2, 1);
@@ -293,25 +295,27 @@ int h64_cpu_write64(H64System *sys, u64 vaddr, u64 v)
 static int read_aligned32(H64System *sys, u64 vaddr, u32 *v)
 {
     u32 p;
-    if (translate(&sys->cpu, vaddr & ~3ull, ACC_READ, &p)) return -1;
-    return h64_bus_read32(sys, p, v);
+    // Translate the raw address so that BadVAddr keeps its low bits.
+    if (translate(&sys->cpu, vaddr, ACC_READ, &p)) return -1;
+    return h64_bus_read32(sys, p & ~3u, v);
 }
 static int read_aligned64(H64System *sys, u64 vaddr, u64 *v)
 {
     u32 p;
-    if (translate(&sys->cpu, vaddr & ~7ull, ACC_READ, &p)) return -1;
-    return h64_bus_read64(sys, p, v);
+    if (translate(&sys->cpu, vaddr, ACC_READ, &p)) return -1;
+    return h64_bus_read64(sys, p & ~7u, v);
 }
 static int write_aligned32(H64System *sys, u64 vaddr, u32 v, u32 mask)
 {
     u32 p;
-    if (translate(&sys->cpu, vaddr & ~3ull, ACC_WRITE, &p)) return -1;
-    return h64_bus_write32(sys, p, v, mask);
+    if (translate(&sys->cpu, vaddr, ACC_WRITE, &p)) return -1;
+    return h64_bus_write32(sys, p & ~3u, v, mask);
 }
 static int write_aligned64(H64System *sys, u64 vaddr, u64 v, u64 mask)
 {
     u32 p;
-    if (translate(&sys->cpu, vaddr & ~7ull, ACC_WRITE, &p)) return -1;
+    if (translate(&sys->cpu, vaddr, ACC_WRITE, &p)) return -1;
+    p &= ~7u;
     if (h64_bus_write32(sys, p, (u32)(v >> 32), (u32)(mask >> 32))) return -1;
     return h64_bus_write32(sys, p + 4, (u32)v, (u32)mask);
 }
@@ -349,7 +353,7 @@ static void cop0_write(H64System *sys, int r, u64 v)
     cpu->cop0Latch = v;
     switch (r)
     {
-    case CP0_INDEX: cpu->cop0[r] = (cpu->cop0[r] & 0x80000000u) | (v & 0x3F); break;
+    case CP0_INDEX: cpu->cop0[r] = v & 0x8000003Fu; break;
     case CP0_RANDOM: break;
     case CP0_ENTRYLO0: case CP0_ENTRYLO1: cpu->cop0[r] = v & 0x3FFFFFFFu; break;
     case CP0_CONTEXT: cpu->cop0[r] = (v & 0xFFFFFFFFFF800000ull) | (cpu->cop0[r] & 0x7FFFF0ull); break;
@@ -396,10 +400,12 @@ static void tlb_read(H64Cpu *cpu)
 static void tlb_write(H64Cpu *cpu, int index)
 {
     H64TlbEntry *e = &cpu->tlb[index & 31];
-    e->pageMask = (u32)cpu->cop0[CP0_PAGEMASK];
+    // The TLB keeps one bit per PageMask pair (the upper one) and a 20-bit PFN.
+    e->pageMask = (u32)cpu->cop0[CP0_PAGEMASK] & 0x01554000u;
+    e->pageMask |= e->pageMask >> 1;
     e->entryHi = cpu->cop0[CP0_ENTRYHI] & ~(u64)e->pageMask;
-    e->entryLo0 = (u32)cpu->cop0[CP0_ENTRYLO0];
-    e->entryLo1 = (u32)cpu->cop0[CP0_ENTRYLO1];
+    e->entryLo0 = (u32)cpu->cop0[CP0_ENTRYLO0] & 0x03FFFFFFu;
+    e->entryLo1 = (u32)cpu->cop0[CP0_ENTRYLO1] & 0x03FFFFFFu;
     // The G bit of the entry is the AND of both EntryLo G bits.
     if (!((cpu->cop0[CP0_ENTRYLO0] & cpu->cop0[CP0_ENTRYLO1]) & 1))
     {
@@ -576,7 +582,7 @@ static void do_special(H64System *sys, u32 op)
     case 0x06: g[rd] = SEXT32((u32)rt >> (rs & 31)); return;                       // SRLV
     case 0x07: g[rd] = SEXT32((u32)((s64)rt >> (rs & 31))); return;                // SRAV
     case 0x08: jump(cpu, rs); return;                                              // JR
-    case 0x09: g[rd] = cpu->curPc + 8; jump(cpu, rs); return;                      // JALR
+    case 0x09: g[rd] = cpu->nextPc; jump(cpu, rs); return;                         // JALR (link: see JAL)
     case 0x0C: h64_cpu_exception(cpu, EXC_SYS, 0x180); return;                     // SYSCALL
     case 0x0D: h64_cpu_exception(cpu, EXC_BP, 0x180); return;                      // BREAK
     case 0x0F: return;                                                             // SYNC
@@ -709,10 +715,10 @@ static void do_regimm(H64System *sys, u32 op)
     case 0x0B: if ((u64)rs < imm) h64_cpu_exception(cpu, EXC_TR, 0x180); return;   // TLTIU
     case 0x0C: if ((u64)rs == imm) h64_cpu_exception(cpu, EXC_TR, 0x180); return;  // TEQI
     case 0x0E: if ((u64)rs != imm) h64_cpu_exception(cpu, EXC_TR, 0x180); return;  // TNEI
-    case 0x10: cpu->gpr[31] = cpu->curPc + 8; branch(cpu, rs < 0, op); return;     // BLTZAL
-    case 0x11: cpu->gpr[31] = cpu->curPc + 8; branch(cpu, rs >= 0, op); return;    // BGEZAL
-    case 0x12: cpu->gpr[31] = cpu->curPc + 8; branch_likely(cpu, rs < 0, op); return;   // BLTZALL
-    case 0x13: cpu->gpr[31] = cpu->curPc + 8; branch_likely(cpu, rs >= 0, op); return;  // BGEZALL
+    case 0x10: cpu->gpr[31] = cpu->nextPc; branch(cpu, rs < 0, op); return;        // BLTZAL
+    case 0x11: cpu->gpr[31] = cpu->nextPc; branch(cpu, rs >= 0, op); return;       // BGEZAL
+    case 0x12: cpu->gpr[31] = cpu->nextPc; branch_likely(cpu, rs < 0, op); return;      // BLTZALL
+    case 0x13: cpu->gpr[31] = cpu->nextPc; branch_likely(cpu, rs >= 0, op); return;     // BGEZALL
     }
     h64_cpu_exception(cpu, EXC_RI, 0x180);
 }
@@ -736,8 +742,8 @@ static void do_load_store(H64System *sys, u32 op)
     case 0x23: { u32 v; if (!h64_cpu_read32(sys, addr, &v)) g[rt] = SEXT32(v); return; }         // LW
     case 0x27: { u32 v; if (!h64_cpu_read32(sys, addr, &v)) g[rt] = v; return; }                 // LWU
     case 0x37: { u64 v; if (!h64_cpu_read64(sys, addr, &v)) g[rt] = v; return; }                 // LD
-    case 0x28: h64_cpu_write8(sys, addr, (u8)g[rt]); return;                                     // SB
-    case 0x29: h64_cpu_write16(sys, addr, (u16)g[rt]); return;                                   // SH
+    case 0x28: h64_cpu_write8(sys, addr, (u32)g[rt]); return;                                    // SB
+    case 0x29: h64_cpu_write16(sys, addr, (u32)g[rt]); return;                                   // SH
     case 0x2B: h64_cpu_write32(sys, addr, (u32)g[rt]); return;                                   // SW
     case 0x3F: h64_cpu_write64(sys, addr, g[rt]); return;                                        // SD
     case 0x22:                                                                                    // LWL
@@ -751,7 +757,9 @@ static void do_load_store(H64System *sys, u32 op)
     {
         u32 w, sh = 8 * (3 - (u32)(addr & 3));
         if (read_aligned32(sys, addr, &w)) return;
-        g[rt] = SEXT32(((u32)g[rt] & ~(0xFFFFFFFFu >> sh)) | (w >> sh));
+        // A partial LWR keeps bits 32..63; loading the whole word sign-extends it.
+        if (sh == 0) g[rt] = SEXT32(w);
+        else g[rt] = (g[rt] & 0xFFFFFFFF00000000ull) | (((u32)g[rt] & ~(0xFFFFFFFFu >> sh)) | (w >> sh));
         return;
     }
     case 0x1A:                                                                                    // LDL
@@ -879,7 +887,9 @@ static void execute(H64System *sys, u32 op)
     case 0x01: do_regimm(sys, op); return;
     case 0x02: jump(cpu, ((cpu->curPc + 4) & 0xFFFFFFFFF0000000ull) | ((u64)(op & 0x03FFFFFF) << 2)); return;   // J
     case 0x03:                                                                                                  // JAL
-        g[31] = cpu->curPc + 8;
+        // The link is the address after the delay slot in execution order: for a
+        // JAL itself in a delay slot, the first jump's target + 4 (n64-systemtest).
+        g[31] = cpu->nextPc;
         jump(cpu, ((cpu->curPc + 4) & 0xFFFFFFFFF0000000ull) | ((u64)(op & 0x03FFFFFF) << 2));
         return;
     case 0x04: branch(cpu, rs == rt, op); return;                                  // BEQ
@@ -913,7 +923,9 @@ static void execute(H64System *sys, u32 op)
         case 0x01: g[t] = cpu->cop2Latch; return;                                  // DMFC2
         case 0x04: case 0x05: case 0x06: cpu->cop2Latch = rt; return;              // MTC2, DMTC2, CTC2
         }
+        // Other COP2 encodings: Reserved Instruction, with Cause.CE = 2.
         h64_cpu_exception(cpu, EXC_RI, 0x180);
+        cpu->cop0[CP0_CAUSE] |= 2ull << 28;
         return;
     case 0x13: h64_cpu_exception(cpu, EXC_RI, 0x180); return;                      // COP3
     case 0x14: branch_likely(cpu, rs == rt, op); return;                           // BEQL

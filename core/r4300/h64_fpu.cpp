@@ -49,6 +49,14 @@ void h64_fpr_set32(H64Cpu *cpu, int n, u32 v)
 }
 
 u64 h64_fpr_get64(H64Cpu *cpu, int n) { return cpu->fgr[fr(cpu) ? n : (n & ~1)]; }
+
+// Computational instructions (n64-systemtest full_vs_half_mode): a 32-bit
+// result is written zero-extended to the whole 64-bit register fd (also in
+// half mode, where it clobbers the odd half); a single-precision fs operand
+// with an odd index reads the even register in half mode, ft is read as is.
+static void set_result32(H64Cpu *cpu, int fd, u32 v) { cpu->fgr[fd] = v; }
+static u32 get_fs32(H64Cpu *cpu, int fs) { return (u32)cpu->fgr[fr(cpu) ? fs : (fs & ~1)]; }
+static u32 get_ft32(H64Cpu *cpu, int ft) { return (u32)cpu->fgr[ft]; }
 void h64_fpr_set64(H64Cpu *cpu, int n, u64 v) { cpu->fgr[fr(cpu) ? n : (n & ~1)] = v; }
 
 // ---- Bit-level classification ----
@@ -94,17 +102,29 @@ static u32 host_cause(void)
     return h64_fenv_flags();   // same bit order as CAUSE_I..CAUSE_V
 }
 
-// Results: denormals are Unimplemented with FS=0. With FS=1 they flush to
-// zero (signed) and set Underflow + Inexact.
+// Results. A tiny result (host underflow flag, or a denormal) is an
+// Unimplemented Operation, except with FS=1 and the Underflow and Inexact
+// exceptions both disabled: then it is flushed and Underflow + Inexact are
+// signalled. The flushed value depends on the rounding mode: +/-0, or the
+// smallest normal number when rounding away from zero towards that sign
+// (n64-systemtest COP1 arithmetic tests).
+static int flush_allowed(H64Cpu *cpu)
+{
+    u32 enables = (cpu->fcr31 >> 7) & 0x1F;
+    return (cpu->fcr31 & FCR31_FS) && !(enables & (CAUSE_U | CAUSE_I));
+}
+
 static int s_result(H64Cpu *cpu, float r, u32 cause, u32 *out)
 {
     u32 b = f_bits(r);
     if (s_is_nan(b)) b = NAN_S;
-    else if (s_is_denormal(b))
+    else if ((cause & CAUSE_U) || s_is_denormal(b))
     {
-        if (!(cpu->fcr31 & FCR31_FS)) return fpu_finish(cpu, cause | CAUSE_E) ? -1 : -1;
-        b &= 0x80000000u;
-        cause |= CAUSE_U | CAUSE_I;
+        int neg = (b >> 31) != 0, rm = (int)(cpu->fcr31 & 3);
+        if (!flush_allowed(cpu)) { fpu_finish(cpu, CAUSE_E); return -1; }
+        if ((rm == H64_RM_UP && !neg) || (rm == H64_RM_DOWN && neg)) b = (neg ? 0x80000000u : 0) | 0x00800000u;
+        else b = neg ? 0x80000000u : 0;
+        cause = (cause & (CAUSE_Z | CAUSE_V | CAUSE_O)) | CAUSE_U | CAUSE_I;
     }
     if (fpu_finish(cpu, cause)) return -1;
     *out = b;
@@ -115,28 +135,35 @@ static int d_result(H64Cpu *cpu, double r, u32 cause, u64 *out)
 {
     u64 b = d_bits(r);
     if (d_is_nan(b)) b = NAN_D;
-    else if (d_is_denormal(b))
+    else if ((cause & CAUSE_U) || d_is_denormal(b))
     {
-        if (!(cpu->fcr31 & FCR31_FS)) { fpu_finish(cpu, cause | CAUSE_E); return -1; }
-        b &= 0x8000000000000000ull;
-        cause |= CAUSE_U | CAUSE_I;
+        int neg = (b >> 63) != 0, rm = (int)(cpu->fcr31 & 3);
+        if (!flush_allowed(cpu)) { fpu_finish(cpu, CAUSE_E); return -1; }
+        if ((rm == H64_RM_UP && !neg) || (rm == H64_RM_DOWN && neg))
+            b = (neg ? 0x8000000000000000ull : 0) | 0x0010000000000000ull;
+        else b = neg ? 0x8000000000000000ull : 0;
+        cause = (cause & (CAUSE_Z | CAUSE_V | CAUSE_O)) | CAUSE_U | CAUSE_I;
     }
     if (fpu_finish(cpu, cause)) return -1;
     *out = b;
     return 0;
 }
 
-// Operand checks for arithmetic: denormal -> E; sNaN -> V (result NaN).
+// Operands (n64-systemtest COP1 tests): a denormal is an Unimplemented
+// Operation. A NaN with the top mantissa bit set (signalling in the legacy
+// MIPS encoding) raises Invalid and the result is the default NaN; a NaN with
+// that bit clear (quiet in the MIPS encoding, e.g. 0x7FBFFFFF) is an
+// Unimplemented Operation.
 static int s_check(H64Cpu *cpu, u32 a, u32 *cause)
 {
-    if (s_is_denormal(a)) { fpu_finish(cpu, CAUSE_E); return -1; }
-    if (s_is_snan(a)) *cause |= CAUSE_V;
+    if (s_is_denormal(a) || (s_is_nan(a) && !s_is_snan(a))) { fpu_finish(cpu, CAUSE_E); return -1; }
+    if (s_is_nan(a)) *cause |= CAUSE_V;
     return 0;
 }
 static int d_check(H64Cpu *cpu, u64 a, u32 *cause)
 {
-    if (d_is_denormal(a)) { fpu_finish(cpu, CAUSE_E); return -1; }
-    if (d_is_snan(a)) *cause |= CAUSE_V;
+    if (d_is_denormal(a) || (d_is_nan(a) && !d_is_snan(a))) { fpu_finish(cpu, CAUSE_E); return -1; }
+    if (d_is_nan(a)) *cause |= CAUSE_V;
     return 0;
 }
 
@@ -162,10 +189,13 @@ static double round_mode(double x, int mode)
 static int to_int(H64Cpu *cpu, double x, int isNanOrInf, int mode, int bits64, u64 *out)
 {
     double r, limit = bits64 ? 9007199254740992.0 /* 2^53 */ : 2147483648.0;
+    int over;
     if (mode < 0) mode = (int)(cpu->fcr31 & 3);
     if (isNanOrInf) { fpu_finish(cpu, CAUSE_E); return -1; }
     r = round_mode(x, mode);
-    if (r >= limit || r < -limit) { fpu_finish(cpu, CAUSE_E); return -1; }
+    // 32-bit: [-2^31, 2^31); 64-bit: (-2^53, 2^53), both ends unimplemented.
+    over = bits64 ? (r >= limit || r <= -limit) : (r >= limit || r < -limit);
+    if (over) { fpu_finish(cpu, CAUSE_E); return -1; }
     if (fpu_finish(cpu, r != x ? CAUSE_I : 0)) return -1;
     *out = bits64 ? (u64)(s64)r : SEXT32((u32)(s32)r);
     return 0;
@@ -191,7 +221,7 @@ static void op_single(H64System *sys, u32 op)
 {
     H64Cpu *cpu = &sys->cpu;
     int fs = RD(op), ft = RT(op), fd = SA(op);
-    u32 a = h64_fpr_get32(cpu, fs), b = h64_fpr_get32(cpu, ft), out;
+    u32 a = get_fs32(cpu, fs), b = get_ft32(cpu, ft), out;
     volatile float x = f_from(a), y = f_from(b);
     u32 cause = 0;
     switch (FUNCT(op))
@@ -200,7 +230,7 @@ static void op_single(H64System *sys, u32 op)
     {
         volatile float r;
         if (s_check(cpu, a, &cause) || s_check(cpu, b, &cause)) return;
-        if (s_is_nan(a) || s_is_nan(b)) { if (!s_result(cpu, f_from(NAN_S), cause, &out)) h64_fpr_set32(cpu, fd, out); return; }
+        if (s_is_nan(a) || s_is_nan(b)) { if (!s_result(cpu, f_from(NAN_S), cause, &out)) set_result32(cpu, fd, out); return; }
         fpu_begin(cpu);
         switch (FUNCT(op))
         {
@@ -210,30 +240,30 @@ static void op_single(H64System *sys, u32 op)
         default: r = x / y; break;
         }
         cause |= host_cause();
-        if (!s_result(cpu, r, cause, &out)) h64_fpr_set32(cpu, fd, out);
+        if (!s_result(cpu, r, cause, &out)) set_result32(cpu, fd, out);
         return;
     }
     case 0x04:   // SQRT
     {
         volatile float r;
         if (s_check(cpu, a, &cause)) return;
-        if (s_is_nan(a)) { if (!s_result(cpu, f_from(NAN_S), cause, &out)) h64_fpr_set32(cpu, fd, out); return; }
+        if (s_is_nan(a)) { if (!s_result(cpu, f_from(NAN_S), cause, &out)) set_result32(cpu, fd, out); return; }
         fpu_begin(cpu);
         r = sqrtf(x);
         cause |= host_cause();
-        if (!s_result(cpu, r, cause, &out)) h64_fpr_set32(cpu, fd, out);
+        if (!s_result(cpu, r, cause, &out)) set_result32(cpu, fd, out);
         return;
     }
     case 0x05:   // ABS
         if (s_check(cpu, a, &cause)) return;
-        if (s_is_nan(a)) { if (!fpu_finish(cpu, cause | CAUSE_V)) h64_fpr_set32(cpu, fd, NAN_S); return; }
-        if (!fpu_finish(cpu, cause)) h64_fpr_set32(cpu, fd, a & 0x7FFFFFFFu);
+        if (s_is_nan(a)) { if (!fpu_finish(cpu, cause)) set_result32(cpu, fd, NAN_S); return; }
+        if (!fpu_finish(cpu, cause)) set_result32(cpu, fd, a & 0x7FFFFFFFu);
         return;
-    case 0x06: h64_fpr_set32(cpu, fd, a); return;   // MOV
+    case 0x06: cpu->fgr[fd] = cpu->fgr[fr(cpu) ? fs : (fs & ~1)]; return;   // MOV.S copies the whole register
     case 0x07:   // NEG
         if (s_check(cpu, a, &cause)) return;
-        if (s_is_nan(a)) { if (!fpu_finish(cpu, cause | CAUSE_V)) h64_fpr_set32(cpu, fd, NAN_S); return; }
-        if (!fpu_finish(cpu, cause)) h64_fpr_set32(cpu, fd, a ^ 0x80000000u);
+        if (s_is_nan(a)) { if (!fpu_finish(cpu, cause)) set_result32(cpu, fd, NAN_S); return; }
+        if (!fpu_finish(cpu, cause)) set_result32(cpu, fd, a ^ 0x80000000u);
         return;
     case 0x08: case 0x09: case 0x0A: case 0x0B:   // ROUND/TRUNC/CEIL/FLOOR.L
     case 0x0C: case 0x0D: case 0x0E: case 0x0F:   // ROUND/TRUNC/CEIL/FLOOR.W
@@ -246,7 +276,7 @@ static void op_single(H64System *sys, u32 op)
         if (s_is_denormal(a)) { fpu_finish(cpu, CAUSE_E); return; }
         if (to_int(cpu, (double)f_from(a), s_is_nan(a) || s_is_inf(a), mode, bits64, &r)) return;
         if (bits64) h64_fpr_set64(cpu, fd, r);
-        else h64_fpr_set32(cpu, fd, (u32)r);
+        else set_result32(cpu, fd, (u32)r);
         return;
     }
     case 0x21:   // CVT.D.S
@@ -262,7 +292,6 @@ static void op_single(H64System *sys, u32 op)
         if (FUNCT(op) >= 0x30)   // C.cond.S
         {
             int un = s_is_nan(a) || s_is_nan(b);
-            if (s_is_denormal(a) || s_is_denormal(b)) { fpu_finish(cpu, CAUSE_E); return; }
             compare(cpu, FUNCT(op) & 15, un, !un && x < y, !un && x == y, s_is_snan(a) || s_is_snan(b));
             return;
         }
@@ -309,13 +338,13 @@ static void op_double(H64System *sys, u32 op)
     }
     case 0x05:
         if (d_check(cpu, a, &cause)) return;
-        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause | CAUSE_V)) h64_fpr_set64(cpu, fd, NAN_D); return; }
+        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, NAN_D); return; }
         if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, a & 0x7FFFFFFFFFFFFFFFull);
         return;
     case 0x06: h64_fpr_set64(cpu, fd, a); return;
     case 0x07:
         if (d_check(cpu, a, &cause)) return;
-        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause | CAUSE_V)) h64_fpr_set64(cpu, fd, NAN_D); return; }
+        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, NAN_D); return; }
         if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, a ^ 0x8000000000000000ull);
         return;
     case 0x08: case 0x09: case 0x0A: case 0x0B:
@@ -329,25 +358,27 @@ static void op_double(H64System *sys, u32 op)
         if (d_is_denormal(a)) { fpu_finish(cpu, CAUSE_E); return; }
         if (to_int(cpu, x, d_is_nan(a) || d_is_inf(a), mode, bits64, &r)) return;
         if (bits64) h64_fpr_set64(cpu, fd, r);
-        else h64_fpr_set32(cpu, fd, (u32)r);
+        else set_result32(cpu, fd, (u32)r);
         return;
     }
     case 0x20:   // CVT.S.D
     {
         volatile float r;
         if (d_check(cpu, a, &cause)) return;
-        if (d_is_nan(a)) { u32 o; if (!s_result(cpu, f_from(NAN_S), cause, &o)) h64_fpr_set32(cpu, fd, o); return; }
+        if (d_is_nan(a)) { u32 o; if (!s_result(cpu, f_from(NAN_S), cause, &o)) set_result32(cpu, fd, o); return; }
         fpu_begin(cpu);
         r = (float)x;
         cause |= host_cause();
-        if (!s_result(cpu, r, cause, (u32 *)&out)) h64_fpr_set32(cpu, fd, (u32)out);
+        {
+            u32 o32;   // not through &out: a u32 written into a u64 lands in the high half on big-endian hosts
+            if (!s_result(cpu, r, cause, &o32)) set_result32(cpu, fd, o32);
+        }
         return;
     }
     default:
         if (FUNCT(op) >= 0x30)
         {
             int un = d_is_nan(a) || d_is_nan(b);
-            if (d_is_denormal(a) || d_is_denormal(b)) { fpu_finish(cpu, CAUSE_E); return; }
             compare(cpu, FUNCT(op) & 15, un, !un && x < y, !un && x == y, d_is_snan(a) || d_is_snan(b));
             return;
         }
@@ -370,7 +401,7 @@ static void op_fixed(H64System *sys, u32 op, int isLong)
         u32 out;
         fpu_begin(cpu);
         r = (float)v;
-        if (!s_result(cpu, r, host_cause(), &out)) h64_fpr_set32(cpu, fd, out);
+        if (!s_result(cpu, r, host_cause(), &out)) set_result32(cpu, fd, out);
         return;
     }
     case 0x21:
@@ -424,6 +455,7 @@ void h64_cop1_execute(H64System *sys, u32 op)
         }
         return;
     }
+    case 0x03: case 0x07: fpu_finish(cpu, CAUSE_E); return;                          // DCFC1, DCTC1
     case 0x10: op_single(sys, op); return;
     case 0x11: op_double(sys, op); return;
     case 0x14: op_fixed(sys, op, 0); return;

@@ -27,7 +27,7 @@
 struct H64Mi { u32 mode, version, intr, mask; };
 struct H64Vi { u32 regs[14]; u32 vIntr; u64 frameStart; u64 frameCycles; u32 frames; };
 struct H64Ai { u32 dramAddr, len, control, status, dacrate, bitrate; u32 fifoLen[2]; u32 fifoCount; u64 bufferCycles; };
-struct H64Pi { u32 regs[13]; };
+struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; };   // latch: last CPU write to the cartridge bus
 struct H64Ri { u32 regs[8]; };
 struct H64Si { u32 dramAddr, pifAddrRd, pifAddrWr, status; };
 struct H64Sp { u32 regs[8]; u32 pc; u32 semaphore; u32 tasks; };
@@ -92,8 +92,8 @@ int h64_bus_write32(H64System *sys, u32 paddr, u32 value, u32 mask);
 int h64_bus_read8(H64System *sys, u32 paddr, u8 *value);
 int h64_bus_read16(H64System *sys, u32 paddr, u16 *value);
 int h64_bus_read64(H64System *sys, u32 paddr, u64 *value);
-int h64_bus_write8(H64System *sys, u32 paddr, u8 value);
-int h64_bus_write16(H64System *sys, u32 paddr, u16 value);
+int h64_bus_write8(H64System *sys, u32 paddr, u32 regValue);   // full register value (see h64_bus.cpp)
+int h64_bus_write16(H64System *sys, u32 paddr, u32 regValue);
 int h64_bus_write64(H64System *sys, u32 paddr, u64 value);
 void h64_debug_text(H64System *sys, const u8 *text, u32 len);
 

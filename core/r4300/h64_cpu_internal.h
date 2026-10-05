@@ -25,8 +25,8 @@ int h64_cpu_read8(H64System *sys, u64 vaddr, u8 *v);
 int h64_cpu_read16(H64System *sys, u64 vaddr, u16 *v);
 int h64_cpu_read32(H64System *sys, u64 vaddr, u32 *v);
 int h64_cpu_read64(H64System *sys, u64 vaddr, u64 *v);
-int h64_cpu_write8(H64System *sys, u64 vaddr, u8 v);
-int h64_cpu_write16(H64System *sys, u64 vaddr, u16 v);
+int h64_cpu_write8(H64System *sys, u64 vaddr, u32 v);   // v: low word of the register
+int h64_cpu_write16(H64System *sys, u64 vaddr, u32 v);
 int h64_cpu_write32(H64System *sys, u64 vaddr, u32 v);
 int h64_cpu_write64(H64System *sys, u64 vaddr, u64 v);
 
