@@ -39,7 +39,7 @@ extern "C"
 }
 
 #define CODE_BYTES 4096
-#define NUM_METHODS 10
+#define NUM_METHODS 13
 
 static char g_dir[16] = "game:\\";
 
@@ -51,10 +51,13 @@ static void AppendFile(const char *name, const char *text)
     DWORD written;
     _snprintf(path, sizeof(path), "%s%s", g_dir, name);
     path[sizeof(path) - 1] = 0;
-    h = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ, NULL, OPEN_ALWAYS,
+    // FILE_APPEND_DATA does not append on the console (each write landed at
+    // offset 0): open for writing and seek to the end explicitly.
+    h = CreateFileA(path, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS,
                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, NULL);
     if (h == INVALID_HANDLE_VALUE)
         return;
+    SetFilePointer(h, 0, NULL, FILE_END);
     WriteFile(h, text, (DWORD)strlen(text), &written, NULL);
     FlushFileBuffers(h);
     CloseHandle(h);
@@ -134,8 +137,15 @@ static __declspec(noinline) void FlushLine(void *p)
     __emit(0x7C001FAC);   // icbi 0,r3
 }
 
-static int g_useKernelSweep = 0;
+static int g_useKernelSweep = 1;
 
+// Cache flush before running written code. The first console runs showed
+// that VirtualAlloc(RWX) memory flushed with KeSweepIcacheRange gives a
+// *catchable* fault when called, while the same memory flushed with the
+// hand-emitted dcbst/icbi loop killed the title ("fatal crash intercepted"
+// by DashLaunch). So every method now uses the kernel sweep; method 1 runs
+// the manual loop alone on a data buffer to find out whether it is the loop
+// itself that crashes.
 static void FlushCode(void *p, SIZE_T size)
 {
     SIZE_T i;
@@ -185,31 +195,48 @@ static int CallCode(void *p, int *result, DWORD *exc)
     }
 }
 
-// ---- Methods ----
-static void ProtRW_VP(void *p)  { DWORD old; VirtualProtect(p, CODE_BYTES, PAGE_READWRITE, &old); }
-static void ProtRX_VP(void *p)  { DWORD old; VirtualProtect(p, CODE_BYTES, PAGE_EXECUTE_READ, &old); }
+// ---- Places to put code ----
 
-// Method 9: a section of the image that is writable and executable
-// (linked with /SECTION:.jitc,ERW).
+// A writable + executable section of the image (linked /SECTION:.jitc,ERW).
 #pragma section(".jitc", read, write, execute)
 __declspec(allocate(".jitc")) static unsigned int s_sectionCode[CODE_BYTES / 4] = { 1 };
+
+// A "code cave": a real function in .text made of 1024 nops (4 KB). Homebrew
+// plugins on modded consoles patch code in the image's code pages, so this is
+// the most likely place to be executable. Returns 7 while untouched.
+#define NOP1 __emit(0x60000000);
+#define NOP8 NOP1 NOP1 NOP1 NOP1 NOP1 NOP1 NOP1 NOP1
+#define NOP64 NOP8 NOP8 NOP8 NOP8 NOP8 NOP8 NOP8 NOP8
+#define NOP512 NOP64 NOP64 NOP64 NOP64 NOP64 NOP64 NOP64 NOP64
+static __declspec(noinline) int CodeCave(void)
+{
+    NOP512 NOP512
+    return 7;
+}
+
+static void ProtRWX_Mm(void *p) { Log("  MmSetAddressProtect(RWX)..."); MmSetAddressProtect(p, CODE_BYTES, PAGE_EXECUTE_READWRITE); }
+static void ProtRWX_VP(void *p)
+{
+    DWORD old = 0;
+    BOOL ok = VirtualProtect(p, CODE_BYTES, PAGE_EXECUTE_READWRITE, &old);
+    Log("  VirtualProtect(RWX) -> %d (old %08lX, error %lu)", ok, old, ok ? 0 : GetLastError());
+}
 
 static void *Alloc(int m)
 {
     void *p;
     switch (m)
     {
-    case 0: return VirtualAlloc(NULL, CODE_BYTES, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    case 1: return VirtualAlloc(NULL, 64 * 1024, MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_EXECUTE_READWRITE);
-    case 2: return VirtualAlloc(NULL, CODE_BYTES, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    case 1: return VirtualAlloc(NULL, CODE_BYTES, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    case 2: return VirtualAlloc(NULL, 64 * 1024, MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_EXECUTE_READWRITE);
     case 3:
         p = VirtualAlloc(NULL, CODE_BYTES, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (p) { Log("  MmSetAddressProtect(RWX)..."); MmSetAddressProtect(p, CODE_BYTES, PAGE_EXECUTE_READWRITE); }
+        if (p) ProtRWX_Mm(p);
         return p;
     case 4: return XPhysicalAlloc(CODE_BYTES, MAXULONG_PTR, 0, PAGE_EXECUTE_READWRITE);
     case 5:
         p = XPhysicalAlloc(CODE_BYTES, MAXULONG_PTR, 0, PAGE_READWRITE);
-        if (p) { Log("  MmSetAddressProtect(RWX)..."); MmSetAddressProtect(p, CODE_BYTES, PAGE_EXECUTE_READWRITE); }
+        if (p) ProtRWX_Mm(p);
         return p;
     case 6: return MmAllocatePhysicalMemoryEx(0, CODE_BYTES, PAGE_EXECUTE_READWRITE, 0, 0xFFFFFFFF, 4096);
     case 7:
@@ -221,45 +248,59 @@ static void *Alloc(int m)
         return st >= 0 ? base : NULL;
     }
     case 8: return s_sectionCode;
-    case 9: return VirtualAlloc(NULL, CODE_BYTES, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    case 9: ProtRWX_Mm(s_sectionCode); return s_sectionCode;
+    case 10: return (void *)CodeCave;
+    case 11: ProtRWX_Mm((void *)CodeCave); return (void *)CodeCave;
+    case 12: ProtRWX_VP((void *)CodeCave); return (void *)CodeCave;
     }
     return NULL;
 }
 
 static const char *s_methodName[NUM_METHODS] = {
-    "1 VirtualAlloc RWX",
-    "2 VirtualAlloc RWX large pages",
-    "3 VirtualAlloc RW + VirtualProtect RX",
+    "1 manual dcbst/icbi loop, no call",
+    "2 VirtualAlloc RWX",
+    "3 VirtualAlloc RWX large pages",
     "4 VirtualAlloc RW + MmSetAddressProtect",
     "5 XPhysicalAlloc RWX",
     "6 XPhysicalAlloc RW + MmSetAddressProtect",
     "7 MmAllocatePhysicalMemoryEx RWX",
     "8 NtAllocateVirtualMemory RWX",
-    "9 image section .jitc (RWX)",
-    "10 VirtualAlloc RWX + KeSweepIcacheRange",
+    "9 image section .jitc",
+    "10 .jitc + MmSetAddressProtect",
+    "11 code cave in .text",
+    "12 code cave + MmSetAddressProtect",
+    "13 code cave + VirtualProtect",
 };
 
 static Status RunMethod(int m)
 {
     void *p;
-    int r1 = 0, r2 = 0, wx = (m == 2);
+    int r1 = 0, r2 = 0;
     DWORD exc = 0;
+
+    if (m == 0)
+    {
+        // The hand-emitted flush loop alone, on an ordinary heap buffer.
+        static unsigned char buf[CODE_BYTES + 128];
+        Log("%s: flushing a data buffer at %p...", s_methodName[m], buf);
+        g_useKernelSweep = 0;
+        FlushCode((void *)(((ULONG_PTR)buf + 127) & ~(ULONG_PTR)127), CODE_BYTES);
+        g_useKernelSweep = 1;
+        Log("  survived");
+        return ST_OK;
+    }
 
     Log("%s: alloc...", s_methodName[m]);
     p = Alloc(m);
     if (!p) { Log("  alloc failed (GetLastError=%lu)", GetLastError()); return ST_ALLOC_FAIL; }
-    Log("  alloc %p; write...", p);
-    if (wx) ProtRW_VP(p);
+    Log("  address %p; write...", p);
     if (!WriteCode(p, 42, &exc)) { Log("  write faulted, exception %08lX", exc); return ST_WRITE_FAULT; }
-    if (wx) { Log("  VirtualProtect(RX)..."); ProtRX_VP(p); }
     Log("  flush...");
     FlushCode(p, CODE_BYTES);
     Log("  call...");
     if (!CallCode(p, &r1, &exc)) { Log("  call faulted, exception %08lX", exc); return ST_CALL_FAULT; }
     Log("  returned %d; rewrite...", r1);
-    if (wx) ProtRW_VP(p);
     if (!WriteCode(p, 43, &exc)) { Log("  rewrite faulted, exception %08lX", exc); return ST_WRITE_FAULT; }
-    if (wx) ProtRX_VP(p);
     Log("  flush...");
     FlushCode(p, CODE_BYTES);
     Log("  call...");
@@ -347,9 +388,7 @@ restart:
         Status st;
         _snprintf(line, sizeof(line), "%d", next + 1);
         WriteWholeFile("execmem_state.txt", line);   // a crash in this method moves on to the next
-        g_useKernelSweep = (next == 9);
         st = RunMethod(next);
-        g_useKernelSweep = 0;
         status[next] = st;
         _snprintf(line, sizeof(line), "%d %d %s\r\n", next, (int)st, s_statusName[st]);
         AppendFile("execmem_results.txt", line);
@@ -392,14 +431,15 @@ restart:
             for (i = 0; i < NUM_METHODS; i++)
             {
                 D3DRECT r;
-                r.x1 = 80; r.x2 = 120; r.y1 = 90 + i * 52; r.y2 = r.y1 + 40;
+                r.x1 = 80; r.x2 = 120; r.y1 = 80 + i * 44; r.y2 = r.y1 + 34;
                 dev->Clear(1, &r, D3DCLEAR_TARGET, s_statusColor[status[i]], 1.0f, 0);
                 _snprintf(line, sizeof(line), "%-42s %s", s_methodName[i], s_statusName[status[i]]);
                 line[sizeof(line) - 1] = 0;
-                AddText(140, 102 + i * 52, 2, line);
+                AddText(140, 89 + i * 44, 2, line);
+                FlushText(dev, D3DCOLOR_XRGB(230, 230, 230));   // per row: the rect buffer is bounded
             }
             FlushText(dev, D3DCOLOR_XRGB(230, 230, 230));
-            AddText(80, 640, 2, "BACK: dashboard    Y: reset and run all methods again");
+            AddText(80, 676, 2, "BACK: dashboard    Y: reset and run all methods again");
             FlushText(dev, D3DCOLOR_XRGB(140, 140, 160));
             dev->Present(NULL, NULL, NULL, NULL);
         }
