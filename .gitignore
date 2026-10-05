@@ -64,3 +64,6 @@ local.cfg
 /cache1/
 /source/
 /xenon/
+
+# Result files the execmem tool writes on the console (copied back here)
+execmem_*.txt
