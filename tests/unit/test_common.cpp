@@ -10,7 +10,10 @@ void test_types(H64TestContext *ctx)
     H64_CHECK_EQ(ctx, sizeof(u32), 4);
     H64_CHECK_EQ(ctx, sizeof(u64), 8);
     H64_CHECK_EQ(ctx, sizeof(s64), 8);
-    H64_CHECK_EQ(ctx, (s32)(s8)0x80, -128);
+    {
+        u8 byte = 0x80;
+        H64_CHECK_EQ(ctx, (s32)(s8)byte, -128);
+    }
     H64_CHECK_EQ(ctx, (u64)(s64)(s32)0x80000000u, 0xFFFFFFFF80000000ull);
     // Arithmetic shift of negative values is relied on by the CPU core.
     H64_CHECK_EQ(ctx, (u64)((s64)-16 >> 2), (u64)(s64)-4);
