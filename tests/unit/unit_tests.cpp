@@ -1,0 +1,24 @@
+// The list of unit tests, shared by every target (h64test on the host and
+// under QEMU, and the Xbox 360 build, which runs them at start-up).
+#include "unit_tests.h"
+
+void test_types(H64TestContext *ctx);
+void test_host_byte_order(H64TestContext *ctx);
+void test_bswap(H64TestContext *ctx);
+void test_endian_loads(H64TestContext *ctx);
+void test_endian_stores(H64TestContext *ctx);
+
+static const H64TestCase s_tests[] = {
+    { "types", test_types },
+    { "host_byte_order", test_host_byte_order },
+    { "bswap", test_bswap },
+    { "endian_loads", test_endian_loads },
+    { "endian_stores", test_endian_stores },
+};
+
+int h64_run_all_unit_tests(int *testsOut, int *checksOut)
+{
+    if (testsOut)
+        *testsOut = (int)H64_ARRAY_COUNT(s_tests);
+    return h64_run_unit_tests(s_tests, (int)H64_ARRAY_COUNT(s_tests), checksOut);
+}

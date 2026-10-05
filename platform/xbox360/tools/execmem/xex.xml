@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- execmem proof of concept: its own title ID ("HA63"), distinct from V1
+     (0x48413634) and V2 (0x48413632). -->
+<xex>
+  <titleid id="0x48413633"/>
+</xex>

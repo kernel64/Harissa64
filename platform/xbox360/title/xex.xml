@@ -1,0 +1,6 @@
+<?xml version="1.0"?>
+<!-- Harissa64 V2. Title ID "HA62", distinct from V1's 0x48413634 ("HA64") so
+     both can sit side by side in Aurora. -->
+<xex>
+  <titleid id="0x48413632"/>
+</xex>

@@ -1,0 +1,6 @@
+# Shell scripts run inside WSL: keep LF line endings.
+*.sh text eol=lf
+# Visual Studio 2010 files keep CRLF.
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.cmd text eol=crlf
