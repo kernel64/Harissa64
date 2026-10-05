@@ -87,8 +87,20 @@ struct H64Cpu
     u64 instructions;  // executed instructions (statistics)
     int exceptionRaised;
 
+    // Last executed PCs (debugging: h64test --trace-exc prints them).
+    u32 pcHistory[32];
+    u32 pcHistoryPos;
+    u32 jumpFrom[16], jumpTo[16];   // last taken jumps/branches
+    u32 jumpPos;
+
     // Debug hook called for every exception taken (h64test --trace-exc).
     void (*excHook)(void *user, int code);
+    u32 watchPc;                                   // debugging: call watchHook when executing this PC
+    u32 jumpLimit;                                 // debugging: call jumpHook for a jump to a KSEG0 address >= this
+    void (*watchHook)(void *user);
+    void (*jumpHook)(void *user, u32 from, u32 to);
+    u32 nopRun;                                    // consecutive NOPs (debugging: nopHook at 1000)
+    void (*nopHook)(void *user);
     void *excUser;
 };
 

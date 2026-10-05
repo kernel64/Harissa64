@@ -136,7 +136,11 @@ void h64_pif_reset(H64System *sys)
 void h64_hle_boot(H64System *sys)
 {
     H64Cpu *cpu = &sys->cpu;
-    u32 entry = sys->rom.entryPoint;
+    // The 6103 and 6106 IPL3s load to (and jump to) the header's entry point
+    // minus 0x100000 / 0x200000 (Banjo-Kazooie and Paper Mario: 0x80100400 ->
+    // 0x80000400, 0x80125C00 -> 0x80025C00).
+    u32 entry = sys->rom.entryPoint - (sys->rom.cic == H64_CIC_6103 ? 0x100000u :
+                                       sys->rom.cic == H64_CIC_6106 ? 0x200000u : 0u);
     u32 phys = entry & 0x1FFFFFFFu;
     u32 i, len = 0x100000;
     u32 hdr = h64_load_be32(sys->rom.data);
@@ -149,6 +153,14 @@ void h64_hle_boot(H64System *sys)
         sys->rdram[phys + i] = src < sys->rom.size ? sys->rom.data[src] : 0;
     }
 
+    // Boot variables at 0x80000300 that libultra reads (osTvType, osRomType,
+    // osRomBase, osResetType, osCicId, osVersion, osMemSize).
+    h64_store_be32(sys->rdram + 0x300, (u32)sys->tvType);
+    h64_store_be32(sys->rdram + 0x304, 0);             // ROM type: cartridge
+    h64_store_be32(sys->rdram + 0x308, 0xB0000000u);   // osRomBase
+    h64_store_be32(sys->rdram + 0x30C, 0);             // reset type: cold
+    h64_store_be32(sys->rdram + 0x310, sys->rom.cicSeed);
+    h64_store_be32(sys->rdram + 0x314, 0);             // version
     h64_store_be32(sys->rdram + (sys->rom.cic == H64_CIC_6105 ? 0x3F0 : 0x318), H64_RDRAM_SIZE);
 
     sys->pi.regs[5] = hdr & 0xFF;            // BSD_DOM1_LAT

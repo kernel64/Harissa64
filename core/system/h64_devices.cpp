@@ -32,7 +32,14 @@ static void mi_update(H64System *sys)
     h64_cpu_set_ip(sys, 2, (sys->mi.intr & sys->mi.mask) != 0);
 }
 
-void h64_mi_raise(H64System *sys, u32 bits) { sys->mi.intr |= bits; mi_update(sys); }
+void h64_mi_raise(H64System *sys, u32 bits)
+{
+    int i;
+    for (i = 0; i < 6; i++)
+        if (bits & (1u << i)) sys->miRaised[i]++;
+    sys->mi.intr |= bits;
+    mi_update(sys);
+}
 void h64_mi_clear(H64System *sys, u32 bits) { sys->mi.intr &= ~bits; mi_update(sys); }
 
 // ---- VI ----
@@ -186,6 +193,7 @@ static void pi_dma(H64System *sys, int toRdram, u32 value)
     u32 dram = sys->pi.regs[0] & 0x00FFFFFE;
     u32 cart = sys->pi.regs[1] & ~1u;
     u32 i;
+    H64_DEBUG("[pi] DMA %s cart %08X dram %08X len %X", toRdram ? "cart->rdram" : "rdram->cart", cart, dram, len);
     if (toRdram)
     {
         for (i = 0; i < len; i++)
@@ -446,7 +454,8 @@ void h64_device_event(H64System *sys, int ev)
     case H64_EV_SP:
     {
         u32 type = h64_load_be32(sys->spMem + 0xFC0);
-        sys->sp.regs[4] |= SP_STATUS_HALT | SP_STATUS_BROKE;
+        // A finished task leaves SIG2 ("task done") set, then halts on BREAK.
+        sys->sp.regs[4] |= SP_STATUS_HALT | SP_STATUS_BROKE | 0x0200u;
         if (sys->sp.regs[4] & SP_STATUS_INTR_BREAK)
             h64_mi_raise(sys, MI_INTR_SP);
         if (type == 1)

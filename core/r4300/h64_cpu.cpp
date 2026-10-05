@@ -10,6 +10,8 @@
 
 #include "../common/h64_log.h"
 
+static void record_jump(H64Cpu *cpu, u64 target);
+
 // ---------------------------------------------------------------------------
 // Reset and COP0 basics
 // ---------------------------------------------------------------------------
@@ -18,10 +20,20 @@ void h64_cpu_reset(H64Cpu *cpu)
 {
     u64 cycles = cpu->cycles;
     void (*hook)(void *, int) = cpu->excHook;
+    void (*watch)(void *) = cpu->watchHook;
+    void (*jhook)(void *, u32, u32) = cpu->jumpHook;
+    void (*nhook)(void *) = cpu->nopHook;
+    u32 jlimit = cpu->jumpLimit;
+    u32 watchPc = cpu->watchPc;
     void *hookUser = cpu->excUser;
     memset(cpu, 0, sizeof(*cpu));
     cpu->cycles = cycles;
     cpu->excHook = hook;
+    cpu->watchHook = watch;
+    cpu->jumpHook = jhook;
+    cpu->nopHook = nhook;
+    cpu->jumpLimit = jlimit;
+    cpu->watchPc = watchPc;
     cpu->excUser = hookUser;
     cpu->cop0[CP0_RANDOM] = 31;
     cpu->cop0[CP0_PRID] = 0x00000B22;
@@ -460,6 +472,7 @@ static void do_cop0(H64System *sys, u32 op)
             cpu->nextPc = cpu->pc + 4;
             cpu->branchPending = 0;
             cpu->llbit = 0;
+            record_jump(cpu, cpu->pc);
             return;
         }
         if (sys->options.emux)
@@ -519,10 +532,22 @@ static void do_cop0(H64System *sys, u32 op)
 // Branch helpers
 // ---------------------------------------------------------------------------
 
+static void record_jump(H64Cpu *cpu, u64 target)
+{
+    cpu->jumpFrom[cpu->jumpPos & 15] = (u32)cpu->curPc;
+    cpu->jumpTo[cpu->jumpPos & 15] = (u32)target;
+    cpu->jumpPos++;
+    if (cpu->jumpHook && (u32)target >= cpu->jumpLimit && (u32)target < 0xA0000000u)
+        cpu->jumpHook(cpu->excUser, (u32)cpu->curPc, (u32)target);
+}
+
 static void branch(H64Cpu *cpu, int taken, u32 op)
 {
     if (taken)
+    {
         cpu->nextPc = cpu->curPc + 4 + (IMM16(op) << 2);
+        record_jump(cpu, cpu->nextPc);
+    }
     cpu->branchPending = 1;
 }
 
@@ -532,6 +557,7 @@ static void branch_likely(H64Cpu *cpu, int taken, u32 op)
     {
         cpu->nextPc = cpu->curPc + 4 + (IMM16(op) << 2);
         cpu->branchPending = 1;
+        record_jump(cpu, cpu->nextPc);
     }
     else
     {
@@ -543,6 +569,7 @@ static void branch_likely(H64Cpu *cpu, int taken, u32 op)
 
 static void jump(H64Cpu *cpu, u64 target)
 {
+    record_jump(cpu, target);
     cpu->nextPc = target;
     cpu->branchPending = 1;
 }
@@ -985,6 +1012,11 @@ void h64_cpu_step(H64System *sys)
         return;
     }
 
+    cpu->pcHistory[cpu->pcHistoryPos++ & 31] = (u32)cpu->curPc;
+    if (op == 0) { if (++cpu->nopRun == 1000 && cpu->nopHook) cpu->nopHook(cpu->excUser); }
+    else cpu->nopRun = 0;
+    if (cpu->watchHook && (u32)cpu->curPc == cpu->watchPc)
+        cpu->watchHook(cpu->excUser);
     cpu->branchPending = 0;
     cpu->pc = cpu->nextPc;
     cpu->nextPc += 4;

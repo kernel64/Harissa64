@@ -50,16 +50,89 @@ static void exc_hook(void *user, int code)
 {
     H64System *sys = (H64System *)user;
     H64Cpu *c = &sys->cpu;
-    if (code == EXC_INT || s_traceExc <= 0) return;
+    if (s_traceExc <= 0) return;
+    // Interrupts are only reported when EPC points outside RDRAM (a corrupted PC).
+    if (code == EXC_INT && ((u32)c->cop0[CP0_EPC] & 0xFF800000u) == 0x80000000u) return;
     {
         u32 p, op = 0;
         if (h64_cpu_translate_debug(c, c->curPc, &p)) h64_bus_read32(sys, p, &op);
-        printf("[exc] opcode %08X\n", op);
+        printf("[exc] opcode %08X, last PCs:", op);
+        {
+            int k;
+            for (k = 0; k < 32; k++)
+                printf("%s%08X", (k % 8) ? " " : "\n[exc]   ", c->pcHistory[(c->pcHistoryPos + k) & 31]);
+            printf("\n[exc]   last jumps:");
+            for (k = 0; k < 16; k++)
+                printf("%s%08X->%08X", (k % 4) ? " " : "\n[exc]   ", c->jumpFrom[(c->jumpPos + k) & 15], c->jumpTo[(c->jumpPos + k) & 15]);
+            printf("\n");
+        }
     }
     s_traceExc--;
     printf("[exc] code %d at pc %08X%s, badvaddr %08X%08X, ra %08X, sr %08X, instr #%llu\n", code, (u32)c->curPc,
            c->curInDelaySlot ? " (delay slot)" : "", (u32)(c->cop0[CP0_BADVADDR] >> 32), (u32)c->cop0[CP0_BADVADDR],
            (u32)c->gpr[31], (u32)c->cop0[CP0_STATUS], (unsigned long long)c->instructions);
+}
+
+static int s_watchCount = 0;
+static H64System *s_sysForStop = 0;
+static int s_jumpStop = 0;
+
+// --watch-pc: prints GPRs and 0x40 bytes at k0+0x100 the first 6 times PC is reached.
+static void watch_hook(void *user)
+{
+    H64System *sys = (H64System *)user;
+    H64Cpu *c = &sys->cpu;
+    int i;
+    {
+        // Only report dispatches whose saved PC (k0+0x11C) is outside RDRAM.
+        u32 p, epc = 0;
+        if (h64_cpu_translate_debug(c, c->gpr[26] + 0x11C, &p)) h64_bus_read32(sys, p, &epc);
+        if ((epc & 0xFF800000u) == 0x80000000u) return;
+    }
+    if (s_watchCount++ >= 3) return;
+    printf("[watch] pc %08X #%llu:", (u32)c->curPc, (unsigned long long)c->instructions);
+    for (i = 1; i < 32; i++)
+        printf("%s r%d=%08X%08X", (i % 4) == 1 ? "\n[watch]  " : "", i, (u32)(c->gpr[i] >> 32), (u32)c->gpr[i]);
+    printf("\n[watch]   mem[k0..k0+0x130]:");
+    for (i = 0; i < 76; i++)
+    {
+        u32 p, v = 0;
+        if (i % 8 == 0) printf("\n[watch]   +%03X:", 4 * i);
+        if (h64_cpu_translate_debug(c, c->gpr[26] + 4 * i, &p)) h64_bus_read32(sys, p, &v);
+        printf(" %08X", v);
+    }
+    printf("\n");
+}
+
+// --jump-limit: stops at the first jump/ERET to KSEG0 at or above the limit.
+static void jump_hook(void *user, u32 from, u32 to)
+{
+    H64System *sys = (H64System *)user;
+    H64Cpu *c = &sys->cpu;
+    int k;
+    printf("[jump] %08X -> %08X at instr #%llu, epc %08X, sr %08X, ra %08X, k0 %08X\n[jump] last PCs:", from, to,
+           (unsigned long long)c->instructions, (u32)c->cop0[CP0_EPC], (u32)c->cop0[CP0_STATUS], (u32)c->gpr[31], (u32)c->gpr[26]);
+    for (k = 0; k < 32; k++)
+        printf("%s%08X", (k % 8) ? " " : "\n[jump]   ", c->pcHistory[(c->pcHistoryPos + k) & 31]);
+    printf("\n");
+    sys->stop = 1;
+    s_jumpStop = 1;
+    c->jumpHook = 0;
+}
+
+// --stop-on-nops: stops after 1000 consecutive NOPs (running through empty memory).
+static void nop_hook(void *user)
+{
+    H64System *sys = (H64System *)user;
+    H64Cpu *c = &sys->cpu;
+    int k;
+    printf("[nops] 1000 NOPs ending at %08X, instr #%llu; last jumps:", (u32)c->curPc, (unsigned long long)c->instructions);
+    for (k = 0; k < 16; k++)
+        printf("%s%08X->%08X", (k % 4) ? " " : "\n[nops]   ", c->jumpFrom[(c->jumpPos + k) & 15], c->jumpTo[(c->jumpPos + k) & 15]);
+    printf("\n");
+    sys->stop = 1;
+    s_jumpStop = 1;
+    c->nopHook = 0;
 }
 
 static u8 *read_file(const char *path, u32 *size)
@@ -89,6 +162,10 @@ static void print_state(H64System *sys)
     printf("status=%08X cause=%08X epc=%08X%08X badvaddr=%08X%08X mi_intr=%02X mi_mask=%02X\n",
            (u32)c->cop0[CP0_STATUS], (u32)c->cop0[CP0_CAUSE], (u32)(c->cop0[CP0_EPC] >> 32), (u32)c->cop0[CP0_EPC],
            (u32)(c->cop0[CP0_BADVADDR] >> 32), (u32)c->cop0[CP0_BADVADDR], sys->mi.intr, sys->mi.mask);
+    printf("last jumps:");
+    for (i = 0; i < 16; i++)
+        printf("%s%08X->%08X", (i % 4) ? " " : "\n  ", c->jumpFrom[(c->jumpPos + i) & 15], c->jumpTo[(c->jumpPos + i) & 15]);
+    printf("\n");
 }
 
 static int run_rom(const char *path, int argc, char **argv, int first)
@@ -96,6 +173,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     H64System *sys;
     u8 *file;
     u32 size;
+    u32 watchPc = 0, jumpLimit = 0;
+    int stopOnNops = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
     u64 limit;
@@ -109,6 +188,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--info")) info = 1;
         else if (!strcmp(argv[i], "--state")) state = 1;
         else if (!strcmp(argv[i], "--trace-exc") && i + 1 < argc) s_traceExc = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--watch-pc") && i + 1 < argc) watchPc = (u32)strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "--jump-limit") && i + 1 < argc) jumpLimit = (u32)strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "--stop-on-nops")) stopOnNops = 1;
         else if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
@@ -123,9 +205,13 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->isvUser = sys;
     sys->cpu.excHook = exc_hook;
     sys->cpu.excUser = sys;
+    if (watchPc) { sys->cpu.watchPc = watchPc; sys->cpu.watchHook = watch_hook; }
+    if (jumpLimit) { sys->cpu.jumpLimit = jumpLimit; sys->cpu.jumpHook = jump_hook; }
+    s_sysForStop = sys;
+    if (stopOnNops) sys->cpu.nopHook = nop_hook;
 
     limit = seconds > 0 ? (u64)(seconds * 93750000.0) : (u64)frames * sys->vi.frameCycles;
-    while (sys->cpu.cycles < limit && !s_untilHit && !sys->exitRequested)
+    while (sys->cpu.cycles < limit && !s_untilHit && !sys->exitRequested && !s_jumpStop)
     {
         h64_system_run_cycles(sys, dillon ? 10000 : 1000000);
         if (dillon && sys->cpu.gpr[30] != 0)
@@ -143,6 +229,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (sys->exitRequested) printf("[run] the ROM requested exit (EMUX)\n");
     printf("[run] %u frames, %.2f emulated s, %llu instructions, %u RSP tasks\n", sys->vi.frames,
            (double)sys->cpu.cycles / 93750000.0, (unsigned long long)sys->cpu.instructions, sys->sp.tasks);
+    printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
+           sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
     if (state) print_state(sys);
     h64_system_free(sys);
     free(sys);

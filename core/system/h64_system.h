@@ -72,6 +72,7 @@ struct H64System
 
     int stop;            // set to leave the run loop
     int exitRequested;   // the guest asked to end the run (EMUX XIOCTL exit)
+    u32 miRaised[6];     // statistics: MI interrupts raised, per line (SP SI AI VI PI DP)
 };
 
 // Creates a system for a ROM image (any dump order). Returns 0 or -1.
