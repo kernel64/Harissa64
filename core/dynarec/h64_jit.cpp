@@ -58,12 +58,24 @@ void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
     first = paddr >> 12;
     last = (paddr + len - 1) >> 12;
     if (last >= H64_JIT_PAGES) last = H64_JIT_PAGES - 1;
+    // Only the blocks the write overlaps: data often shares a page with code
+    // (OoT invalidated ~500 pages a second when whole pages were dropped).
     for (p = first; p <= last; p++)
     {
-        H64JitBlock *b = j->pageHead[p];
-        if (!b) continue;
-        while (b) { b->valid = 0; b = b->pageNext; }
-        j->pageHead[p] = 0;
+        H64JitBlock **link = &j->pageHead[p], *b;
+        int hit = 0;
+        while ((b = *link) != 0)
+        {
+            if (b->paddr < paddr + len && paddr < b->paddr + b->insns * 4)
+            {
+                b->valid = 0;
+                *link = b->pageNext;
+                hit = 1;
+            }
+            else
+                link = &b->pageNext;
+        }
+        if (!hit) continue;
         j->stats.invalidations++;
         if (p == j->curPage) j->curInvalidated = 1;
     }
