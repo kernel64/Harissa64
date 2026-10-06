@@ -28,7 +28,7 @@
 #define RT_HEIGHT 720
 #define EDRAM_N64_COLOR 720
 #define EDRAM_N64_DEPTH 1260
-#define FB_SLOTS 4
+#define FB_SLOTS 8
 #define MAX_TEXTURES 1500
 #define MAX_TEXTURE_BYTES (40u * 1024u * 1024u)
 #define BATCH_VERTICES 3000
@@ -518,26 +518,21 @@ static void select_framebuffer(Xenos *x)
         return;
     resolve_current(x);
     bind_n64_target(x);
+    x->stats.fbSwitches++;
     for (i = 0; i < FB_SLOTS; i++)
         if (x->fb[i].tex && x->fb[i].addr == addr && x->fb[i].valid) { best = (int)i; break; }
     if (best < 0)
     {
-        // A colour image the GPU has not drawn: start from its RDRAM content
-        // (cleared by the game, or drawn by the CPU).
+        // A colour image the GPU has not drawn yet: it starts black. (Loading
+        // its RDRAM content made OoT, which switches between more images than
+        // there were slots, wait for the GPU several times per frame.)
         u32 oldest = 0xFFFFFFFF;
-        IDirect3DTexture9 *init;
         for (i = 0; i < FB_SLOTS; i++)
             if (x->fb[i].lastUse < oldest) { oldest = x->fb[i].lastUse; best = (int)i; }
         s = &x->fb[best];
         s->addr = addr;
         s->valid = 0;
         x->dev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, x->debug == 1 ? 0xFF0000FF : 0xFF000000, 1.0f, 0);
-        init = x->debug == 1 ? NULL : upload_rdram(x, addr, x->st->colorWidth, x->st->colorFmt == FB_RGBA8888);
-        if (init)
-        {
-            u32 w = x->st->colorWidth;
-            draw_fullscreen(x, init, (float)w / RT_WIDTH, (float)fb_height(w) / RT_HEIGHT);
-        }
     }
     else if (best != x->edramOwner)
     {
