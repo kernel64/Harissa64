@@ -28,6 +28,7 @@ int h64_system_init(H64System *sys, const u8 *romFile, u32 romSize, const H64Opt
 void h64_system_free(H64System *sys)
 {
     h64_rom_free(&sys->rom);
+    h64_rdp_free(sys);
     free(sys->rdram);
     sys->rdram = 0;
 }

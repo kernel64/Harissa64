@@ -57,6 +57,8 @@ struct H64System
     u64 dpCommand[22];   // RDP command being assembled
     u32 dpPendingWords;
     u64 dpCommands;      // statistics: RDP commands executed
+    struct H64RdpState *rdpState;   // software renderer (allocated on first use)
+    u8 *rdramHidden;     // RDRAM's 9th bits: 2 per 16-bit halfword, one byte each (coverage, dz)
 
     int tvType;          // 0 PAL, 1 NTSC, 2 MPAL
 

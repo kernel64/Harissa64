@@ -16,7 +16,8 @@ if(MSVC)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 else()
   # -frounding-math: the reference FPU changes the rounding mode at run time.
-  add_compile_options(-Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -frounding-math)
+  # -fwrapv: the software RDP relies on wrapping signed arithmetic (as GLSL).
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -frounding-math -fwrapv)
 endif()
 
 # ---- Portable core ----

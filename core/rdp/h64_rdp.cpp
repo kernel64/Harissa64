@@ -1,6 +1,7 @@
 // Harissa64 V2 - RDP command interface (DPC registers and command fetch).
 // Register behaviour from n64brew ("Reality Display Processor/Interface").
 #include "h64_rdp.h"
+#include "h64_rdp_state.h"
 
 #include <string.h>
 
@@ -22,6 +23,13 @@ void h64_rdp_reset(H64System *sys)
     memset(&sys->dp, 0, sizeof(sys->dp));
     sys->dp.status = DPC_CBUF_READY;
     sys->dpPendingWords = 0;
+    if (sys->rdpState)
+    {
+        memset(sys->rdpState, 0, sizeof(*sys->rdpState));
+        sys->rdpState->colorFmt = FB_RGBA5551;
+        sys->rdpState->colorWidth = 320;
+    }
+    if (sys->rdramHidden) memset(sys->rdramHidden, 3, H64_RDRAM_SIZE / 2);
 }
 
 static u64 fetch_word(H64System *sys, u32 addr)
@@ -37,6 +45,9 @@ static void run_commands(H64System *sys)
 {
     H64RdpRegs *dp = &sys->dp;
     if (dp->status & DPC_FREEZE) return;
+    // Once given commands the RDP's pipeline runs (clock started) until a
+    // SYNC_FULL (n64-systemtest "RDP STATUS: Flags during a run").
+    dp->status |= DPC_PIPE_BUSY | DPC_START_GCLK;
     while (dp->current < dp->end)
     {
         u64 w = fetch_word(sys, dp->current);
@@ -50,7 +61,7 @@ static void run_commands(H64System *sys)
             sys->dpCommands++;
             if (opcode == 0x29)   // SYNC_FULL: the RDP is idle, interrupt the CPU
             {
-                dp->status &= ~(DPC_PIPE_BUSY | DPC_CMD_BUSY | DPC_TMEM_BUSY);
+                dp->status &= ~(DPC_PIPE_BUSY | DPC_START_GCLK | DPC_CMD_BUSY | DPC_TMEM_BUSY);
                 h64_mi_raise(sys, MI_INTR_DP);
             }
         }
