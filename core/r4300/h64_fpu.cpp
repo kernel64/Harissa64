@@ -459,10 +459,13 @@ void h64_cop1_execute(H64System *sys, u32 op)
         return;
     }
     case 0x03: case 0x07: fpu_finish(cpu, CAUSE_E); return;                          // DCFC1, DCTC1
-    case 0x10: op_single(sys, op); return;
-    case 0x11: op_double(sys, op); return;
-    case 0x14: op_fixed(sys, op, 0); return;
-    case 0x15: op_fixed(sys, op, 1); return;
+    case 0x10: op_single(sys, op); break;
+    case 0x11: op_double(sys, op); break;
+    case 0x14: op_fixed(sys, op, 0); break;
+    case 0x15: op_fixed(sys, op, 1); break;
+    default: h64_cpu_exception(cpu, EXC_RI, 0x180); return;
     }
-    h64_cpu_exception(cpu, EXC_RI, 0x180);
+    // The host is left rounding to nearest (the recompiler's native FPU code
+    // relies on it, as does the rest of the emulator).
+    if (cpu->fcr31 & 3) h64_fenv_begin(H64_RM_NEAREST);
 }

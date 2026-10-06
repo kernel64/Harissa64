@@ -60,6 +60,7 @@ static inline void ppc_divd(H64PpcCode *c, u32 rt, u32 ra, u32 rb) { ppc_put(c, 
 static inline void ppc_divdu(H64PpcCode *c, u32 rt, u32 ra, u32 rb) { ppc_put(c, ppc_x(rt, ra, rb, 457, 0)); }
 
 static inline void ppc_and(H64PpcCode *c, u32 ra, u32 rs, u32 rb) { ppc_put(c, ppc_x(rs, ra, rb, 28, 0)); }
+static inline void ppc_and_(H64PpcCode *c, u32 ra, u32 rs, u32 rb) { ppc_put(c, ppc_x(rs, ra, rb, 28, 1)); }   // and.
 static inline void ppc_andc(H64PpcCode *c, u32 ra, u32 rs, u32 rb) { ppc_put(c, ppc_x(rs, ra, rb, 60, 0)); }
 static inline void ppc_or(H64PpcCode *c, u32 ra, u32 rs, u32 rb) { ppc_put(c, ppc_x(rs, ra, rb, 444, 0)); }
 static inline void ppc_mr(H64PpcCode *c, u32 ra, u32 rs) { ppc_or(c, ra, rs, rs); }
@@ -126,6 +127,30 @@ static inline void ppc_sthx(H64PpcCode *c, u32 rs, u32 ra, u32 rb) { ppc_put(c, 
 static inline void ppc_stwx(H64PpcCode *c, u32 rs, u32 ra, u32 rb) { ppc_put(c, ppc_x(rs, ra, rb, 151, 0)); }
 static inline void ppc_stdx(H64PpcCode *c, u32 rs, u32 ra, u32 rb) { ppc_put(c, ppc_x(rs, ra, rb, 149, 0)); }
 
+// ---- Floating point ----
+static inline u32 ppc_a(u32 op, u32 frt, u32 fra, u32 frb, u32 frc, u32 xo) { return (op << 26) | (frt << 21) | (fra << 16) | (frb << 11) | (frc << 6) | (xo << 1); }
+static inline void ppc_lfs(H64PpcCode *c, u32 frt, s32 d, u32 ra) { ppc_put(c, ppc_d(48, frt, ra, (u32)d)); }
+static inline void ppc_lfd(H64PpcCode *c, u32 frt, s32 d, u32 ra) { ppc_put(c, ppc_d(50, frt, ra, (u32)d)); }
+static inline void ppc_stfs(H64PpcCode *c, u32 frs, s32 d, u32 ra) { ppc_put(c, ppc_d(52, frs, ra, (u32)d)); }
+static inline void ppc_stfd(H64PpcCode *c, u32 frs, s32 d, u32 ra) { ppc_put(c, ppc_d(54, frs, ra, (u32)d)); }
+static inline void ppc_stfiwx(H64PpcCode *c, u32 frs, u32 ra, u32 rb) { ppc_put(c, ppc_x(frs, ra, rb, 983, 0)); }
+static inline void ppc_fadds(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(59, t, a, b, 0, 21)); }
+static inline void ppc_fsubs(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(59, t, a, b, 0, 20)); }
+static inline void ppc_fmuls(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(59, t, a, 0, b, 25)); }
+static inline void ppc_fdivs(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(59, t, a, b, 0, 18)); }
+static inline void ppc_fadd(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(63, t, a, b, 0, 21)); }
+static inline void ppc_fsub(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(63, t, a, b, 0, 20)); }
+static inline void ppc_fmul(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(63, t, a, 0, b, 25)); }
+static inline void ppc_fdiv(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(63, t, a, b, 0, 18)); }
+static inline void ppc_frsp(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, ppc_a(63, t, 0, b, 0, 12)); }
+static inline void ppc_fctiw(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, ppc_a(63, t, 0, b, 0, 14)); }
+static inline void ppc_fctiwz(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, ppc_a(63, t, 0, b, 0, 15)); }
+static inline void ppc_fcfid(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, (63u << 26) | (t << 21) | (b << 11) | (846u << 1)); }
+static inline void ppc_fabs(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, (63u << 26) | (t << 21) | (b << 11) | (264u << 1)); }
+static inline void ppc_fmr(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, (63u << 26) | (t << 21) | (b << 11) | (72u << 1)); }
+static inline void ppc_fcmpu(H64PpcCode *c, u32 cr, u32 a, u32 b) { ppc_put(c, (63u << 26) | (cr << 23) | (a << 16) | (b << 11)); }
+static inline void ppc_mffs(H64PpcCode *c, u32 t) { ppc_put(c, (63u << 26) | (t << 21) | (583u << 1)); }
+
 // ---- Special registers and branches ----
 static inline u32 ppc_spr(u32 spr) { return ((spr & 31) << 16) | ((spr >> 5) << 11); }
 static inline void ppc_mflr(H64PpcCode *c, u32 rt) { ppc_put(c, (31u << 26) | (rt << 21) | ppc_spr(8) | (339u << 1)); }
@@ -137,7 +162,7 @@ static inline void ppc_bctrl(H64PpcCode *c) { ppc_put(c, 0x4E800421u); }
 static inline void ppc_nop(H64PpcCode *c) { ppc_put(c, 0x60000000u); }
 
 // Conditions on a CR field: BO 12 = branch if the bit is set, 4 = if clear.
-enum { PPC_LT = 0, PPC_GT = 1, PPC_EQ = 2 };
+enum { PPC_LT = 0, PPC_GT = 1, PPC_EQ = 2, PPC_UN = 3 };   // UN: unordered after fcmpu
 // Conditional branch to be patched: returns the word index.
 static inline u32 ppc_bc_fwd(H64PpcCode *c, u32 bo, u32 cr, u32 bit)
 {

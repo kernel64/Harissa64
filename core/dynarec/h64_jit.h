@@ -63,9 +63,11 @@ struct H64Jit
     int curInvalidated;
 
     H64JitStats stats;
-    u32 *opHist;          // optional (debug): instructions run through the interpreter helper, by
-                          // opcode: [op], [64 + SPECIAL funct], [128 + COP1 funct]
+    u32 *opHist;          // optional (debug, 232 entries): instructions run through the interpreter helper,
+                          // by opcode: [op], [64 + SPECIAL funct], [128 + COP1 S/D funct], [200 + COP1 rs]
+                          // for the moves and branches, [216 + 0/1] CVT.S/CVT.D from W/L
     int noNative;                   // debugging: every instruction through the interpreter
+    int noFpu;                      // debugging: COP1 arithmetic through the interpreter
 };
 
 // Takes executable memory (and its icache flush) from the platform.

@@ -59,6 +59,8 @@ void test_ppc_emit(H64TestContext *ctx)
     H64_CHECK_EQ(ctx, buf[0], 0x7C642B92u);   // divdu 3,4,5
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_and(&c, 3, 4, 5);
     H64_CHECK_EQ(ctx, buf[0], 0x7C832838u);   // and 3,4,5
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_and_(&c, 3, 4, 5);
+    H64_CHECK_EQ(ctx, buf[0], 0x7C832839u);   // and. 3,4,5
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_andc(&c, 3, 4, 5);
     H64_CHECK_EQ(ctx, buf[0], 0x7C832878u);   // andc 3,4,5
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_or(&c, 3, 4, 5);
@@ -171,6 +173,48 @@ void test_ppc_emit(H64TestContext *ctx)
     H64_CHECK_EQ(ctx, buf[0], 0x7C64292Eu);   // stwx 3,4,5
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_stdx(&c, 3, 4, 5);
     H64_CHECK_EQ(ctx, buf[0], 0x7C64292Au);   // stdx 3,4,5
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_lfs(&c, 1, 8, 4);
+    H64_CHECK_EQ(ctx, buf[0], 0xC0240008u);   // lfs 1,8(4)
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_lfd(&c, 1, -8, 4);
+    H64_CHECK_EQ(ctx, buf[0], 0xC824FFF8u);   // lfd 1,-8(4)
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_stfs(&c, 1, 8, 4);
+    H64_CHECK_EQ(ctx, buf[0], 0xD0240008u);   // stfs 1,8(4)
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_stfd(&c, 1, 16, 4);
+    H64_CHECK_EQ(ctx, buf[0], 0xD8240010u);   // stfd 1,16(4)
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_stfiwx(&c, 1, 4, 5);
+    H64_CHECK_EQ(ctx, buf[0], 0x7C242FAEu);   // stfiwx 1,4,5
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fadds(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xEC22182Au);   // fadds 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fsubs(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xEC221828u);   // fsubs 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fmuls(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xEC2200F2u);   // fmuls 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fdivs(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xEC221824u);   // fdivs 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fadd(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC22182Au);   // fadd 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fsub(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC221828u);   // fsub 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fmul(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC2200F2u);   // fmul 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fdiv(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC221824u);   // fdiv 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_frsp(&c, 1, 2);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC201018u);   // frsp 1,2
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fctiw(&c, 1, 2);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC20101Cu);   // fctiw 1,2
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fctiwz(&c, 1, 2);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC20101Eu);   // fctiwz 1,2
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fcfid(&c, 1, 2);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC20169Cu);   // fcfid 1,2
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fabs(&c, 1, 2);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC201210u);   // fabs 1,2
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fmr(&c, 1, 2);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC201090u);   // fmr 1,2
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fcmpu(&c, 1, 2, 3);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC821800u);   // fcmpu 1,2,3
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_mffs(&c, 0);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC00048Eu);   // mffs 0
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_mflr(&c, 0);
     H64_CHECK_EQ(ctx, buf[0], 0x7C0802A6u);   // mflr 0
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_mtlr(&c, 0);

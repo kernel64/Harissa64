@@ -81,6 +81,8 @@ struct H64Cpu
 
     u64 fgr[32];
     u32 fcr31;
+    double jitFpMin[2];   // dynarec native FPU: smallest normal single and double
+    u64 jitScratch;       // dynarec native FPU: FPSCR read-back
 
     H64TlbEntry tlb[32];
 

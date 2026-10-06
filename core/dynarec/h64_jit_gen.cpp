@@ -22,10 +22,12 @@
 #include "h64_jit_internal.h"
 #include "h64_ppc_emit.h"
 
+#include <math.h>
 #include <stddef.h>
 #include <string.h>
 
 #include "../common/h64_endian.h"
+#include "../common/h64_fenv.h"
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
 
@@ -45,6 +47,9 @@ enum { R_COND = 27, R_TARGET = 26 };
 #define OFF_INSNS ((s32)offsetof(H64Cpu, instructions))
 #define OFF_FGR(i) ((s32)(offsetof(H64Cpu, fgr) + 8 * (i)))
 #define OFF_COP0(i) ((s32)(offsetof(H64Cpu, cop0) + 8 * (i)))
+#define OFF_FCR31 ((s32)offsetof(H64Cpu, fcr31))
+#define OFF_FPMIN(dbl) ((s32)(offsetof(H64Cpu, jitFpMin) + 8 * (dbl)))
+#define OFF_JITSCRATCH ((s32)offsetof(H64Cpu, jitScratch))
 
 static u64 sext32(u32 v) { return (u64)(s64)(s32)v; }
 
@@ -57,13 +62,14 @@ static u64 sext32(u32 v) { return (u64)(s64)(s32)v; }
 static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
 {
     H64Cpu *cpu = &sys->cpu;
-    if (sys->jit->opHist && !haveOp)
+    if (sys->jit->opHist)
     {
         // Why a load or store left the fast path: 192 not KSEG0/1, 193 unaligned,
         // 194 outside RDRAM, 195 store to a page with code, 196 other.
         u32 paddr0;
         u32 opw = 0, opc;
-        if (h64_cpu_peek_op(sys, &opw) == 0)
+        if (haveOp) opw = op;
+        if (haveOp || h64_cpu_peek_op(sys, &opw) == 0)
         {
             opc = opw >> 26;
             if ((opc >= 0x20 && opc <= 0x27) || (opc >= 0x28 && opc <= 0x2B) || opc == 0x37 || opc == 0x3F)
@@ -86,6 +92,8 @@ static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
         op = cpu->lastOp;
         i = op >> 26;
         if (i == 0) i = 64 + (op & 63);
+        else if (i == 0x11 && ((op >> 21) & 31) < 0x10) i = 200 + ((op >> 21) & 31);   // MFC1 MTC1 CFC1 CTC1 BC1...
+        else if (i == 0x11 && ((op >> 21) & 31) >= 0x14) i = 216 + (op & 1);              // CVT.S/D from W or L
         else if (i == 0x11) i = 128 + (op & 63);
         sys->jit->opHist[i]++;
     }
@@ -106,6 +114,7 @@ struct Gen
     u32 exits[H64_JIT_MAX_INSNS * 4];
     u32 nExits;
     int native;       // native code allowed (kernel-mode block)
+    int fpu;          // native FPU arithmetic allowed (host FPU flags readable)
 };
 
 static void add_exit(Gen *g, u32 at) { if (g->nExits < H64_JIT_MAX_INSNS * 4) g->exits[g->nExits++] = at; }
@@ -610,6 +619,264 @@ static int emit_ovf(Gen *g, u32 op, u32 pc)
     return 1;
 }
 
+// ---- Native FPU ----
+// COP1 arithmetic (ADD SUB MUL DIV), compares, MOV, CVT.D.S, CVT.S.D, TRUNC.W
+// and CVT.W in .S and .D run on the host FPU when the result is certain to be
+// the interpreter's: operands normal or zero, guest rounding mode nearest
+// (the host's), and no host flag but inexact (FPSCR VX, OX, UX, ZX clear;
+// FI, the non-sticky inexact bit of the last operation, gives the MIPS
+// Inexact cause) and a normal, zero or infinite result. Anything else (NaN,
+// denormal, overflow, an enabled Inexact trap...) goes to the slow path,
+// which is the interpreter, before anything is written. Host FPU flags must
+// be readable (not in Xenia: h64_fenv_reliable).
+// f4 = smallest normal number of the format, f5 = 0.
+static void fp_check(Gen *g, u32 f, u32 *slow, u32 *nSlow)
+{
+    H64PpcCode *c = &g->c;
+    u32 ok;
+    ppc_fabs(c, 3, f);
+    ppc_fcmpu(c, 1, 3, 4);
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 1, PPC_UN);   // NaN
+    ok = ppc_bc_fwd(c, 4, 1, PPC_LT);                  // |x| >= min normal (or infinite)
+    ppc_fcmpu(c, 1, 3, 5);
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 1, PPC_EQ);    // denormal
+    ppc_patch_here(c, ok);
+}
+
+// FPSCR after the operation: VX/OX/UX/ZX to the slow path, r7 = FI.
+static void fp_flags(Gen *g, u32 *slow, u32 *nSlow)
+{
+    H64PpcCode *c = &g->c;
+    ppc_mffs(c, 0);
+    ppc_stfd(c, 0, OFF_JITSCRATCH, JR_CPU);
+    ppc_lwz(c, 6, OFF_JITSCRATCH + 4, JR_CPU);
+    ppc_andis_(c, 7, 6, 0x3C00);
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    ppc_rlwinm(c, 7, 6, 15, 31, 31);
+}
+
+// FCR31 (in r5) with cause = Inexact if r7 (and the sticky flag), else no
+// cause; an enabled Inexact trap goes to the slow path.
+static void fp_inexact(Gen *g, u32 *slow, u32 *nSlow)
+{
+    H64PpcCode *c = &g->c;
+    ppc_rlwinm(c, 8, 5, 25, 31, 31);   // Enable I
+    ppc_and_(c, 8, 8, 7);
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    ppc_rlwinm(c, 5, 5, 0, 20, 13);    // clear the cause field
+    ppc_rlwinm(c, 8, 7, 12, 0, 19);
+    ppc_or(c, 5, 5, 8);
+    ppc_rlwinm(c, 8, 7, 2, 0, 29);
+    ppc_or(c, 5, 5, 8);
+    ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+}
+
+static void fp_store32_zext(Gen *g, u32 fd)
+{
+    ppc_li(&g->c, 8, 0);
+    ppc_stw(&g->c, 8, OFF_FGR(fd), JR_CPU);
+}
+
+static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
+{
+    H64PpcCode *c = &g->c;
+    u32 fmt = (op >> 21) & 31, ft = (op >> 16) & 31, fs = (op >> 11) & 31, fd = (op >> 6) & 31, funct = op & 63;
+    int dbl = fmt == 0x11, arith = funct <= 3, cmp = funct >= 0x30;
+    int cvtd = !dbl && funct == 0x21, cvts = dbl && funct == 0x20, toint = funct == 0x0D || funct == 0x24;
+    int fromW = fmt == 0x14 && (funct == 0x20 || funct == 0x21);
+    // Moves (MFC1 DMFC1 CFC1 MTC1 DMTC1 CTC1) need no host flags.
+    int move = fmt == 0 || fmt == 1 || fmt == 2 || fmt == 4 || fmt == 5 || fmt == 6;
+    s32 offS, offT;
+    if ((op >> 26) != 0x11) return 0;
+    if (!move)
+    {
+        if (!g->fpu || (fmt != 0x10 && fmt != 0x11 && !fromW)) return 0;
+        if (!arith && !cmp && funct != 0x06 && !cvtd && !cvts && !toint && !fromW) return 0;
+    }
+
+    // COP1 usable; an odd fs register needs FR = 1 (FR = 0 would use fs - 1).
+    ppc_ld(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
+    ppc_andis_(c, 6, 5, 0x2000);
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+    if ((fs & 1) && fmt != 2 && fmt != 6)
+    {
+        ppc_andis_(c, 6, 5, 0x0400);
+        slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+    }
+    if (move)
+    {
+        switch (fmt)
+        {
+        case 0: ppc_lwa(c, 5, OFF_FGR(fs) + 4, JR_CPU); store_gpr(g, 5, ft); break;    // MFC1
+        case 1: ppc_ld(c, 5, OFF_FGR(fs), JR_CPU); store_gpr(g, 5, ft); break;         // DMFC1
+        case 4: load_gpr(g, 5, ft); ppc_stw(c, 5, OFF_FGR(fs) + 4, JR_CPU); break;     // MTC1: the low word
+        case 5: load_gpr(g, 5, ft); ppc_std(c, 5, OFF_FGR(fs), JR_CPU); break;         // DMTC1
+        case 2:                                                                        // CFC1
+            if (fs == 31) ppc_lwa(c, 5, OFF_FCR31, JR_CPU);
+            else ppc_li(c, 5, fs == 0 ? 0x0A00 : 0);
+            store_gpr(g, 5, ft);
+            break;
+        default:                                                                       // CTC1
+            if (fs != 31) break;
+            load_gpr(g, 5, ft);
+            ppc_lis(c, 6, 0x0183);
+            ppc_ori(c, 6, 6, 0xFFFF);
+            ppc_and(c, 5, 5, 6);              // FCR31_WRITABLE
+            // A cause written with its enable, or cause E, traps: the slow path.
+            ppc_rlwinm(c, 6, 5, 20, 27, 31);
+            ppc_rlwinm(c, 7, 5, 25, 27, 31);
+            ppc_and_(c, 6, 6, 7);
+            slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+            ppc_andis_(c, 6, 5, 0x0002);
+            slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+            ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+            break;
+        }
+        return 1;
+    }
+    if (funct == 0x06)   // MOV: the whole register
+    {
+        ppc_ld(c, 5, OFF_FGR(fs), JR_CPU);
+        ppc_std(c, 5, OFF_FGR(fd), JR_CPU);
+        return 1;
+    }
+
+    ppc_lwz(c, 5, OFF_FCR31, JR_CPU);
+    if (fromW)
+    {
+        // CVT.S.W, CVT.D.W: the integer through memory (fcfid converts a
+        // doubleword), exact as a double; rounded once to single.
+        ppc_lwa(c, 6, OFF_FGR(fs) + 4, JR_CPU);
+        ppc_std(c, 6, OFF_JITSCRATCH, JR_CPU);
+        ppc_lfd(c, 1, OFF_JITSCRATCH, JR_CPU);
+        ppc_fcfid(c, 1, 1);
+        if (funct == 0x21)
+        {
+            ppc_rlwinm(c, 5, 5, 0, 20, 13);
+            ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+            ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
+            return 1;
+        }
+        ppc_andi_(c, 6, 5, 3);   // rounding mode nearest
+        slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+        ppc_frsp(c, 1, 1);
+        fp_flags(g, slow, nSlow);
+        fp_inexact(g, slow, nSlow);
+        fp_store32_zext(g, fd);
+        ppc_stfs(c, 1, OFF_FGR(fd) + 4, JR_CPU);
+        return 1;
+    }
+    if (arith || cvts)
+    {
+        ppc_andi_(c, 6, 5, 3);   // rounding mode nearest
+        slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    }
+    if (funct == 0x24)
+    {
+        // CVT.W: nearest or towards zero (IDO's (int) casts set RM = 1 around it); cr0.eq = nearest.
+        ppc_andi_(c, 6, 5, 2);
+        slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+        ppc_andi_(c, 6, 5, 1);
+    }
+    offS = dbl ? OFF_FGR(fs) : OFF_FGR(fs) + 4;
+    offT = dbl ? OFF_FGR(ft) : OFF_FGR(ft) + 4;
+    if (dbl) ppc_lfd(c, 1, offS, JR_CPU);
+    else ppc_lfs(c, 1, offS, JR_CPU);
+
+    if (cmp)
+    {
+        // No NaN: no exception, cause cleared, C = the condition.
+        u32 cond = funct & 15, set[2], nSet = 0, over, i;
+        if (dbl) ppc_lfd(c, 2, offT, JR_CPU);
+        else ppc_lfs(c, 2, offT, JR_CPU);
+        ppc_fcmpu(c, 0, 1, 2);
+        slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_UN);
+        ppc_rlwinm(c, 5, 5, 0, 20, 13);   // cause
+        ppc_rlwinm(c, 5, 5, 0, 9, 7);     // C
+        if (cond & 4) set[nSet++] = ppc_bc_fwd(c, 12, 0, PPC_LT);
+        if (cond & 2) set[nSet++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+        if (nSet)
+        {
+            over = ppc_b_fwd(c);
+            for (i = 0; i < nSet; i++) ppc_patch_here(c, set[i]);
+            ppc_oris(c, 5, 5, 0x0080);
+            ppc_patch_here(c, over);
+        }
+        ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+        return 1;
+    }
+
+    // Operand checks against the smallest normal number of the source format.
+    ppc_lfd(c, 4, OFF_FPMIN(dbl), JR_CPU);
+    ppc_fsub(c, 5, 4, 4);
+    fp_check(g, 1, slow, nSlow);
+    if (cvtd)
+    {
+        // Exact: a normal single is a normal double, no flag.
+        ppc_rlwinm(c, 5, 5, 0, 20, 13);
+        ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+        ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
+        return 1;
+    }
+    if (toint)
+    {
+        if (funct == 0x0D) ppc_fctiwz(c, 1, 1);
+        else
+        {
+            u32 nearest = ppc_bc_fwd(c, 12, 0, PPC_EQ), join;
+            ppc_fctiwz(c, 1, 1);
+            join = ppc_b_fwd(c);
+            ppc_patch_here(c, nearest);
+            ppc_fctiw(c, 1, 1);
+            ppc_patch_here(c, join);
+        }
+        fp_flags(g, slow, nSlow);   // NaN, infinite or out of range: VXCVI
+        fp_inexact(g, slow, nSlow);
+        fp_store32_zext(g, fd);
+        ppc_addi(c, 8, JR_CPU, OFF_FGR(fd) + 4);
+        ppc_stfiwx(c, 1, 0, 8);
+        return 1;
+    }
+    if (arith)
+    {
+        if (dbl) ppc_lfd(c, 2, offT, JR_CPU);
+        else ppc_lfs(c, 2, offT, JR_CPU);
+        fp_check(g, 2, slow, nSlow);
+        switch (funct)
+        {
+        case 0: if (dbl) ppc_fadd(c, 1, 1, 2); else ppc_fadds(c, 1, 1, 2); break;
+        case 1: if (dbl) ppc_fsub(c, 1, 1, 2); else ppc_fsubs(c, 1, 1, 2); break;
+        case 2: if (dbl) ppc_fmul(c, 1, 1, 2); else ppc_fmuls(c, 1, 1, 2); break;
+        default: if (dbl) ppc_fdiv(c, 1, 1, 2); else ppc_fdivs(c, 1, 1, 2); break;
+        }
+    }
+    else
+    {
+        ppc_frsp(c, 1, 1);   // CVT.S.D
+        ppc_lfd(c, 4, OFF_FPMIN(0), JR_CPU);
+    }
+    fp_flags(g, slow, nSlow);
+    // A denormal result (exact, so without UX): the slow path.
+    fp_check(g, 1, slow, nSlow);
+    fp_inexact(g, slow, nSlow);
+    if (dbl && !cvts) ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
+    else
+    {
+        fp_store32_zext(g, fd);
+        ppc_stfs(c, 1, OFF_FGR(fd) + 4, JR_CPU);
+    }
+    return 1;
+}
+
+static int emit_fpu(Gen *g, u32 op, u32 pc)
+{
+    u32 slow[16], nSlow = 0, done;
+    if (!emit_fpu_fast(g, op, slow, &nSlow)) return 0;
+    done = ppc_b_fwd(&g->c);
+    emit_slow_tail(g, pc, slow, nSlow, done);
+    return 1;
+}
+
 // ---- Branches ----
 // Computes R_COND (1: taken) and R_TARGET for a native branch; writes the link.
 // Returns 0 when the branch is not handled natively (BC1x).
@@ -698,6 +965,7 @@ static int emit_native(Gen *g, u32 op, u32 pc)
     if (emit_alu(g, op)) { g->pending++; return 1; }
     if ((op >> 26) == 0x2F) { g->pending++; return 1; }   // CACHE: caches are not emulated
     if (emit_ovf(g, op, pc)) return 1;
+    if (emit_fpu(g, op, pc)) return 1;
     return emit_mem(g, op, pc);
 }
 
@@ -736,9 +1004,9 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
     // interpreted slot below.
     if (g->native && !is_branch(ds) && !ends_block(ds))
     {
-        u32 slow[8], nSlow = 0, i;
+        u32 slow[16], nSlow = 0, i;
         u32 pend = g->pending;
-        if (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow))
+        if (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) || emit_fpu_fast(g, ds, slow, &nSlow))
         {
             add_to(g, OFF_CYCLES, (s32)(pend + 1));
             add_to(g, OFF_INSNS, (s32)(pend + 1));
@@ -849,6 +1117,9 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     g.pc0 = pc;
     g.paddr0 = paddr;
     g.native = h64_jit_kernel_mode(&sys->cpu) && !j->noNative;
+    g.fpu = g.native && !j->noFpu && h64_fenv_reliable();
+    sys->cpu.jitFpMin[0] = ldexp(1.0, -126);
+    sys->cpu.jitFpMin[1] = ldexp(1.0, -1022);
 
     emit_prologue(&g);
     for (i = 0; i < n; i++)

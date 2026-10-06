@@ -288,7 +288,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     const char *fbPng = 0, *rawPng = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 traceFrames = 0, traceStep = 0;
-    int jitOps = 0;
+    int jitOps = 0, noJitFpu = 0;
     H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
@@ -329,6 +329,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--null-renderer")) nullRenderer = 1;
         else if (!strcmp(argv[i], "--no-fpu-flags")) h64_fenv_disable_host_flags();
         else if (!strcmp(argv[i], "--jit-ops")) jitOps = 1;
+        else if (!strcmp(argv[i], "--no-jit-fpu")) noJitFpu = 1;
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hle")) { hleGfx = 1; hleAudio = 1; }
@@ -353,7 +354,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     free(file);
     if (info) { h64_system_free(sys); free(sys); return 0; }
     if (useJit && enable_jit(sys)) return 2;
-    if (jitOps && sys->jit) sys->jit->opHist = (u32 *)calloc(200, sizeof(u32));
+    if (jitOps && sys->jit) sys->jit->opHist = (u32 *)calloc(232, sizeof(u32));
+    if (noJitFpu && sys->jit) sys->jit->noFpu = 1;
     sys->isvSink = isv_sink;
     sys->isvUser = sys;
     sys->cpu.excHook = exc_hook;
@@ -459,7 +461,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (sys->jit && sys->jit->opHist)
     {
         // The most frequent instructions that ran through the interpreter helper.
-        static const char *cls[3] = { "op", "special", "cop1" };
+        static const char *cls[4] = { "op", "special", "cop1", "cop1 rs" };
         printf("[jit-ops] memory slow path: not KSEG0/1 %u, unaligned %u, outside RDRAM %u, store to a code page %u, other %u\n",
                sys->jit->opHist[192], sys->jit->opHist[193], sys->jit->opHist[194], sys->jit->opHist[195],
                sys->jit->opHist[196]);
@@ -467,10 +469,12 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         for (n = 0; n < 15; n++)
         {
             u32 best = 0, bi = 0;
-            for (k = 0; k < 192; k++)
-                if (sys->jit->opHist[k] > best) { best = sys->jit->opHist[k]; bi = k; }
+            for (k = 0; k < 232; k++)
+                if ((k < 192 || k >= 200) && sys->jit->opHist[k] > best) { best = sys->jit->opHist[k]; bi = k; }
             if (!best) break;
-            printf("[jit-ops] %-7s %02X: %u\n", cls[bi / 64], bi % 64, best);
+            if (bi >= 216) printf("[jit-ops] cvt.%c from W/L: %u\n", bi == 216 ? 's' : 'd', best);
+            else if (bi >= 200) printf("[jit-ops] %-7s %02X: %u\n", cls[3], bi - 200, best);
+            else printf("[jit-ops] %-7s %02X: %u\n", cls[bi / 64], bi % 64, best);
             sys->jit->opHist[bi] = 0;
         }
     }
