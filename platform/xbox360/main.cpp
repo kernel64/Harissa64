@@ -544,9 +544,9 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
             XbAudioStats as;
             h64_xenos_stats(renderer, &xs, 1);
             xb_audio_stats(&as, 1);
-            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u shaders=%u copyback=%u fbswitch=%u audio=%u buffers %u underruns",
+            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u (new %u) shaders=%u copyback=%u fbswitch=%u audio=%u buffers %u underruns",
                      framesSincePerf * 1000.0 / ms, (double)(sys->cpu.instructions - instrAtPerf) / (ms * 1000.0),
-                     xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.shaderCompiles, xs.copyBacks, xs.fbSwitches, as.buffers, as.underruns);
+                     xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.textureCreates, xs.shaderCompiles, xs.copyBacks, xs.fbSwitches, as.buffers, as.underruns);
             {
                 MEMORYSTATUS ms;
                 GlobalMemoryStatus(&ms);

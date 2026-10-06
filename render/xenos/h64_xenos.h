@@ -45,7 +45,7 @@ void h64_xenos_set_debug(H64Renderer *r, int mode);
 struct H64XenosStats
 {
     u32 triangles, rects, fills, draws;
-    u32 textureUploads, shaderCompiles, presents, copyBacks, fbSwitches;
+    u32 textureUploads, textureCreates, shaderCompiles, presents, copyBacks, fbSwitches;
 };
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);
 

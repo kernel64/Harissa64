@@ -31,6 +31,7 @@
 #define FB_SLOTS 8
 #define MAX_TEXTURES 1500
 #define MAX_TEXTURE_BYTES (40u * 1024u * 1024u)
+#define MAX_POOL_BYTES (24u * 1024u * 1024u)
 #define BATCH_VERTICES 3000
 
 struct XVtx
@@ -81,6 +82,10 @@ struct Xenos
     std::map<u64, IDirect3DPixelShader9 *> shaders;
     std::map<u64, TexEntry> textures;
     u32 textureBytes;   // memory held by the texture cache
+    // Free textures by size (w << 16 | h), for reuse: CreateTexture is slow on
+    // the console, and OoT's backgrounds (S2DEX, LLE) load ~90 strips a frame.
+    std::map<u32, std::vector<IDirect3DTexture9 *> > pool;
+    u32 poolBytes;
     u64 combineRaw;
 
     // Batching: triangles with the same state go to one draw.
@@ -276,8 +281,19 @@ static void retire_all_textures(Xenos *x)
     x->dev->SetTexture(0, x->dummy);
     x->dev->SetTexture(1, x->dummy);
     x->dev->BlockUntilIdle();
+    // The GPU is idle: the textures can go back to the pool (or be released).
     for (it = x->textures.begin(); it != x->textures.end(); ++it)
-        if (it->second.tex) it->second.tex->Release();
+    {
+        TexEntry *e = &it->second;
+        if (!e->tex) continue;
+        if (x->poolBytes + e->w * e->h * 4 <= MAX_POOL_BYTES)
+        {
+            x->pool[(e->w << 16) | e->h].push_back(e->tex);
+            x->poolBytes += e->w * e->h * 4;
+        }
+        else
+            e->tex->Release();
+    }
     x->textures.clear();
     x->textureBytes = 0;
     x->tmemGen++;   // the memos point at released textures
@@ -311,6 +327,18 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b)
     // mirrored: one period of the mask.
     b->w = b->clampS ? tw : ms;
     b->h = b->clampT ? th : mt;
+    // A clamped tile can be declared far larger than TMEM holds (S2DEX strips:
+    // up to 1024 texels a side): past the texels TMEM has, the sampler would
+    // read the same words again. Decode at most what the tile can address.
+    {
+        u32 stride = t->stride ? t->stride : 8;
+        u32 rowTexels = t->size == 0 ? stride * 2 : t->size == 1 ? stride : stride / 2;   // 32-bit: split halves
+        u32 rows = (t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 / stride : 4096 / stride;
+        if (rowTexels < 1) rowTexels = 1;
+        if (rows < 1) rows = 1;
+        if (b->clampS && b->w > rowTexels) b->w = rowTexels;
+        if (b->clampT && b->h > rows) b->h = rows;
+    }
 }
 
 static s32 mask_coord(u32 mask, int mirror, s32 v)
@@ -379,8 +407,21 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     e.tex = NULL;
     e.w = b->w;
     e.h = b->h;
-    if (FAILED(x->dev->CreateTexture(b->w, b->h, 1, 0, D3DFMT_LIN_A8R8G8B8, D3DPOOL_DEFAULT, &e.tex, NULL)) || !e.tex)
-        return x->dummy;
+    {
+        std::map<u32, std::vector<IDirect3DTexture9 *> >::iterator pit = x->pool.find((b->w << 16) | b->h);
+        if (pit != x->pool.end() && !pit->second.empty())
+        {
+            e.tex = pit->second.back();
+            pit->second.pop_back();
+            x->poolBytes -= b->w * b->h * 4;
+        }
+        else
+        {
+            if (FAILED(x->dev->CreateTexture(b->w, b->h, 1, 0, D3DFMT_LIN_A8R8G8B8, D3DPOOL_DEFAULT, &e.tex, NULL)) || !e.tex)
+                return x->dummy;
+            x->stats.textureCreates++;
+        }
+    }
     if (SUCCEEDED(e.tex->LockRect(0, &lr, NULL, 0)))
     {
         // Decode into a cached buffer first: texture memory is write-combined.
@@ -1069,6 +1110,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->st = h64_rdp_state(sys);
     x->combineRaw = 0;
     x->textureBytes = 0;
+    x->poolBytes = 0;
     x->stateDirty = 1;
     x->batchFlags = x->batchTile = 0xFFFFFFFF;
     x->tmemGen = 1;
@@ -1134,6 +1176,13 @@ void h64_xenos_free(H64Renderer *r)
     x->dev->SetRenderTarget(0, x->backBuffer);
     x->dev->SetDepthStencilSurface(NULL);
     retire_all_textures(x);
+    {
+        std::map<u32, std::vector<IDirect3DTexture9 *> >::iterator pit;
+        size_t k;
+        for (pit = x->pool.begin(); pit != x->pool.end(); ++pit)
+            for (k = 0; k < pit->second.size(); k++) pit->second[k]->Release();
+        x->pool.clear();
+    }
     for (it = x->shaders.begin(); it != x->shaders.end(); ++it)
         if (it->second) it->second->Release();
     for (i = 0; i < FB_SLOTS; i++)
