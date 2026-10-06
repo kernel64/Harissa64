@@ -447,12 +447,15 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     x->textures[key] = e;
     x->textureBytes += e.w * e.h * 4;
     x->stats.textureUploads++;
+    x->stats.texelsDecoded += b->w * b->h;
     return e.tex;
 }
 
 static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
 {
+    u64 t0 = h64_prof_now(x->sys);
     IDirect3DTexture9 *tex = get_texture(x, tile, b);
+    x->stats.tTexture += h64_prof_now(x->sys) - t0;
     DWORD filter = (x->st->rasterFlags & (RS_SAMPLE_QUAD)) && !(x->st->rasterFlags & RS_COPY) ? D3DTEXF_LINEAR : D3DTEXF_POINT;
     x->dev->SetTexture(stage, tex ? tex : x->dummy);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, b->clampS ? D3DTADDRESS_CLAMP : b->mirrorS ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
@@ -788,8 +791,11 @@ static D3DCOLOR rgba_to_d3d(float r, float g, float b, float a)
 // ---------------------------------------------------------------- primitives
 static void flush_batch(Xenos *x)
 {
+    u64 t0;
     if (x->batch.empty()) return;
+    t0 = h64_prof_now(x->sys);
     x->dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)(x->batch.size() / 3), &x->batch[0], sizeof(XVtx));
+    x->stats.tDraw += h64_prof_now(x->sys) - t0;
     x->stats.draws++;
     x->batch.clear();
 }
@@ -917,13 +923,31 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         set_scissor(x, RT_WIDTH / fbw, RT_HEIGHT / fbh);
     }
     else
+    {
         setup_combined(x, 1, &tb0, &tb1, tile);
+        if ((st->rasterFlags & RS_SAMPLE_QUAD) && !flip && !t0->shiftS && !t0->shiftT)
+        {
+            // Bilinear rectangles that stay inside their tile (MK64's title is
+            // 2-line strips of a 320x240 picture, wrapped on a 2-line mask):
+            // the N64 samples at whole texels there, so wrapping never shows;
+            // at a higher resolution it would blend in the strip's other line.
+            float s0 = s / 32.0f, t0v = t / 32.0f;
+            float s1 = s0 + (xh - xl - 1.0f) * dsdx, t1v = t0v + (yh - yl - 1.0f) * dtdy;
+            if (s0 >= t0->slo / 4.0f && s1 <= t0->shi / 4.0f && dsdx > 0)
+                x->dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            if (t0v >= t0->tlo / 4.0f && t1v <= t0->thi / 4.0f && dtdy > 0)
+                x->dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        }
+    }
     for (i = 0; i < 4; i++)
     {
+        // Texture coordinates half a pixel back: the N64 samples a pixel at its
+        // top-left corner, the GPU at the centre of each (smaller) pixel, so the
+        // middle of each N64 pixel gets exactly the N64's texel.
         float px = (i & 1) ? xh : xl, py = (i & 2) ? yh : yl;
-        float ds = (px - xl) * dsdx, dt = (py - yl) * dtdy;
+        float ds = (px - xl - 0.5f) * dsdx, dt = (py - yl - 0.5f) * dtdy;
         float ss, tt;
-        if (flip) { ss = s + (py - yl) * dsdx * 32.0f; tt = t + (px - xl) * dtdy * 32.0f; }
+        if (flip) { ss = s + (py - yl - 0.5f) * dsdx * 32.0f; tt = t + (px - xl - 0.5f) * dtdy * 32.0f; }
         else { ss = s + ds * 32.0f; tt = t + dt * 32.0f; }
         q[i].x = px;
         q[i].y = py;
@@ -952,6 +976,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
 {
     Xenos *x = (Xenos *)user;
     u32 w[44], i, op;
+    u64 t0, tStart = h64_prof_now(x->sys);
     for (i = 0; i < count && i < 22; i++)
     {
         w[i * 2] = (u32)(words[i] >> 32);
@@ -968,7 +993,9 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     if (op == 0x3C) x->combineRaw = words[0];
     if (op == 0x33 || op == 0x34) check_texture_source(x);
     // State and TMEM: the software RDP (state only).
+    t0 = h64_prof_now(x->sys);
     h64_rdp_command(x->sys, words, count);
+    x->stats.tState += h64_prof_now(x->sys) - t0;
     switch (op)
     {
     case 0x24: tex_rect(x, w, 0); break;
@@ -987,6 +1014,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         if (op >= 0x08 && op <= 0x0F) raw_triangle(x, w, op);
         break;
     }
+    x->stats.tRdp += h64_prof_now(x->sys) - tStart;
 }
 
 // ---------------------------------------------------------------- presentation

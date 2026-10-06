@@ -572,6 +572,8 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                          js ? (unsigned long long)(js->invalidations - jitInval) : 0ull,
                          js ? (unsigned long long)(js->flushes - jitFlush) : 0ull);
                 if (js) { jitBlocks = js->blocksCompiled; jitInval = js->invalidations; jitFlush = js->flushes; }
+                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f, %u texels/frame) draw calls %.1f",
+                         xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.texelsDecoded / framesSincePerf, xs.tDraw * k);
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;

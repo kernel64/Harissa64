@@ -46,6 +46,10 @@ struct H64XenosStats
 {
     u32 triangles, rects, fills, draws;
     u32 textureUploads, textureCreates, shaderCompiles, presents, copyBacks, fbSwitches;
+    u32 texelsDecoded;
+    // Time (sys->profClock ticks) in the software RDP state, texture lookups and
+    // decoding, draw calls, and the RDP command handler as a whole.
+    u64 tState, tTexture, tDraw, tRdp;
 };
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);
 
