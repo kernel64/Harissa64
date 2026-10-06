@@ -5,6 +5,7 @@
 #include "h64_jit.h"
 
 struct H64System;
+struct H64Cpu;
 
 typedef void (*H64JitFn)(H64System *sys);
 
@@ -13,11 +14,19 @@ struct H64JitBlock
     u32 vpc, paddr;
     u32 insns;           // MIPS instructions
     int valid;
+    int kernel;          // compiled in kernel mode (native code allowed)
+    // Idle loop (a branch back to the block start with no side effects):
+    // 1 = pure loop, 2 = RDRAM poll (load from pollBase + pollOff, size pollSize).
+    int idle;
+    u32 pollBase, pollSize;
+    s32 pollOff;
     H64JitFn fn;         // callable (an ELFv1 function descriptor on ppc64 Linux)
     H64JitBlock *hashNext, *pageNext;
 };
 
 H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr);
+// Kernel mode (Status.KSU = 0, or EXL/ERL set): native code is allowed.
+int h64_jit_kernel_mode(const H64Cpu *cpu);
 // After a helper: leave the block? (invalidated page, event due inside the block, interrupt, stop)
 int h64_jit_should_exit(H64System *sys);
 

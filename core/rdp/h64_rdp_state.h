@@ -106,6 +106,14 @@ struct H64RdpTexel { s32 c[4]; };   // r, g, b, a (or u, v, y, y for YUV)
 void h64_rdp_load(H64System *sys, u32 tile, u32 sl, u32 tl, u32 sh, u32 th, int mode);   // 0 tile, 1 TLUT, 2 block
 void h64_rdp_sample(H64RdpState *st, const H64RdpTile *tile, const s32 *stIn, int tlut, int tlutType, int sampleQuad,
                     int midTexel, int convertOne, int bilerp, const s32 *factors, const H64RdpTexel *prev, H64RdpTexel *out);
+// One texel of `tile` at tile coordinates (s, t) (after shift, clamp and
+// mask), decoded as the texture unit reads it from TMEM. With `tlut`, colour
+// indices go through the palette (`tlutType`: 0 RGBA16, 1 IA16); without it
+// CI texels come out as their index. For GPU renderers.
+void h64_rdp_fetch_texel(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, int tlut, int tlutType,
+                         H64RdpTexel *out);
+// The state of the software RDP (allocated on first use).
+H64RdpState *h64_rdp_state(H64System *sys);
 s32 h64_rdp_sample_copy(H64RdpState *st, const H64RdpTile *tile, s32 s, s32 t, int sOffset, int tlut, int fbSize);
 void h64_rdp_texture_convert(const H64RdpTexel *in, const s32 *factors, H64RdpTexel *out);
 void h64_rdp_compute_lod(u32 *tile0, u32 *tile1, s32 *lodFrac, u32 maxLevel, s32 minLod, const s32 *st, const s32 *stDx,

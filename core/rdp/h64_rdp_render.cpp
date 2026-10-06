@@ -138,6 +138,8 @@ static H64RdpState *state(H64System *sys)
     return sys->rdpState;
 }
 
+H64RdpState *h64_rdp_state(H64System *sys) { return state(sys); }
+
 static int fb_size_of(int fmt)
 {
     switch (fmt)
@@ -1246,6 +1248,7 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
 {
     H64RdpState *st = state(sys);
     u32 w[44], i, op;
+    if (sys->options.noRdpDraw) return;
     for (i = 0; i < count && i < 22; i++)
     {
         w[i * 2] = (u32)(words[i] >> 32);
@@ -1264,12 +1267,12 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
         if (op & 4) { decode_rgba(p, &a); p += 16; }
         if (op & 2) { decode_tex(p, &a); p += 16; }
         if (op & 1) decode_z(p, &a);
-        draw(sys, st, &ts, &a);
+        if (!sys->options.rdpStateOnly) draw(sys, st, &ts, &a);
         return;
     }
-    case 0x24: rectangle(sys, st, w, 1, 0); return;
-    case 0x25: rectangle(sys, st, w, 1, 1); return;
-    case 0x36: rectangle(sys, st, w, 0, 0); return;
+    case 0x24: if (!sys->options.rdpStateOnly) rectangle(sys, st, w, 1, 0); return;
+    case 0x25: if (!sys->options.rdpStateOnly) rectangle(sys, st, w, 1, 1); return;
+    case 0x36: if (!sys->options.rdpStateOnly) rectangle(sys, st, w, 0, 0); return;
     case 0x26: case 0x27: case 0x28: case 0x29: return;   // syncs (SYNC_FULL handled by the interface)
     case 0x2A:
         st->keyWidth[1] = (w[0] >> 12) & 0xFFF; st->keyWidth[2] = w[0] & 0xFFF;

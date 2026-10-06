@@ -39,6 +39,14 @@ struct H64Options
     int hleBoot;        // 1: skip IPL3 and set up its results directly
     int emux;           // 1: answer the EMUX emulator-extension COP0 instructions
                         //    (XDETECT/XLOG/XIOCTL, used by n64-systemtest); 0: NOPs
+    int noRdpDraw;      // 1: RDP commands are accepted (syncs, interrupts) but nothing is drawn;
+                        //    for long CPU checks such as the recompiler lockstep (not for play)
+    int hleAudio;       // 1: audio RSP tasks run in C++ (core/hle) instead of on the LLE RSP
+    int rdpStateOnly;   // 1: the software RDP keeps its state and TMEM up to date but draws nothing
+                        //    (a GPU renderer draws the primitives from that state)
+    int hleGfx;         // 1: graphics RSP tasks run in C++ (core/hle/h64_gfx) when the microcode is known
+    int hleAudioCheck;  // 1: audio tasks run on the LLE RSP, and the HLE runs each one on a copy
+                        //    of RDRAM; the results are compared when the LLE task ends (debug)
 };
 
 struct H64System
@@ -64,11 +72,14 @@ struct H64System
     u32 dpPendingWords;
     u64 dpCommands;      // statistics: RDP commands executed
     H64Jit *jit;         // dynamic recompiler (NULL: interpreter)
+    struct hle_t *hle;   // RSP task HLE state (allocated at creation)
+    struct H64Renderer *renderer;   // NULL: the software RDP draws everything
     struct H64RdpState *rdpState;   // software renderer (allocated on first use)
     u8 *rdramHidden;     // RDRAM's 9th bits: 2 per 16-bit halfword, one byte each (coverage, dz)
 
     int tvType;          // 0 PAL, 1 NTSC, 2 MPAL
-    H64Pad pad[4];       // set by the platform before each frame
+    H64Pad pad[4];       // controller state
+    void (*padHook)(H64System *sys);   // optional: called just before the PIF reads the controllers
 
     // ISViewer debug output (cartridge 0x13FF0000).
     u8 isvBuffer[0x200];
@@ -94,6 +105,9 @@ void h64_system_reset(H64System *sys);
 void h64_system_run_cycles(H64System *sys, u64 cycles);
 // Due events, then one interpreter step (the reference side of the lockstep check).
 void h64_system_step(H64System *sys);
+// Debug: hashes of the CPU registers and of RDRAM, computed from values (the
+// same on every host), to compare runs between hosts.
+void h64_system_state_hash(const H64System *sys, u32 *cpuHash, u32 *ramHash);
 
 // Every writer of RDRAM tells the recompiler, which drops the blocks of the pages written.
 static inline void h64_jit_notify_write(H64System *sys, u32 paddr, u32 len)

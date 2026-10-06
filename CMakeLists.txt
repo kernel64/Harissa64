@@ -17,7 +17,9 @@ if(MSVC)
 else()
   # -frounding-math: the reference FPU changes the rounding mode at run time.
   # -fwrapv: the software RDP relies on wrapping signed arithmetic (as GLSL).
-  add_compile_options(-Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -frounding-math -fwrapv)
+  # -ffp-contract=off: no fused multiply-add, so the graphics HLE (float
+  # geometry) gives the same result on x86 and PowerPC.
+  add_compile_options(-Wall -Wextra -Wno-unused-parameter -fno-strict-aliasing -frounding-math -fwrapv -ffp-contract=off)
 endif()
 
 # ---- Portable core ----

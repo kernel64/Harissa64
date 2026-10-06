@@ -67,7 +67,8 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>xapilibd.lib;d3d9d.lib;xgraphicsd.lib;xboxkrnl.lib;xbdm.lib</AdditionalDependencies>
+      <AdditionalDependencies>xapilibd.lib;d3d9d.lib;d3dx9d.lib;xgraphicsd.lib;xboxkrnl.lib;xaudiod2.lib;xmcored.lib;xinput2.lib;xbdm.lib</AdditionalDependencies>
+      <AdditionalOptions>/SECTION:.jitc,ERW %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Xbox 360'">
@@ -82,7 +83,8 @@
     <Link>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>xapilib.lib;d3d9.lib;xgraphics.lib;xboxkrnl.lib</AdditionalDependencies>
+      <AdditionalDependencies>xapilib.lib;d3d9.lib;d3dx9.lib;xgraphics.lib;xboxkrnl.lib;xaudio2.lib;xmcore.lib;xinput2.lib</AdditionalDependencies>
+      <AdditionalOptions>/SECTION:.jitc,ERW %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
   <!-- The portable core and the unit tests are picked up by wildcard: object
@@ -90,11 +92,14 @@
        core/ and tests/unit/ (see CLAUDE.md). -->
   <ItemGroup>
     <ClCompile Include="..\..\core\**\*.cpp" />
+    <ClCompile Include="..\..\render\xenos\*.cpp" />
     <ClCompile Include="..\..\tests\unit\*.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="xb_audio.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\core\**\*.h" />
+    <ClInclude Include="..\..\render\**\*.h" />
     <ClInclude Include="..\..\tests\unit\*.h" />
     <ClInclude Include="font8x8_basic.h" />
   </ItemGroup>

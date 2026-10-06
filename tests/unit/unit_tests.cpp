@@ -15,6 +15,7 @@ void test_rdp_tmem_block(H64TestContext *ctx);
 void test_rdp_tmem_wrap(H64TestContext *ctx);
 void test_rdp_tmem_yuv(H64TestContext *ctx);
 void test_ppc_emit(H64TestContext *ctx);
+void test_fenv(H64TestContext *ctx);
 
 static const H64TestCase s_tests[] = {
     { "types", test_types },
@@ -30,6 +31,7 @@ static const H64TestCase s_tests[] = {
     { "rdp_tmem_wrap", test_rdp_tmem_wrap },
     { "rdp_tmem_yuv", test_rdp_tmem_yuv },
     { "ppc_emit", test_ppc_emit },
+    { "fenv", test_fenv },
 };
 
 int h64_run_all_unit_tests(int *testsOut, int *checksOut)

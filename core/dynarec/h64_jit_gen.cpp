@@ -1,25 +1,50 @@
 // Harissa64 V2 - recompiler code generation.
 //
 // Block layout (64-bit PowerPC):
-//   prologue: stdu/stwu r1,-FRAME(r1); mflr r0; save r0 and r28..r31 in
-//             the top of the frame; r31 = sys (first argument)
-//   body:     one sequence per MIPS instruction
+//   prologue: stdu/stwu r1,-FRAME(r1); mflr r0; save r0 and r24..r31 in the
+//             top of the frame; r31 = sys, r30 = &sys->cpu, r29 = RDRAM,
+//             r28 = the interpreter helper
+//   body:     one sequence per MIPS instruction, native or a call to the
+//             reference interpreter for that instruction
 //   exit:     restore and blr
 // The frame keeps the 112-byte ELFv1 header and parameter area at its
 // bottom, where called C functions save their link register and TOC on
 // ppc64 Linux; Xbox functions save theirs below their own stack pointer.
+//
+// Accounting: native instructions don't touch H64Cpu's pc, cycles or
+// instruction count. The generator counts them (`pending`) and writes the
+// state back ("sync") before calling the interpreter and when leaving the
+// block, so the interpreter always sees exactly the state it would have
+// produced itself. Native code is only generated for blocks compiled in
+// kernel mode (where games run); COP0 instructions end a block, so the mode
+// can't change inside one.
 #include "h64_jit.h"
 #include "h64_jit_internal.h"
 #include "h64_ppc_emit.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
 
-#define FRAME 176
-#define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 96 + 512)
+#define FRAME 192
+#define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 1024)
+
+// Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r27 branch taken, r26 jump target.
+enum { R_COND = 27, R_TARGET = 26 };
+
+#define OFF_GPR(i) ((s32)(offsetof(H64Cpu, gpr) + 8 * (i)))
+#define OFF_HI ((s32)offsetof(H64Cpu, hi))
+#define OFF_LO ((s32)offsetof(H64Cpu, lo))
+#define OFF_PC ((s32)offsetof(H64Cpu, pc))
+#define OFF_NEXTPC ((s32)offsetof(H64Cpu, nextPc))
+#define OFF_BRANCH ((s32)offsetof(H64Cpu, branchPending))
+#define OFF_CYCLES ((s32)offsetof(H64Cpu, cycles))
+#define OFF_INSNS ((s32)offsetof(H64Cpu, instructions))
+
+static u64 sext32(u32 v) { return (u64)(s64)(s32)v; }
 
 // ---- Helpers called from generated code ----
 
@@ -31,37 +56,100 @@ static int helper_interp(H64System *sys, u32 expectedNext)
 {
     H64Cpu *cpu = &sys->cpu;
     h64_cpu_step(sys);
-    if (cpu->exceptionRaised || cpu->pc != (u64)(s64)(s32)expectedNext) return 1;
+    if (cpu->exceptionRaised || cpu->pc != sext32(expectedNext)) return 1;
     return h64_jit_should_exit(sys);
 }
 
-// ---- Calls ----
 static u64 fn_addr(int (*f)(H64System *, u32)) { return (u64)(uintptr_t)f; }
 
-static void emit_load_callee(H64PpcCode *c, u32 reg, u64 addr)
+// ---- Code generation context ----
+struct Gen
 {
-#if defined(H64_JIT_ABI_XBOX)
-    ppc_li32u(c, reg, (u32)addr);
-#else
-    ppc_li64(c, reg, addr);
-#endif
+    H64System *sys;
+    H64PpcCode c;
+    u32 pc0;          // block start
+    u32 pending;      // native instructions not yet added to cycles/instructions
+    u32 exits[H64_JIT_MAX_INSNS * 4];
+    u32 nExits;
+    int native;       // native code allowed (kernel-mode block)
+};
+
+static void add_exit(Gen *g, u32 at) { if (g->nExits < H64_JIT_MAX_INSNS * 4) g->exits[g->nExits++] = at; }
+
+static void load_gpr(Gen *g, u32 reg, u32 mips)
+{
+    if (mips == 0) ppc_li(&g->c, reg, 0);
+    else ppc_ld(&g->c, reg, OFF_GPR(mips), JR_CPU);
 }
 
-// Calls the function whose address (or ELFv1 descriptor) is in `reg`.
-static void emit_call_reg(H64PpcCode *c, u32 reg)
+static void store_gpr(Gen *g, u32 reg, u32 mips)
 {
+    if (mips != 0) ppc_std(&g->c, reg, OFF_GPR(mips), JR_CPU);
+}
+
+static void add_to(Gen *g, s32 off, s32 n)
+{
+    if (!n) return;
+    ppc_ld(&g->c, 3, off, JR_CPU);
+    ppc_addi(&g->c, 3, 3, n);
+    ppc_std(&g->c, 3, off, JR_CPU);
+}
+
+// cycles/instructions += pending; pc = next; nextPc = next + 4; branchPending = 0.
+static void sync_to(Gen *g, u32 pending, u32 next)
+{
+    add_to(g, OFF_CYCLES, (s32)pending);
+    add_to(g, OFF_INSNS, (s32)pending);
+    ppc_li64(&g->c, 3, sext32(next));
+    ppc_std(&g->c, 3, OFF_PC, JR_CPU);
+    ppc_addi(&g->c, 3, 3, 4);
+    ppc_std(&g->c, 3, OFF_NEXTPC, JR_CPU);
+    ppc_li(&g->c, 3, 0);
+    ppc_stw(&g->c, 3, OFF_BRANCH, JR_CPU);
+}
+
+static void exit_block(Gen *g) { add_exit(g, ppc_b_fwd(&g->c)); }
+
+// Calls the interpreter for the instruction at cpu->pc with the state as it is
+// (a delay slot), ignoring its answer: the block ends right after.
+static void call_interp_raw(Gen *g)
+{
+    ppc_mr(&g->c, 3, JR_SYS);
+    ppc_li(&g->c, 4, 0);
 #if defined(H64_JIT_ABI_ELFV1)
-    ppc_ld(c, 0, 0, reg);
-    ppc_ld(c, 2, 8, reg);
-    ppc_mtctr(c, 0);
+    ppc_ld(&g->c, 0, 0, JR_TMP);
+    ppc_ld(&g->c, 2, 8, JR_TMP);
+    ppc_mtctr(&g->c, 0);
 #else
-    ppc_mtctr(c, reg);
+    ppc_mtctr(&g->c, JR_TMP);
 #endif
-    ppc_bctrl(c);
+    ppc_bctrl(&g->c);
 }
 
-static void emit_prologue(H64PpcCode *c)
+// The interpreter runs instruction `pc` (state synced); stop on its request.
+static void call_interp(Gen *g, u32 pc)
 {
+    sync_to(g, g->pending, pc);
+    g->pending = 0;
+    ppc_mr(&g->c, 3, JR_SYS);
+    ppc_li32u(&g->c, 4, pc + 4);
+#if defined(H64_JIT_ABI_ELFV1)
+    ppc_ld(&g->c, 0, 0, JR_TMP);
+    ppc_ld(&g->c, 2, 8, JR_TMP);
+    ppc_mtctr(&g->c, 0);
+#else
+    ppc_mtctr(&g->c, JR_TMP);
+#endif
+    ppc_bctrl(&g->c);
+    ppc_cmpwi(&g->c, 0, 3, 0);
+    add_exit(g, ppc_bc_fwd(&g->c, 4, 0, PPC_EQ));   // bne exit
+}
+
+// ---- Prologue / epilogue ----
+static void emit_prologue(Gen *g)
+{
+    H64PpcCode *c = &g->c;
+    u32 r;
 #if defined(H64_JIT_ABI_XBOX)
     ppc_stwu(c, 1, -FRAME, 1);   // 32-bit back chain, as the XDK compiler does
 #else
@@ -69,28 +157,33 @@ static void emit_prologue(H64PpcCode *c)
 #endif
     ppc_mflr(c, 0);
     ppc_std(c, 0, FRAME - 8, 1);
-    ppc_std(c, JR_SYS, FRAME - 16, 1);
-    ppc_std(c, JR_CPU, FRAME - 24, 1);
-    ppc_std(c, JR_RDRAM, FRAME - 32, 1);
-    ppc_std(c, JR_TMP, FRAME - 40, 1);
+    for (r = 24; r < 32; r++) ppc_std(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
     ppc_mr(c, JR_SYS, 3);
+    ppc_addi(c, JR_CPU, JR_SYS, (s32)offsetof(H64System, cpu));
+#if defined(H64_JIT_ABI_XBOX)
+    ppc_lwz(c, JR_RDRAM, (s32)offsetof(H64System, rdram), JR_SYS);
+#else
+    ppc_ld(c, JR_RDRAM, (s32)offsetof(H64System, rdram), JR_SYS);
+#endif
+#if defined(H64_JIT_ABI_XBOX)
+    ppc_li32u(c, JR_TMP, (u32)fn_addr(helper_interp));
+#else
+    ppc_li64(c, JR_TMP, fn_addr(helper_interp));
+#endif
 }
 
-static void emit_epilogue(H64PpcCode *c)
+static void emit_epilogue(Gen *g)
 {
+    H64PpcCode *c = &g->c;
+    u32 r;
     ppc_ld(c, 0, FRAME - 8, 1);
     ppc_mtlr(c, 0);
-    ppc_ld(c, JR_SYS, FRAME - 16, 1);
-    ppc_ld(c, JR_CPU, FRAME - 24, 1);
-    ppc_ld(c, JR_RDRAM, FRAME - 32, 1);
-    ppc_ld(c, JR_TMP, FRAME - 40, 1);
+    for (r = 24; r < 32; r++) ppc_ld(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
     ppc_addi(c, 1, 1, FRAME);
     ppc_blr(c);
 }
 
-// ---- Block formation ----
-// Instructions after which control may go elsewhere: branches and jumps
-// (the block then ends after their delay slot).
+// ---- Instruction classes ----
 static int is_branch(u32 op)
 {
     u32 opc = op >> 26, rt = (op >> 16) & 31, rs = (op >> 21) & 31, funct = op & 63;
@@ -102,16 +195,450 @@ static int is_branch(u32 op)
     return 0;
 }
 
+static int ends_block(u32 op) { return (op >> 26) == 0x10; }   // COP0 (MTC0, ERET, TLB...)
+
+// ---- Native ALU ----
+static void slt_result(Gen *g, int unsignedCmp, u32 rd)
+{
+    // r3 < r4 ? 1 : 0
+    u32 at;
+    if (unsignedCmp) ppc_cmpld(&g->c, 0, 3, 4);
+    else ppc_cmpd(&g->c, 0, 3, 4);
+    ppc_li(&g->c, 5, 1);
+    at = ppc_bc_fwd(&g->c, 12, 0, PPC_LT);
+    ppc_li(&g->c, 5, 0);
+    ppc_patch_here(&g->c, at);
+    store_gpr(g, 5, rd);
+}
+
+// Returns 1 if `op` was emitted natively (no exception possible).
+static int emit_alu(Gen *g, u32 op)
+{
+    H64PpcCode *c = &g->c;
+    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31, sa = (op >> 6) & 31;
+    s32 simm = (s32)(s16)(op & 0xFFFF);
+    u32 uimm = op & 0xFFFF;
+    if (opc == 0)
+    {
+        switch (op & 63)
+        {
+        case 0x00: case 0x02: case 0x03:   // SLL SRL SRA
+            if (rd == 0) return 1;
+            load_gpr(g, 3, rt);
+            if ((op & 63) == 0x00) ppc_rlwinm(c, 3, 3, sa, 0, 31 - sa);
+            else if ((op & 63) == 0x02) { if (sa) ppc_rlwinm(c, 3, 3, 32 - sa, sa, 31); }
+            else ppc_sradi(c, 3, 3, sa);
+            ppc_extsw(c, 3, 3);
+            store_gpr(g, 3, rd);
+            return 1;
+        case 0x04: case 0x06: case 0x07:   // SLLV SRLV SRAV
+            if (rd == 0) return 1;
+            load_gpr(g, 3, rt);
+            load_gpr(g, 4, rs);
+            ppc_rlwinm(c, 4, 4, 0, 27, 31);   // & 31
+            if ((op & 63) == 0x04) ppc_slw(c, 3, 3, 4);
+            else if ((op & 63) == 0x06) { ppc_clrldi(c, 3, 3, 32); ppc_srw(c, 3, 3, 4); }
+            else ppc_srad(c, 3, 3, 4);
+            ppc_extsw(c, 3, 3);
+            store_gpr(g, 3, rd);
+            return 1;
+        case 0x14: case 0x16: case 0x17:   // DSLLV DSRLV DSRAV
+            if (rd == 0) return 1;
+            load_gpr(g, 3, rt);
+            load_gpr(g, 4, rs);
+            ppc_rlwinm(c, 4, 4, 0, 26, 31);   // & 63
+            if ((op & 63) == 0x14) ppc_sld(c, 3, 3, 4);
+            else if ((op & 63) == 0x16) ppc_srd(c, 3, 3, 4);
+            else ppc_srad(c, 3, 3, 4);
+            store_gpr(g, 3, rd);
+            return 1;
+        case 0x38: case 0x3A: case 0x3B: case 0x3C: case 0x3E: case 0x3F:   // DSLL DSRL DSRA (+32)
+        {
+            u32 n = sa + (((op & 63) >= 0x3C) ? 32 : 0), f = (op & 63) & 0x3B;
+            if (rd == 0) return 1;
+            load_gpr(g, 3, rt);
+            if (n)
+            {
+                if (f == 0x38) ppc_sldi(c, 3, 3, n);
+                else if (f == 0x3A) ppc_srdi(c, 3, 3, n);
+                else ppc_sradi(c, 3, 3, n);
+            }
+            store_gpr(g, 3, rd);
+            return 1;
+        }
+        case 0x10: case 0x12:   // MFHI MFLO
+            if (rd == 0) return 1;
+            ppc_ld(c, 3, (op & 63) == 0x10 ? OFF_HI : OFF_LO, JR_CPU);
+            store_gpr(g, 3, rd);
+            return 1;
+        case 0x11: case 0x13:   // MTHI MTLO
+            load_gpr(g, 3, rs);
+            ppc_std(c, 3, (op & 63) == 0x11 ? OFF_HI : OFF_LO, JR_CPU);
+            return 1;
+        case 0x0F: return 1;    // SYNC
+        case 0x18: case 0x19:   // MULT MULTU: 32x32 -> 64, lo/hi sign-extended halves
+            load_gpr(g, 3, rs);
+            load_gpr(g, 4, rt);
+            if ((op & 63) == 0x18) { ppc_extsw(c, 3, 3); ppc_extsw(c, 4, 4); }
+            else { ppc_clrldi(c, 3, 3, 32); ppc_clrldi(c, 4, 4, 32); }
+            ppc_mulld(c, 5, 3, 4);
+            ppc_extsw(c, 3, 5);
+            ppc_std(c, 3, OFF_LO, JR_CPU);
+            ppc_srdi(c, 3, 5, 32);
+            ppc_extsw(c, 3, 3);
+            ppc_std(c, 3, OFF_HI, JR_CPU);
+            return 1;
+        case 0x1C: case 0x1D:   // DMULT DMULTU: 64x64 -> 128
+            load_gpr(g, 3, rs);
+            load_gpr(g, 4, rt);
+            ppc_mulld(c, 5, 3, 4);
+            if ((op & 63) == 0x1C) ppc_mulhd(c, 6, 3, 4);
+            else ppc_mulhdu(c, 6, 3, 4);
+            ppc_std(c, 5, OFF_LO, JR_CPU);
+            ppc_std(c, 6, OFF_HI, JR_CPU);
+            return 1;
+        case 0x21: case 0x23: case 0x2D: case 0x2F:   // ADDU SUBU DADDU DSUBU
+            if (rd == 0) return 1;
+            load_gpr(g, 3, rs);
+            load_gpr(g, 4, rt);
+            if ((op & 63) == 0x21 || (op & 63) == 0x2D) ppc_add(c, 3, 3, 4);
+            else ppc_subf(c, 3, 4, 3);
+            if ((op & 63) <= 0x23) ppc_extsw(c, 3, 3);
+            store_gpr(g, 3, rd);
+            return 1;
+        case 0x24: case 0x25: case 0x26: case 0x27:   // AND OR XOR NOR
+            if (rd == 0) return 1;
+            load_gpr(g, 3, rs);
+            load_gpr(g, 4, rt);
+            if ((op & 63) == 0x24) ppc_and(c, 3, 3, 4);
+            else if ((op & 63) == 0x25) ppc_or(c, 3, 3, 4);
+            else if ((op & 63) == 0x26) ppc_xor(c, 3, 3, 4);
+            else ppc_nor(c, 3, 3, 4);
+            store_gpr(g, 3, rd);
+            return 1;
+        case 0x2A: case 0x2B:   // SLT SLTU
+            if (rd == 0) return 1;
+            load_gpr(g, 3, rs);
+            load_gpr(g, 4, rt);
+            slt_result(g, (op & 63) == 0x2B, rd);
+            return 1;
+        }
+        return 0;
+    }
+    switch (opc)
+    {
+    case 0x09: case 0x19:   // ADDIU DADDIU
+        if (rt == 0) return 1;
+        load_gpr(g, 3, rs);
+        ppc_addi(c, 3, 3, simm);
+        if (opc == 0x09) ppc_extsw(c, 3, 3);
+        store_gpr(g, 3, rt);
+        return 1;
+    case 0x0A: case 0x0B:   // SLTI SLTIU (the immediate is sign-extended for both)
+        if (rt == 0) return 1;
+        load_gpr(g, 3, rs);
+        ppc_li(c, 4, simm);
+        slt_result(g, opc == 0x0B, rt);
+        return 1;
+    case 0x0C: case 0x0D: case 0x0E:   // ANDI ORI XORI
+        if (rt == 0) return 1;
+        load_gpr(g, 3, rs);
+        if (opc == 0x0C) ppc_andi_(c, 3, 3, uimm);
+        else if (opc == 0x0D) ppc_ori(c, 3, 3, uimm);
+        else ppc_xori(c, 3, 3, uimm);
+        store_gpr(g, 3, rt);
+        return 1;
+    case 0x0F:   // LUI
+        if (rt == 0) return 1;
+        ppc_lis(c, 3, simm);
+        store_gpr(g, 3, rt);
+        return 1;
+    }
+    return 0;
+}
+
+// ---- Native loads and stores (RDRAM through KSEG0/KSEG1) ----
+// Fast path: a sign-extended 32-bit address in 0x80000000-0xBFFFFFFF, aligned,
+// within RDRAM; stores also need no code on the page and no MI repeat mode.
+// Anything else runs the instruction in the interpreter.
+static int emit_mem(Gen *g, u32 op, u32 pc)
+{
+    H64PpcCode *c = &g->c;
+    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, size, store = 0, slow[8], nSlow = 0, done, i;
+    s32 simm = (s32)(s16)(op & 0xFFFF);
+    switch (opc)
+    {
+    case 0x20: case 0x24: size = 1; break;    // LB LBU
+    case 0x21: case 0x25: size = 2; break;    // LH LHU
+    case 0x23: case 0x27: size = 4; break;    // LW LWU
+    case 0x37: size = 8; break;               // LD
+    case 0x28: size = 1; store = 1; break;    // SB
+    case 0x29: size = 2; store = 1; break;    // SH
+    case 0x2B: size = 4; store = 1; break;    // SW
+    case 0x3F: size = 8; store = 1; break;    // SD
+    default: return 0;
+    }
+    load_gpr(g, 3, rs);
+    ppc_addi(c, 3, 3, simm);
+    ppc_extsw(c, 4, 3);                       // a sign-extended 32-bit address?
+    ppc_cmpd(c, 0, 4, 3);
+    slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    ppc_rlwinm(c, 4, 3, 2, 30, 31);           // bits 31..30 == 10: KSEG0 or KSEG1
+    ppc_cmplwi(c, 0, 4, 2);
+    slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    if (size > 1)
+    {
+        ppc_andi_(c, 4, 3, size - 1);
+        slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    }
+    ppc_rlwinm(c, 4, 3, 0, 3, 31);            // physical address (& 0x1FFFFFFF)
+    ppc_rlwinm(c, 5, 4, 9, 23, 31);           // >> 23: within the 8 MB of RDRAM?
+    ppc_cmplwi(c, 0, 5, 0);
+    slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    if (store)
+    {
+        H64Jit *j = g->sys->jit;
+        // No block on this page (pageHead[page] == NULL)...
+        ppc_li64(c, 6, (u64)(uintptr_t)j->pageHead);
+        ppc_rlwinm(c, 5, 4, 32 - 12, 12, 31);   // page = paddr >> 12
+#if defined(H64_JIT_ABI_XBOX)
+        ppc_rlwinm(c, 5, 5, 2, 0, 29);
+        ppc_lwzx(c, 5, 6, 5);
+#else
+        ppc_sldi(c, 5, 5, 3);
+        ppc_ldx(c, 5, 6, 5);
+#endif
+        ppc_cmpdi(c, 0, 5, 0);
+        slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+        // ...and no MI repeat mode.
+        ppc_li64(c, 6, (u64)(uintptr_t)&g->sys->mi.mode);
+        ppc_lwz(c, 5, 0, 6);
+        ppc_andi_(c, 5, 5, 0x80);
+        slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+        load_gpr(g, 5, rt);
+        switch (size)
+        {
+        case 1: ppc_stbx(c, 5, JR_RDRAM, 4); break;
+        case 2: ppc_sthx(c, 5, JR_RDRAM, 4); break;
+        case 4: ppc_stwx(c, 5, JR_RDRAM, 4); break;
+        default: ppc_stdx(c, 5, JR_RDRAM, 4); break;
+        }
+    }
+    else
+    {
+        switch (opc)
+        {
+        case 0x20: ppc_lbzx(c, 5, JR_RDRAM, 4); ppc_extsb(c, 5, 5); break;
+        case 0x24: ppc_lbzx(c, 5, JR_RDRAM, 4); break;
+        case 0x21: ppc_lhax(c, 5, JR_RDRAM, 4); break;
+        case 0x25: ppc_lhzx(c, 5, JR_RDRAM, 4); break;
+        case 0x23: ppc_lwax(c, 5, JR_RDRAM, 4); break;
+        case 0x27: ppc_lwzx(c, 5, JR_RDRAM, 4); break;
+        default: ppc_ldx(c, 5, JR_RDRAM, 4); break;
+        }
+        store_gpr(g, 5, rt);
+    }
+    done = ppc_b_fwd(c);
+
+    // Slow path: the interpreter runs this instruction, then the block goes on
+    // with the counters as the fast path leaves them (this instruction pending).
+    for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
+    {
+        u32 pend = g->pending;
+        call_interp(g, pc);
+        add_to(g, OFF_CYCLES, -(s32)(pend + 1));
+        add_to(g, OFF_INSNS, -(s32)(pend + 1));
+        g->pending = pend;
+    }
+    ppc_patch_here(c, done);
+    g->pending++;
+    return 1;
+}
+
+// ---- Branches ----
+// Computes R_COND (1: taken) and R_TARGET for a native branch; writes the link.
+// Returns 0 when the branch is not handled natively (BC1x).
+static int emit_branch_head(Gen *g, u32 op, u32 pc, int *likely, int *dynamicTarget, u64 *target)
+{
+    H64PpcCode *c = &g->c;
+    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31, at;
+    // 64-bit arithmetic on the sign-extended pc, as the interpreter does.
+    u64 branchTarget = sext32(pc) + 4 + ((u64)(s64)(s16)(op & 0xFFFF) << 2);
+    *likely = 0;
+    *dynamicTarget = 0;
+    *target = branchTarget;
+    switch (opc)
+    {
+    case 0x00:   // JR, JALR
+        load_gpr(g, R_TARGET, rs);
+        if ((op & 63) == 0x09 && rd != 0)
+        {
+            ppc_li64(c, 3, (sext32(pc) + 8));
+            store_gpr(g, 3, rd);
+        }
+        ppc_li(c, R_COND, 1);
+        *dynamicTarget = 1;
+        return 1;
+    case 0x02: case 0x03:   // J, JAL
+        *target = ((sext32(pc) + 4) & 0xFFFFFFFFF0000000ull) | ((u64)(op & 0x03FFFFFF) << 2);
+        if (opc == 0x03) { ppc_li64(c, 3, (sext32(pc) + 8)); store_gpr(g, 3, 31); }
+        ppc_li(c, R_COND, 1);
+        return 1;
+    case 0x01:   // REGIMM: BLTZ BGEZ BLTZL BGEZL BLTZAL BGEZAL BLTZALL BGEZALL
+    {
+        int ge = rt & 1;
+        *likely = (rt & 2) != 0;
+        load_gpr(g, 3, rs);
+        ppc_cmpdi(c, 0, 3, 0);
+        ppc_li(c, R_COND, 1);
+        at = ppc_bc_fwd(c, ge ? 4 : 12, 0, PPC_LT);   // BGEZ: taken unless < 0; BLTZ: taken if < 0
+        ppc_li(c, R_COND, 0);
+        ppc_patch_here(c, at);
+        if (rt & 0x10) { ppc_li64(c, 3, (sext32(pc) + 8)); store_gpr(g, 3, 31); }   // BxxAL: link even when not taken
+        return 1;
+    }
+    case 0x04: case 0x05: case 0x14: case 0x15:   // BEQ BNE BEQL BNEL
+        *likely = opc >= 0x14;
+        load_gpr(g, 3, rs);
+        load_gpr(g, 4, rt);
+        ppc_cmpd(c, 0, 3, 4);
+        ppc_li(c, R_COND, 1);
+        at = ppc_bc_fwd(c, (opc & 1) ? 4 : 12, 0, PPC_EQ);   // BEQ: skip if equal; BNE: skip if not equal
+        ppc_li(c, R_COND, 0);
+        ppc_patch_here(c, at);
+        return 1;
+    case 0x06: case 0x07: case 0x16: case 0x17:   // BLEZ BGTZ BLEZL BGTZL
+        *likely = opc >= 0x16;
+        load_gpr(g, 3, rs);
+        ppc_cmpdi(c, 0, 3, 0);
+        ppc_li(c, R_COND, 1);
+        at = ppc_bc_fwd(c, (opc & 1) ? 12 : 4, 0, PPC_GT);   // BGTZ: skip if > 0; BLEZ: skip unless > 0
+        ppc_li(c, R_COND, 0);
+        ppc_patch_here(c, at);
+        return 1;
+    }
+    return 0;
+}
+
+// Stores pc = (R_COND ? target : fallthrough), nextPc = pc + 4.
+static void store_branch_pc(Gen *g, int dynamicTarget, u64 target, u32 fallthrough)
+{
+    H64PpcCode *c = &g->c;
+    u32 at, done;
+    ppc_cmpdi(c, 0, R_COND, 0);
+    at = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // not taken
+    if (dynamicTarget) ppc_mr(c, 3, R_TARGET);
+    else ppc_li64(c, 3, target);
+    done = ppc_b_fwd(c);
+    ppc_patch_here(c, at);
+    ppc_li64(c, 3, sext32(fallthrough));
+    ppc_patch_here(c, done);
+    ppc_std(c, 3, OFF_PC, JR_CPU);
+    ppc_addi(c, 3, 3, 4);
+    ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
+}
+
+static int emit_native(Gen *g, u32 op, u32 pc)
+{
+    if (emit_alu(g, op)) { g->pending++; return 1; }
+    return emit_mem(g, op, pc);
+}
+
+// A native branch and its delay slot; the block ends after them.
+static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
+{
+    H64PpcCode *c = &g->c;
+    int likely, dynamicTarget;
+    u64 target;
+    u32 dsPc = pc + 4;
+    emit_branch_head(g, op, pc, &likely, &dynamicTarget, &target);
+    g->pending++;   // the branch itself
+    if (likely)
+    {
+        // Not taken: the delay slot is skipped, the block ends at pc + 8.
+        u32 takenAt;
+        ppc_cmpdi(c, 0, R_COND, 0);
+        takenAt = ppc_bc_fwd(c, 4, 0, PPC_EQ);   // taken: go on with the slot
+        sync_to(g, g->pending, pc + 8);
+        exit_block(g);
+        ppc_patch_here(c, takenAt);
+    }
+    // The delay slot.
+    if (g->native && !is_branch(ds) && !ends_block(ds) && (emit_alu(g, ds) ? (g->pending++, 1) : 0))
+    {
+        add_to(g, OFF_CYCLES, (s32)g->pending);
+        add_to(g, OFF_INSNS, (s32)g->pending);
+        store_branch_pc(g, dynamicTarget, target, dsPc + 4);
+        ppc_li(c, 3, 0);
+        ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+        g->pending = 0;
+        exit_block(g);
+        return;
+    }
+    // Otherwise the interpreter runs the slot, as it would after the branch:
+    // pc = slot, nextPc = target or fall-through, branchPending = 1.
+    add_to(g, OFF_CYCLES, (s32)g->pending);
+    add_to(g, OFF_INSNS, (s32)g->pending);
+    g->pending = 0;
+    store_branch_pc(g, dynamicTarget, target, dsPc + 4);   // pc = target/fallthrough (temporarily)
+    ppc_ld(c, 3, OFF_PC, JR_CPU);
+    ppc_std(c, 3, OFF_NEXTPC, JR_CPU);                      // nextPc = target/fallthrough
+    ppc_li64(c, 3, sext32(dsPc));
+    ppc_std(c, 3, OFF_PC, JR_CPU);                          // pc = the slot
+    ppc_li(c, 3, 1);
+    ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+    call_interp_raw(g);
+    exit_block(g);
+}
+
+// ---- Idle loops ----
+// A block that branches back to its own start without side effects can be
+// skipped by whole iterations: the result is the same as running them.
+// Recognised: "b self; nop" style loops whose condition registers the loop
+// doesn't write, and RDRAM polls "lw rX, off(base); beq/bne rX, rY, self; nop".
+static int plain_branch_to(u32 op, u32 pc, u32 target)
+{
+    u32 opc = op >> 26, rt = (op >> 16) & 31;
+    u64 off = sext32(pc) + 4 + ((u64)(s64)(s16)(op & 0xFFFF) << 2);
+    if (opc == 0x02) return (((pc + 4) & 0xF0000000u) | ((op & 0x03FFFFFF) << 2)) == target;   // J
+    if ((opc >= 0x04 && opc <= 0x07) || (opc == 0x01 && rt <= 0x01)) return off == sext32(target);
+    return 0;
+}
+
+static void classify_idle(H64JitBlock *b, const u32 *ops, u32 n)
+{
+    u32 pc = b->vpc;
+    b->idle = 0;
+    if (n == 2 && ops[1] == 0 && plain_branch_to(ops[0], pc, pc))
+        b->idle = 1;   // the loop writes no register: its condition can't change
+    else if (n == 3 && ops[2] == 0 && plain_branch_to(ops[1], pc + 4, pc) && ((ops[1] >> 26) == 0x04 || (ops[1] >> 26) == 0x05))
+    {
+        u32 lop = ops[0] >> 26, rX = (ops[0] >> 16) & 31, base = (ops[0] >> 21) & 31;
+        u32 bs = (ops[1] >> 21) & 31, bt = (ops[1] >> 16) & 31;
+        u32 size = lop == 0x20 || lop == 0x24 ? 1 : lop == 0x21 || lop == 0x25 ? 2 : lop == 0x23 || lop == 0x27 ? 4 : 0;
+        if (size && rX != 0 && rX != base && (bs == rX || bt == rX))
+        {
+            b->idle = 2;
+            b->pollBase = base;
+            b->pollOff = (s32)(s16)(ops[0] & 0xFFFF);
+            b->pollSize = size;
+        }
+    }
+}
+
+// ---- Block compilation ----
 H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
 {
     H64Jit *j = sys->jit;
     H64JitBlock *b;
-    H64PpcCode c;
-    u32 ops[H64_JIT_MAX_INSNS], n = 0, i, exitFix[H64_JIT_MAX_INSNS], nFix = 0;
+    Gen g;
+    u32 ops[H64_JIT_MAX_INSNS], n = 0, i;
     u32 pageEnd = (paddr | 0xFFF) + 1;
+    int endsWithBranch = 0;
     u8 *start;
 
-    // Formation: stop at the page end, after a branch's delay slot, or at the size limit.
+    // Formation: stop at the page end, after a branch's delay slot, after a
+    // COP0 instruction, or at the size limit.
     while (n < H64_JIT_MAX_INSNS && paddr + n * 4 < pageEnd)
     {
         u32 op = h64_load_be32(sys->rdram + paddr + n * 4);
@@ -123,9 +650,11 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
             ops[n++] = op;
             ops[n] = h64_load_be32(sys->rdram + paddr + n * 4);
             n++;
+            endsWithBranch = 1;
             break;
         }
         ops[n++] = op;
+        if (ends_block(op)) break;
     }
     if (n == 0) return 0;
 
@@ -138,25 +667,51 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
 #if defined(H64_JIT_ABI_ELFV1)
     start += 32;
 #endif
-    c.buf = (u32 *)start;
-    c.pos = 0;
-    c.cap = MAX_BLOCK_BYTES / 4;
-    c.overflow = 0;
+    memset(&g, 0, sizeof(g));
+    g.sys = sys;
+    g.c.buf = (u32 *)start;
+    g.c.cap = MAX_BLOCK_BYTES / 4;
+    g.pc0 = pc;
+    g.native = h64_jit_kernel_mode(&sys->cpu) && !j->noNative;
 
-    emit_prologue(&c);
-    emit_load_callee(&c, JR_TMP, fn_addr(helper_interp));
+    emit_prologue(&g);
     for (i = 0; i < n; i++)
     {
-        ppc_mr(&c, 3, JR_SYS);
-        ppc_li32u(&c, 4, pc + (i + 1) * 4);
-        emit_call_reg(&c, JR_TMP);
-        ppc_cmpwi(&c, 0, 3, 0);
-        exitFix[nFix++] = ppc_bc_fwd(&c, 4, 0, PPC_EQ);   // bne exit
+        u32 ipc = pc + i * 4, op = ops[i];
+        if (endsWithBranch && i == n - 2)
+        {
+            if (g.native && (op >> 26) != 0x11)
+            {
+                emit_branch(&g, op, ipc, ops[i + 1]);
+                j->stats.nativeInsns++;
+            }
+            else
+            {
+                // Branch and slot through the interpreter: after the branch the
+                // state is the interpreter's (pc = slot, nextPc, branchPending).
+                call_interp(&g, ipc);
+                call_interp_raw(&g);
+                j->stats.helperInsns += 2;
+            }
+            exit_block(&g);
+            break;
+        }
+        if (g.native && !ends_block(op) && emit_native(&g, op, ipc))
+        {
+            j->stats.nativeInsns++;
+            continue;
+        }
+        call_interp(&g, ipc);
         j->stats.helperInsns++;
     }
-    for (i = 0; i < nFix; i++) ppc_patch_here(&c, exitFix[i]);
-    emit_epilogue(&c);
-    if (c.overflow)
+    if (!endsWithBranch)
+    {
+        sync_to(&g, g.pending, pc + n * 4);
+        exit_block(&g);
+    }
+    for (i = 0; i < g.nExits; i++) ppc_patch_here(&g.c, g.exits[i]);
+    emit_epilogue(&g);
+    if (g.c.overflow)
     {
         H64_ERROR("[jit] block at %08X too large", pc);
         return 0;
@@ -167,7 +722,9 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     b->vpc = pc;
     b->paddr = paddr;
     b->insns = n;
+    b->kernel = g.native;
     b->valid = 1;
+    if (g.native) classify_idle(b, ops, n);
 #if defined(H64_JIT_ABI_ELFV1)
     {
         u64 *desc = (u64 *)(start - 32);
@@ -179,14 +736,14 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
 #else
     b->fn = (H64JitFn)(void *)start;
 #endif
-    j->memUsed = (u32)((start - j->mem) + c.pos * 4);
-    if (j->flushIcache) j->flushIcache(start, c.pos * 4);
+    j->memUsed = (u32)((start - j->mem) + g.c.pos * 4);
+    if (j->flushIcache) j->flushIcache(start, g.c.pos * 4);
 
     b->hashNext = j->hash[(pc >> 2) & 8191];
     j->hash[(pc >> 2) & 8191] = b;
     b->pageNext = j->pageHead[paddr >> 12];
     j->pageHead[paddr >> 12] = b;
     j->stats.blocksCompiled++;
-    H64_DEBUG("[jit] block %08X (phys %06X): %u instructions, %u bytes, first %08X", pc, paddr, n, c.pos * 4, ops[0]);
+    H64_DEBUG("[jit] block %08X (phys %06X): %u instructions, %u bytes, first %08X", pc, paddr, n, g.c.pos * 4, ops[0]);
     return b;
 }

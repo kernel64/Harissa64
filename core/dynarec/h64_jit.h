@@ -42,7 +42,7 @@ struct H64JitBlock;
 
 struct H64JitStats
 {
-    u64 blocksRun, blocksCompiled, interpSteps, invalidations, flushes, earlyExits;
+    u64 blocksRun, blocksCompiled, interpSteps, invalidations, flushes, earlyExits, idleSkipped;
     u64 nativeInsns, helperInsns;   // compiled instructions, by kind
 };
 
@@ -63,6 +63,7 @@ struct H64Jit
     int curInvalidated;
 
     H64JitStats stats;
+    int noNative;                   // debugging: every instruction through the interpreter
 };
 
 // Takes executable memory (and its icache flush) from the platform.

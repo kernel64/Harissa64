@@ -69,11 +69,17 @@ void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
     }
 }
 
-static H64JitBlock *lookup(H64Jit *j, u32 pc, u32 paddr)
+int h64_jit_kernel_mode(const H64Cpu *cpu)
+{
+    u32 sr = (u32)cpu->cop0[CP0_STATUS];
+    return (sr & (SR_EXL | SR_ERL)) || (sr & SR_KSU) == 0;
+}
+
+static H64JitBlock *lookup(H64Jit *j, u32 pc, u32 paddr, int kernel)
 {
     H64JitBlock *b = j->hash[hash_of(pc)];
     for (; b; b = b->hashNext)
-        if (b->valid && b->vpc == pc && b->paddr == paddr) return b;
+        if (b->valid && b->vpc == pc && b->paddr == paddr && b->kernel == (kernel && !j->noNative)) return b;
     return 0;
 }
 
@@ -118,7 +124,7 @@ void h64_jit_run_one(H64System *sys)
         j->stats.interpSteps++;
         return;
     }
-    b = lookup(j, pc32, paddr);
+    b = lookup(j, pc32, paddr, h64_jit_kernel_mode(cpu));
     if (!b)
     {
         b = h64_jit_compile(sys, pc32, paddr);
@@ -141,6 +147,30 @@ void h64_jit_run_one(H64System *sys)
     j->curInvalidated = 0;
     j->stats.blocksRun++;
     b->fn(sys);
+
+    // Idle loop: skip whole iterations up to the next event. Nothing can
+    // change the loop's outcome before an event (interrupts, DMA, the RSP
+    // and the VI all arrive through the scheduler), so this equals running them.
+    if (b->idle && b->valid && cpu->pc == (u64)(s64)(s32)b->vpc && !cpu->branchPending && !interrupt_pending(cpu) &&
+        sys->sched.next != H64_NEVER && sys->sched.next > cpu->cycles)
+    {
+        u64 k = (sys->sched.next - cpu->cycles) / b->insns;
+        if (b->idle == 2)
+        {
+            // The polled address must be plain RDRAM (a register read could have side effects).
+            u64 a = cpu->gpr[b->pollBase] + (u64)(s64)b->pollOff;
+            u32 a32 = (u32)a;
+            if (a != (u64)(s64)(s32)a32 || (a32 >> 30) != 2 || (a32 & (b->pollSize - 1)) || (a32 & 0x1FFFFFFF) >= H64_RDRAM_SIZE)
+                k = 0;
+        }
+        if (k > (1u << 24)) k = 1u << 24;
+        if (k)
+        {
+            cpu->cycles += k * b->insns;
+            cpu->instructions += k * b->insns;
+            j->stats.idleSkipped += k * b->insns;
+        }
+    }
 }
 
 void h64_jit_run(H64System *sys, u64 cycles)

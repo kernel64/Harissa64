@@ -93,6 +93,7 @@ static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen,
         case 0x01:   // buttons and stick
             if (rxLen >= 4)
             {
+                if (sys->padHook) sys->padHook(sys);
                 rx[0] = (u8)(sys->pad[0].buttons >> 8);
                 rx[1] = (u8)sys->pad[0].buttons;
                 rx[2] = (u8)sys->pad[0].x;

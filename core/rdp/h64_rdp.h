@@ -39,4 +39,11 @@ void h64_dp_write(H64System *sys, u32 reg, u32 value);
 // One complete command (1 to 22 big-endian 64-bit words), h64_rdp_render.cpp.
 void h64_rdp_command(H64System *sys, const u64 *words, u32 count);
 
+// Builds the RDP triangle command for three screen-space vertices
+// (render/api.h; flags: H64_TRI_*). Returns the number of words written to
+// `out` (4 to 22). h64_rdp_trisetup.cpp.
+struct H64RenderVertex;
+u32 h64_rdp_build_triangle(const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c, u32 flags,
+                           u32 tile, u32 levels, u64 *out);
+
 #endif

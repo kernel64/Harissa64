@@ -7,6 +7,7 @@
 
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
+#include "../hle/h64_hle.h"
 #include "../rdp/h64_rdp.h"
 #include "../system/h64_system.h"
 
@@ -172,10 +173,19 @@ void h64_sp_write(H64System *sys, u32 reg, u32 v)
         rsp->status = s;
         if (wasHalted && !(s & ST_HALT))
         {
+            u32 busy = 0;
             rsp->cycleFrac = 0;
             rsp->syncedCycles = sys->cpu.cycles;
-            h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);
             log_task(sys);
+            if (h64_hle_try_task(sys, &rsp->hleStatus, &busy, &rsp->hleDpInterrupt))
+            {
+                // The HLE ran the whole task; the RSP looks busy until then.
+                rsp->hleBusy = 1;
+                rsp->hleTasks++;
+                h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + busy);
+            }
+            else
+                h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);
         }
         return;
     }
@@ -313,7 +323,7 @@ void h64_rsp_step(H64System *sys)
 void h64_rsp_advance(H64System *sys, u32 cpuCycles)
 {
     H64Rsp *rsp = &sys->rsp;
-    if (rsp->status & ST_HALT) return;
+    if ((rsp->status & ST_HALT) || rsp->hleBusy) return;
     // 2 RCP cycles per 3 CPU cycles.
     rsp->cycleFrac += cpuCycles * 2;
     while (rsp->cycleFrac >= 3)
@@ -323,6 +333,7 @@ void h64_rsp_advance(H64System *sys, u32 cpuCycles)
         if (rsp->status & ST_HALT)
         {
             rsp->cycleFrac = 0;
+            if (sys->options.hleAudioCheck) h64_hle_check_end(sys);
             return;
         }
     }
@@ -348,6 +359,21 @@ void h64_rsp_sync(H64System *sys)
 
 void h64_rsp_slice_event(H64System *sys)
 {
+    H64Rsp *rsp = &sys->rsp;
+    if (rsp->hleBusy)
+    {
+        // End of an HLE task: halt with the bits the microcode would set.
+        rsp->hleBusy = 0;
+        rsp->status |= rsp->hleStatus | ST_HALT;
+        if ((rsp->hleStatus & ST_BROKE) && (rsp->status & ST_INTBREAK))
+            h64_mi_raise(sys, MI_INTR_SP);
+        if (rsp->hleDpInterrupt)
+        {
+            rsp->hleDpInterrupt = 0;
+            h64_mi_raise(sys, MI_INTR_DP);
+        }
+        return;
+    }
     h64_rsp_sync(sys);
     if (!(sys->rsp.status & ST_HALT))
         h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);

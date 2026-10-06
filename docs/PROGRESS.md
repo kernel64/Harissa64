@@ -1,6 +1,20 @@
 # Progress
 
-## Current milestone: M2 — RSP LLE, software RDP, VI → first images
+## Current milestone: M4 — HLE and the Xenos renderer (in progress)
+
+- Audio task HLE (port of mupen64plus-rsp-hle): done (`--hle-audio`); checked against LLE with `--hle-audio-check` (MK64 within 16 LSB, OoT mostly 1–16 LSB, SM64 −38 dB on the output).
+- Graphics task HLE (F3D, F3DEX, F3DEX2, F3DZEX): done (`--hle-gfx`); SM64, MK64, OoT draw through it; unknown microcodes fall back to LLE per task.
+- `render/api.h`, RDP triangle setup (libdragon), Xenos renderer first version: SM64 logo and title correct in Xenia.
+- Xbox front end (ROM, CPU, HLE, XAudio2, XInput, `harissa64v2.ini`): first version.
+- Xenia findings: FPSCR exception flags not emulated (fallback in `h64_fenv`), linear resolve targets scrambled (tiled frame textures now), `--readback_resolve=true` needed for in-xex screenshots.
+- To do: framebuffer copy-back, LLE graphics through Xenos, S2DEX, MK64/OoT checks in Xenia, console run.
+
+## M3 — Dynarec (complete, console check pending)
+
+- Lockstep with the interpreter under QEMU ppc64, no divergence: SM64 68 s, MK64 43 s, OoT 76 s (with inputs); n64-systemtest full lockstep clean; Dillonb 26/26.
+- Speed under QEMU: SM64 6 s with HLE, interpreter 83 s, dynarec 17.6 s (4.7×).
+
+## M2 — RSP LLE, software RDP, VI → first images (complete)
 
 | Part | Status |
 |---|---|

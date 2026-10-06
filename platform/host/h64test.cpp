@@ -20,7 +20,10 @@
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "../../core/system/h64_system.h"
+#include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/vi/h64_vi.h"
+#include "../../core/rdp/h64_rdp.h"
+#include "../../render/api.h"
 #include "png_write.h"
 #include "../../tests/unit/unit_tests.h"
 
@@ -64,57 +67,6 @@ static int enable_jit(H64System *sys)
         fprintf(stderr, "the recompiler needs a PowerPC host (ppc64 big-endian Linux or the Xbox 360)\n");
         return -1;
     }
-    return 0;
-}
-
-// ---- Lockstep: the recompiler (b) against the interpreter (a) ----
-static int compare_cpu(const H64System *a, const H64System *b, char *why, size_t whyLen)
-{
-    const H64Cpu *x = &a->cpu, *y = &b->cpu;
-    int i;
-    for (i = 0; i < 32; i++)
-        if (x->gpr[i] != y->gpr[i]) { snprintf(why, whyLen, "gpr[%d] interp %016llX jit %016llX", i, (unsigned long long)x->gpr[i], (unsigned long long)y->gpr[i]); return 1; }
-    for (i = 0; i < 32; i++)
-        if (x->fgr[i] != y->fgr[i]) { snprintf(why, whyLen, "fgr[%d] interp %016llX jit %016llX", i, (unsigned long long)x->fgr[i], (unsigned long long)y->fgr[i]); return 1; }
-    for (i = 0; i < 32; i++)
-        if (i != CP0_RANDOM && x->cop0[i] != y->cop0[i]) { snprintf(why, whyLen, "cop0[%d] interp %016llX jit %016llX", i, (unsigned long long)x->cop0[i], (unsigned long long)y->cop0[i]); return 1; }
-    if (x->hi != y->hi || x->lo != y->lo) { snprintf(why, whyLen, "hi/lo"); return 1; }
-    if (x->pc != y->pc || x->nextPc != y->nextPc || x->branchPending != y->branchPending)
-    {
-        snprintf(why, whyLen, "pc interp %016llX/%016llX/%d jit %016llX/%016llX/%d", (unsigned long long)x->pc,
-                 (unsigned long long)x->nextPc, x->branchPending, (unsigned long long)y->pc, (unsigned long long)y->nextPc, y->branchPending);
-        return 1;
-    }
-    if (x->fcr31 != y->fcr31 || x->llbit != y->llbit) { snprintf(why, whyLen, "fcr31/llbit"); return 1; }
-    if (x->instructions != y->instructions) { snprintf(why, whyLen, "instruction count interp %llu jit %llu", (unsigned long long)x->instructions, (unsigned long long)y->instructions); return 1; }
-    return 0;
-}
-
-// Runs b (recompiler) one dispatch at a time and a (interpreter) up to the
-// same cycle; compares the CPU after each dispatch and RDRAM now and then.
-static int run_lockstep(H64System *a, H64System *b, u64 limit, u64 *dispatches)
-{
-    char why[256];
-    u64 n = 0;
-    while (b->cpu.cycles < limit && !a->exitRequested && !b->exitRequested)
-    {
-        u64 before = b->cpu.cycles;
-        u32 pc = (u32)b->cpu.pc;
-        h64_jit_run_one(b);
-        while (a->cpu.cycles < b->cpu.cycles) h64_system_step(a);
-        n++;
-        if (a->cpu.cycles != b->cpu.cycles || compare_cpu(a, b, why, sizeof(why)) ||
-            ((n & 0x3FFF) == 0 && memcmp(a->rdram, b->rdram, H64_RDRAM_SIZE) && snprintf(why, sizeof(why), "RDRAM differs")))
-        {
-            if (a->cpu.cycles != b->cpu.cycles) snprintf(why, sizeof(why), "cycles interp %llu jit %llu", (unsigned long long)a->cpu.cycles, (unsigned long long)b->cpu.cycles);
-            printf("LOCKSTEP DIVERGENCE after dispatch %llu at pc %08X (cycles %llu..%llu, frame %u): %s\n",
-                   (unsigned long long)n, pc, (unsigned long long)before, (unsigned long long)b->cpu.cycles, b->vi.frames, why);
-            *dispatches = n;
-            return 1;
-        }
-    }
-    if (memcmp(a->rdram, b->rdram, H64_RDRAM_SIZE)) { printf("LOCKSTEP DIVERGENCE at the end: RDRAM differs\n"); return 1; }
-    *dispatches = n;
     return 0;
 }
 
@@ -294,6 +246,18 @@ static int parse_input(const char *script)
     return 0;
 }
 
+// --null-renderer: the configuration of a GPU renderer without a GPU (the
+// software RDP keeps state only; primitives are counted, not drawn).
+static u32 s_nullTris;
+static void null_rdp(void *user, const u64 *w, u32 n) { h64_rdp_command((H64System *)user, w, n); }
+static void null_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
+                          u32 flags, u32 tile, u32 levels)
+{
+    (void)user; (void)a; (void)b; (void)c; (void)flags; (void)tile; (void)levels;
+    s_nullTris++;
+}
+static H64Renderer s_nullRenderer;
+
 static void apply_input(H64System *sys)
 {
     int i;
@@ -360,7 +324,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 watchPc = 0, jumpLimit = 0;
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0;
-    int useJit = 0, lockstep = 0;
+    int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
+    u32 traceFrames = 0, traceStep = 0;
     H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
@@ -394,6 +359,14 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
         else if (!strcmp(argv[i], "--cpu") && i + 1 < argc) { i++; useJit = !strcmp(argv[i], "dynarec"); }
         else if (!strcmp(argv[i], "--lockstep")) lockstep = 1;
+        else if (!strcmp(argv[i], "--no-rdp")) noRdp = 1;
+        else if (!strcmp(argv[i], "--hle-audio")) hleAudio = 1;
+        else if (!strcmp(argv[i], "--hle-audio-check")) hleAudio = 2;
+        else if (!strcmp(argv[i], "--hle-gfx")) hleGfx = 1;
+        else if (!strcmp(argv[i], "--null-renderer")) nullRenderer = 1;
+        else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--hle")) { hleGfx = 1; hleAudio = 1; }
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
 
@@ -406,6 +379,10 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         // The reference system: same ROM, interpreter.
         ref = (H64System *)malloc(sizeof(H64System));
         if (!ref || h64_system_init(ref, file, size, 0)) { fprintf(stderr, "cannot create the reference system\n"); return 2; }
+        ref->options.noRdpDraw = noRdp;
+        ref->options.hleAudio = hleAudio == 1;
+        ref->options.hleGfx = hleGfx;
+        ref->padHook = apply_input;
         useJit = 1;
     }
     free(file);
@@ -420,16 +397,63 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     s_sysForStop = sys;
     if (stopOnNops) sys->cpu.nopHook = nop_hook;
     if (wavPath) { sys->aiSink = wav_sink; sys->aiUser = &wav; }
+    sys->options.noRdpDraw = noRdp;
+    sys->options.hleAudio = hleAudio == 1;
+    sys->options.hleAudioCheck = hleAudio == 2;
+    sys->options.hleGfx = hleGfx;
+    if (nullRenderer)
+    {
+        s_nullRenderer.user = sys;
+        s_nullRenderer.rdp = null_rdp;
+        s_nullRenderer.triangle = null_triangle;
+        sys->renderer = &s_nullRenderer;
+        sys->options.rdpStateOnly = 1;
+    }
+    sys->padHook = apply_input;
 
     limit = seconds > 0 ? (u64)(seconds * 93750000.0) : (u64)frames * sys->vi.frameCycles;
+    if (traceFrames && traceStep >= 1000000000u)
+    {
+        // Instruction trace: --trace-step 1000000000+START runs to cycle START,
+        // then logs --trace-frames instructions (pc, CPU hash).
+        u32 n;
+        h64_system_run_cycles(sys, traceStep - 1000000000u);
+        for (n = 0; n < traceFrames; n++)
+        {
+            u32 ch, pc = (u32)sys->cpu.pc;
+            h64_system_step(sys);
+            h64_system_state_hash(sys, &ch, NULL);
+            printf("[itrace] %u pc=%08X cyc=%llu cpu=%08X\n", n, pc, (unsigned long long)sys->cpu.cycles, ch);
+        }
+        return 0;
+    }
+    if (traceFrames)
+    {
+        // Same lines as the Xbox build's trace= option, to find where two hosts diverge.
+        u32 n;
+        u64 step = traceStep ? traceStep : sys->vi.frameCycles;
+        for (n = 0; n < traceFrames; n++)
+        {
+            u32 ch, rh;
+            h64_system_run_cycles(sys, step);
+            h64_system_state_hash(sys, &ch, &rh);
+            printf("[trace] %u cycles=%llu instr=%llu pc=%08X cpu=%08X ram=%08X\n", n, (unsigned long long)sys->cpu.cycles,
+                   (unsigned long long)sys->cpu.instructions, (u32)sys->cpu.pc, ch, rh);
+        }
+        return 0;
+    }
     if (lockstep)
     {
-        u64 dispatches = 0;
-        int bad = run_lockstep(ref, sys, limit, &dispatches);
-        printf("[lockstep] %s: %llu dispatches, %llu blocks run, %llu interpreter steps, %llu blocks compiled, %llu invalidations, %llu cache flushes\n",
-               bad ? "DIVERGED" : "OK, no divergence", (unsigned long long)dispatches, (unsigned long long)sys->jit->stats.blocksRun,
+        H64LockstepResult ls;
+        int bad = h64_lockstep_run(ref, sys, limit, &ls);
+        if (bad)
+            printf("LOCKSTEP DIVERGENCE after dispatch %llu at pc %08X (cycle %llu, frame %u): %s\n", (unsigned long long)ls.dispatches,
+                   ls.pc, (unsigned long long)ls.cyclesBefore, ls.frame, ls.why);
+        printf("[lockstep] %s: %llu dispatches, %llu blocks run, %llu interpreter steps, %llu blocks compiled, %llu invalidations, %llu cache flushes, %llu idle instructions skipped\n",
+               bad ? "DIVERGED" : "OK, no divergence", (unsigned long long)ls.dispatches, (unsigned long long)sys->jit->stats.blocksRun,
                (unsigned long long)sys->jit->stats.interpSteps, (unsigned long long)sys->jit->stats.blocksCompiled,
-               (unsigned long long)sys->jit->stats.invalidations, (unsigned long long)sys->jit->stats.flushes);
+               (unsigned long long)sys->jit->stats.invalidations, (unsigned long long)sys->jit->stats.flushes,
+               (unsigned long long)sys->jit->stats.idleSkipped);
         if (bad) result = 1;
         h64_system_free(ref);
         free(ref);
@@ -437,7 +461,6 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     }
     while (sys->cpu.cycles < limit && !s_untilHit && !sys->exitRequested && !s_jumpStop)
     {
-        apply_input(sys);
         {
             int k;
             for (k = 0; k < shotCount; k++)
@@ -464,9 +487,10 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     }
     if (s_untilText && !s_untilHit) { printf("UNTIL not reached: \"%s\"\n", s_untilText); result = 1; }
     if (sys->exitRequested) printf("[run] the ROM requested exit (EMUX)\n");
-    printf("[run] %u frames, %.2f emulated s, %llu instructions, %u RSP tasks, %llu RSP instructions, %llu RDP commands\n",
+    printf("[run] %u frames, %.2f emulated s, %llu instructions, %u RSP tasks (%u HLE), %llu RSP instructions, %llu RDP commands\n",
            sys->vi.frames, (double)sys->cpu.cycles / 93750000.0, (unsigned long long)sys->cpu.instructions,
-           sys->rsp.tasks, (unsigned long long)sys->rsp.instructions, (unsigned long long)sys->dpCommands);
+           sys->rsp.tasks, sys->rsp.hleTasks, (unsigned long long)sys->rsp.instructions, (unsigned long long)sys->dpCommands);
+    if (nullRenderer) printf("[run] null renderer: %u triangles\n", s_nullTris);
     printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
            sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
     if (state) print_state(sys);

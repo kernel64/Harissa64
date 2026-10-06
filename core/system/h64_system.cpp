@@ -5,6 +5,7 @@
 
 #include "../common/h64_fenv.h"
 #include "../common/h64_log.h"
+#include "../hle/h64_hle.h"
 
 int h64_system_init(H64System *sys, const u8 *romFile, u32 romSize, const H64Options *opt)
 {
@@ -30,6 +31,8 @@ void h64_system_free(H64System *sys)
     h64_rom_free(&sys->rom);
     h64_rdp_free(sys);
     h64_jit_free(sys);
+    if (sys->hle) h64_hle_free(sys->hle);
+    sys->hle = 0;
     free(sys->rdram);
     sys->rdram = 0;
 }
@@ -46,11 +49,36 @@ void h64_system_reset(H64System *sys)
     h64_rsp_reset(sys);
     h64_rdp_reset(sys);
     h64_jit_reset(sys);
+    if (sys->hle) h64_hle_free(sys->hle);
+    sys->hle = h64_hle_create(sys);
     h64_cpu_reschedule_compare(sys);
     if (sys->options.hleBoot)
         h64_hle_boot(sys);
     else
         H64_WARN("[boot] low-level boot (running IPL3) is not available yet; use the HLE boot");
+}
+
+static u32 fnv_u64(u32 h, u64 v)
+{
+    int i;
+    for (i = 0; i < 8; i++) { h ^= (u32)(v >> (i * 8)) & 0xFF; h *= 16777619u; }
+    return h;
+}
+
+void h64_system_state_hash(const H64System *sys, u32 *cpuHash, u32 *ramHash)
+{
+    u32 h = 2166136261u, i;
+    for (i = 0; i < 32; i++) h = fnv_u64(h, sys->cpu.gpr[i]);
+    for (i = 0; i < 32; i++) h = fnv_u64(h, sys->cpu.fgr[i]);
+    for (i = 0; i < 32; i++) if (i != CP0_RANDOM) h = fnv_u64(h, sys->cpu.cop0[i]);
+    h = fnv_u64(h, sys->cpu.hi);
+    h = fnv_u64(h, sys->cpu.lo);
+    h = fnv_u64(h, sys->cpu.fcr31);
+    *cpuHash = h;
+    if (!ramHash) return;
+    h = 2166136261u;
+    for (i = 0; i < H64_RDRAM_SIZE; i++) { h ^= sys->rdram[i]; h *= 16777619u; }
+    *ramHash = h;
 }
 
 void h64_system_step(H64System *sys)

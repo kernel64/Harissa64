@@ -263,6 +263,12 @@ static void fetch(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, i
     o->c[1] = o->c[3] = (s32)(w & 0xFF);
 }
 
+void h64_rdp_fetch_texel(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, int tlut, int tlutType,
+                         H64RdpTexel *out)
+{
+    fetch(st, tile, s, t, tlut, tlutType, 0, 0, out);
+}
+
 static void fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, u32 chromaX, H64RdpTexel *o)
 {
     u32 bo = tile->offset + tile->stride * t;

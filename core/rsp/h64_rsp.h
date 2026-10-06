@@ -56,6 +56,10 @@ struct H64Rsp
     int inSync;                // the RSP is running (its own register accesses must not re-enter)
     u64 instructions;
     u32 tasks;                 // tasks started (logged)
+    int hleBusy;               // an HLE task is "running": the RSP halts at the next H64_EV_RSP
+    u32 hleStatus;             // SP_STATUS bits the HLE task sets when it ends
+    int hleDpInterrupt;        // the HLE task ended with an RDP full sync: raise the DP interrupt too
+    u32 hleTasks;              // tasks run by the HLE (statistics)
 };
 
 void h64_rsp_reset(H64System *sys);

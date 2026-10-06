@@ -3,7 +3,7 @@
 #if defined(_MSC_VER)
 #include <float.h>
 
-void h64_fenv_init(void)
+static void init_env(void)
 {
 #if defined(_DN_SAVE) && defined(_MCW_DN)
     _controlfp(_DN_SAVE, _MCW_DN);
@@ -20,7 +20,7 @@ void h64_fenv_set_round(int rm)
 
 void h64_fenv_clear(void) { _clearfp(); }
 
-u32 h64_fenv_flags(void)
+static u32 read_flags(void)
 {
 #if defined(_XBOX)
     // The XDK CRT declares _statusfp but does not provide it; _clearfp returns
@@ -41,7 +41,7 @@ u32 h64_fenv_flags(void)
 #else
 #include <fenv.h>
 
-void h64_fenv_init(void)
+static void init_env(void)
 {
     fesetround(FE_TONEAREST);
     feclearexcept(FE_ALL_EXCEPT);
@@ -55,7 +55,7 @@ void h64_fenv_set_round(int rm)
 
 void h64_fenv_clear(void) { feclearexcept(FE_ALL_EXCEPT); }
 
-u32 h64_fenv_flags(void)
+static u32 read_flags(void)
 {
     int s = fetestexcept(FE_ALL_EXCEPT);
     u32 f = 0;
@@ -67,3 +67,36 @@ u32 h64_fenv_flags(void)
     return f;
 }
 #endif
+
+// Self-test: Xenia does not emulate the PowerPC FPSCR exception flags (they
+// read back all set), which would make every guest FPU operation raise an
+// exception. When the host flags do not behave, report none instead.
+#include "h64_log.h"
+
+static int s_checked, s_reliable = 1;
+
+void h64_fenv_init(void)
+{
+    init_env();
+    if (!s_checked)
+    {
+        volatile float one = 1.0f, three = 3.0f, r;
+        u32 a, b;
+        h64_fenv_clear();
+        r = one + one;
+        a = read_flags();
+        h64_fenv_clear();
+        r = one / three;
+        b = read_flags();
+        h64_fenv_clear();
+        (void)r;
+        s_reliable = a == 0 && b == H64_FE_INEXACT;
+        s_checked = 1;
+        if (!s_reliable)
+            H64_WARN("[fpu] host exception flags are not reliable (read %02X and %02X): the FPU reports none", a, b);
+    }
+}
+
+int h64_fenv_reliable(void) { return s_reliable; }
+
+u32 h64_fenv_flags(void) { return s_reliable ? read_flags() : 0; }

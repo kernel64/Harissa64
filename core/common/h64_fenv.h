@@ -23,5 +23,8 @@ void h64_fenv_init(void);           // no denormal flushing, all exceptions mask
 void h64_fenv_set_round(int mipsRm);
 void h64_fenv_clear(void);
 u32 h64_fenv_flags(void);
+// 0 when the host flags failed the self-test of h64_fenv_init (Xenia):
+// h64_fenv_flags() then always returns 0.
+int h64_fenv_reliable(void);
 
 #endif
