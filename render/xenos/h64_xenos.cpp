@@ -20,14 +20,18 @@
 #include "../../core/rdp/h64_rdp_state.h"
 #include "../../core/system/h64_system.h"
 
-// EDRAM layout (tiles of 5120 bytes): the 1280x720 back buffer uses tiles
-// 0..719, the N64 colour target 720..959 and its depth 960..1199.
-#define RT_WIDTH 640
-#define RT_HEIGHT 480
+// EDRAM layout (tiles of 5120 bytes, 80x16 pixels): the 1280x720 back
+// buffer uses tiles 0..719, the 960x720 N64 colour target 720..1259 and its
+// depth 1260..1799 (2048 in all). 960x720 is the 4:3 picture of the 720p
+// output, so frames are shown 1:1.
+#define RT_WIDTH 960
+#define RT_HEIGHT 720
 #define EDRAM_N64_COLOR 720
-#define EDRAM_N64_DEPTH 960
+#define EDRAM_N64_DEPTH 1260
 #define FB_SLOTS 4
 #define MAX_TEXTURES 1500
+#define MAX_TEXTURE_BYTES (40u * 1024u * 1024u)
+#define BATCH_VERTICES 3000
 
 struct XVtx
 {
@@ -76,7 +80,18 @@ struct Xenos
 
     std::map<u64, IDirect3DPixelShader9 *> shaders;
     std::map<u64, TexEntry> textures;
+    u32 textureBytes;   // memory held by the texture cache
     u64 combineRaw;
+
+    // Batching: triangles with the same state go to one draw.
+    std::vector<XVtx> batch;
+    int stateDirty;     // an RDP command arrived since the state was last set up
+    u32 batchFlags, batchTile;
+    TexBinding batchTb0, batchTb1;
+
+    // Texture of each tile until TMEM or the tile changes.
+    u32 tmemGen;
+    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; } memo[8];
 
     FbSlot fb[FB_SLOTS];
     int curSlot;        // slot whose image is in the N64 render target (-1: none)
@@ -264,6 +279,8 @@ static void retire_all_textures(Xenos *x)
     for (it = x->textures.begin(); it != x->textures.end(); ++it)
         if (it->second.tex) it->second.tex->Release();
     x->textures.clear();
+    x->textureBytes = 0;
+    x->tmemGen++;   // the memos point at released textures
 }
 
 static u64 fnv64(u64 h, const u8 *p, u32 n)
@@ -307,7 +324,25 @@ static s32 mask_coord(u32 mask, int mirror, s32 v)
     return v;
 }
 
+static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b);
+
+// The texture of a tile, from the memo while neither TMEM nor the tile changed.
 static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
+{
+    u32 t = tileIndex & 7, rf = x->st->rasterFlags & (RS_TLUT | RS_TLUT_TYPE);
+    if (x->memo[t].gen == x->tmemGen && x->memo[t].rasterFlags == rf && x->memo[t].tex)
+    {
+        *b = x->memo[t].b;
+        return x->memo[t].tex;
+    }
+    x->memo[t].tex = lookup_texture(x, t, b);
+    x->memo[t].b = *b;
+    x->memo[t].gen = x->tmemGen;
+    x->memo[t].rasterFlags = rf;
+    return x->memo[t].tex;
+}
+
+static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
     const H64RdpState *st = x->st;
     const H64RdpTile *t = &st->tiles[tileIndex & 7];
@@ -339,7 +374,8 @@ static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     if (it != x->textures.end())
         return it->second.tex;
 
-    if (x->textures.size() >= MAX_TEXTURES) retire_all_textures(x);
+    if (x->textures.size() >= MAX_TEXTURES || x->textureBytes + b->w * b->h * 4 > MAX_TEXTURE_BYTES)
+        retire_all_textures(x);
     e.tex = NULL;
     e.w = b->w;
     e.h = b->h;
@@ -368,6 +404,7 @@ static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         e.tex->UnlockRect(0);
     }
     x->textures[key] = e;
+    x->textureBytes += e.w * e.h * 4;
     x->stats.textureUploads++;
     return e.tex;
 }
@@ -522,12 +559,15 @@ static void select_framebuffer(Xenos *x)
 
 // Writes a GPU frame back into RDRAM (scaled to the N64 size, in the colour
 // image's format), so that the RDP or the CPU can read it.
+static void flush_batch(Xenos *x);
+
 static void copy_back(Xenos *x, int slot)
 {
     FbSlot *s = &x->fb[slot];
     D3DLOCKED_RECT lr;
     u32 y, xx, w = s->width ? s->width : 320, h = s->height ? s->height : 240;
     u8 *ram = x->sys->rdram;
+    flush_batch(x);
     if (slot == x->curSlot && x->targetBound) resolve_current(x);
     if (!s->tex || !s->valid) return;
     x->dev->BlockUntilIdle();
@@ -710,6 +750,14 @@ static D3DCOLOR rgba_to_d3d(float r, float g, float b, float a)
 }
 
 // ---------------------------------------------------------------- primitives
+static void flush_batch(Xenos *x)
+{
+    if (x->batch.empty()) return;
+    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)(x->batch.size() / 3), &x->batch[0], sizeof(XVtx));
+    x->stats.draws++;
+    x->batch.clear();
+}
+
 static void xenos_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
                            u32 flags, u32 tile, u32 levels)
 {
@@ -717,13 +765,20 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     const H64RdpState *st = x->st;
     const H64RenderVertex *v[3];
     const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[(tile + 1) & 7];
-    TexBinding tb0, tb1;
     XVtx q[3];
     int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0;
     (void)levels;
     if (st->rasterFlags & (RS_FILL | RS_COPY)) return;
-    select_framebuffer(x);
-    setup_combined(x, (flags & H64_TRI_ZBUFFER) != 0, &tb0, &tb1, tile);
+    if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || x->batch.size() + 3 > BATCH_VERTICES)
+    {
+        flush_batch(x);
+        select_framebuffer(x);
+        setup_combined(x, (flags & H64_TRI_ZBUFFER) != 0, &x->batchTb0, &x->batchTb1, tile);
+        x->batchFlags = flags;
+        x->batchTile = tile;
+        x->stateDirty = 0;
+    }
+    const TexBinding &tb0 = x->batchTb0, &tb1 = x->batchTb1;
     v[0] = a; v[1] = b; v[2] = c;
     for (i = 0; i < 3; i++)
     {
@@ -739,9 +794,10 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         q[i].u1 = tex_coord(v[i]->s, t1->shiftS, t1->slo, tb1.w);
         q[i].v1 = tex_coord(v[i]->t, t1->shiftT, t1->tlo, tb1.h);
     }
-    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, 1, q, sizeof(XVtx));
+    x->batch.push_back(q[0]);
+    x->batch.push_back(q[1]);
+    x->batch.push_back(q[2]);
     x->stats.triangles++;
-    x->stats.draws++;
 }
 
 static void fill_rect(Xenos *x, const u32 *w)
@@ -866,6 +922,13 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         w[i * 2 + 1] = (u32)words[i];
     }
     op = (w[0] >> 24) & 0x3F;
+    if (op != 0x26 && op != 0x27 && op != 0x28 && op != 0x29 && op != 0x00)
+    {
+        flush_batch(x);
+        x->stateDirty = 1;
+        // TMEM, tiles or the TLUT mode change: the tile memos are stale.
+        if (op == 0x30 || op == 0x32 || op == 0x33 || op == 0x34 || op == 0x35 || op == 0x2F) x->tmemGen++;
+    }
     if (op == 0x3C) x->combineRaw = words[0];
     if (op == 0x33 || op == 0x34) check_texture_source(x);
     // State and TMEM: the software RDP (state only).
@@ -940,6 +1003,8 @@ static void show_rdram_frame(Xenos *x, u32 origin, u32 width, int bpp32)
 void h64_xenos_present(H64Renderer *r)
 {
     Xenos *x = X(r);
+    flush_batch(x);
+    x->stateDirty = 1;
     const u32 *vi = x->sys->vi.regs;
     u32 origin = vi[1] & 0xFFFFFF, width = vi[2] & 0xFFF, type = vi[0] & 3, i;
     int found = -1;
@@ -1008,6 +1073,12 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     sys->options.rdpStateOnly = 1;
     x->st = h64_rdp_state(sys);
     x->combineRaw = 0;
+    x->textureBytes = 0;
+    x->stateDirty = 1;
+    x->batchFlags = x->batchTile = 0xFFFFFFFF;
+    x->tmemGen = 1;
+    memset(x->memo, 0, sizeof(x->memo));
+    x->batch.reserve(BATCH_VERTICES);
     x->curSlot = -1;
     x->edramOwner = -1;
     x->copyBacks = 0;

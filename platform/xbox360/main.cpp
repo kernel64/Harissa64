@@ -547,6 +547,11 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
             H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u shaders=%u copyback=%u audio=%u buffers %u underruns",
                      framesSincePerf * 1000.0 / ms, (double)(sys->cpu.instructions - instrAtPerf) / (ms * 1000.0),
                      xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.shaderCompiles, xs.copyBacks, as.buffers, as.underruns);
+            {
+                MEMORYSTATUS ms;
+                GlobalMemoryStatus(&ms);
+                H64_INFO("[mem] free %u KB of %u KB", (u32)(ms.dwAvailPhys / 1024), (u32)(ms.dwTotalPhys / 1024));
+            }
             H64_INFO("[state] pc=%08X frames=%u rsp tasks=%u (hle %u) irq SP %u SI %u AI %u VI %u PI %u DP %u mi intr=%02X mask=%02X origin=%06X",
                      (u32)sys->cpu.pc, sys->vi.frames, sys->rsp.tasks, sys->rsp.hleTasks, sys->miRaised[0],
                      sys->miRaised[1], sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5],
