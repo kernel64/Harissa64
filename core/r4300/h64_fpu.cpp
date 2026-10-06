@@ -97,8 +97,7 @@ static int fpu_finish(H64Cpu *cpu, u32 cause)
 
 static void fpu_begin(H64Cpu *cpu)
 {
-    h64_fenv_set_round((int)(cpu->fcr31 & 3));
-    h64_fenv_clear();
+    h64_fenv_begin((int)(cpu->fcr31 & 3));
 }
 
 static u32 host_cause(void)

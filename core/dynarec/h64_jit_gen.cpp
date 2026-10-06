@@ -43,6 +43,8 @@ enum { R_COND = 27, R_TARGET = 26 };
 #define OFF_BRANCH ((s32)offsetof(H64Cpu, branchPending))
 #define OFF_CYCLES ((s32)offsetof(H64Cpu, cycles))
 #define OFF_INSNS ((s32)offsetof(H64Cpu, instructions))
+#define OFF_FGR(i) ((s32)(offsetof(H64Cpu, fgr) + 8 * (i)))
+#define OFF_COP0(i) ((s32)(offsetof(H64Cpu, cop0) + 8 * (i)))
 
 static u64 sext32(u32 v) { return (u64)(s64)(s32)v; }
 
@@ -52,15 +54,46 @@ static u64 sext32(u32 v) { return (u64)(s64)(s32)v; }
 // non-zero when the block must stop: an exception, a pc other than the
 // next one in the block (taken branch, nullified delay slot, end of the
 // delay slot), or one of h64_jit_should_exit's reasons.
-static int helper_interp(H64System *sys, u32 expectedNext)
+static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
 {
     H64Cpu *cpu = &sys->cpu;
-    h64_cpu_step(sys);
+    if (sys->jit->opHist && !haveOp)
+    {
+        // Why a load or store left the fast path: 192 not KSEG0/1, 193 unaligned,
+        // 194 outside RDRAM, 195 store to a page with code, 196 other.
+        u32 paddr0;
+        u32 opw = 0, opc;
+        if (h64_cpu_peek_op(sys, &opw) == 0)
+        {
+            opc = opw >> 26;
+            if ((opc >= 0x20 && opc <= 0x27) || (opc >= 0x28 && opc <= 0x2B) || opc == 0x37 || opc == 0x3F)
+            {
+                u64 a = cpu->gpr[(opw >> 21) & 31] + (u64)(s64)(s16)(opw & 0xFFFF);
+                u32 size = (opc & 3) == 0 ? 1 : (opc & 3) == 1 ? 2 : (opc == 0x37 || opc == 0x3F) ? 8 : 4;
+                if ((u64)(s64)(s32)a != a || ((u32)a >> 30) != 2) sys->jit->opHist[192]++;
+                else if (a & (size - 1)) sys->jit->opHist[193]++;
+                else if ((paddr0 = (u32)a & 0x1FFFFFFF) >= H64_RDRAM_SIZE) sys->jit->opHist[194]++;
+                else if (opc >= 0x28 && sys->jit->pageHead[paddr0 >> 12]) sys->jit->opHist[195]++;
+                else sys->jit->opHist[196]++;
+            }
+        }
+    }
+    if (haveOp) h64_cpu_step_op(sys, op);
+    else h64_cpu_step(sys);
+    if (sys->jit->opHist)
+    {
+        u32 i;
+        op = cpu->lastOp;
+        i = op >> 26;
+        if (i == 0) i = 64 + (op & 63);
+        else if (i == 0x11) i = 128 + (op & 63);
+        sys->jit->opHist[i]++;
+    }
     if (cpu->exceptionRaised || cpu->pc != sext32(expectedNext)) return 1;
     return h64_jit_should_exit(sys);
 }
 
-static u64 fn_addr(int (*f)(H64System *, u32)) { return (u64)(uintptr_t)f; }
+static u64 fn_addr(int (*f)(H64System *, u32, u32, u32)) { return (u64)(uintptr_t)f; }
 
 // ---- Code generation context ----
 struct Gen
@@ -68,6 +101,7 @@ struct Gen
     H64System *sys;
     H64PpcCode c;
     u32 pc0;          // block start
+    u32 paddr0;       // its physical address
     u32 pending;      // native instructions not yet added to cycles/instructions
     u32 exits[H64_JIT_MAX_INSNS * 4];
     u32 nExits;
@@ -116,6 +150,7 @@ static void call_interp_raw(Gen *g)
 {
     ppc_mr(&g->c, 3, JR_SYS);
     ppc_li(&g->c, 4, 0);
+    ppc_li(&g->c, 6, 0);   // the interpreter fetches the instruction
 #if defined(H64_JIT_ABI_ELFV1)
     ppc_ld(&g->c, 0, 0, JR_TMP);
     ppc_ld(&g->c, 2, 8, JR_TMP);
@@ -129,10 +164,13 @@ static void call_interp_raw(Gen *g)
 // The interpreter runs instruction `pc` (state synced); stop on its request.
 static void call_interp(Gen *g, u32 pc)
 {
+    u32 op = h64_load_be32(g->sys->rdram + g->paddr0 + (pc - g->pc0));
     sync_to(g, g->pending, pc);
     g->pending = 0;
     ppc_mr(&g->c, 3, JR_SYS);
     ppc_li32u(&g->c, 4, pc + 4);
+    ppc_li32u(&g->c, 5, op);   // the instruction, as read when compiling
+    ppc_li(&g->c, 6, 1);
 #if defined(H64_JIT_ABI_ELFV1)
     ppc_ld(&g->c, 0, 0, JR_TMP);
     ppc_ld(&g->c, 2, 8, JR_TMP);
@@ -361,13 +399,55 @@ static int emit_alu(Gen *g, u32 op)
 // Fast path: a sign-extended 32-bit address in 0x80000000-0xBFFFFFFF, aligned,
 // within RDRAM; stores also need no code on the page and no MI repeat mode.
 // Anything else runs the instruction in the interpreter.
-static int emit_mem(Gen *g, u32 op, u32 pc)
+//
+// FPU register access for LWC1/LDC1/SWC1/SDC1 (h64_fpr_get/set32/64): with
+// FR = 1 register ft is fgr[ft]; with FR = 0 an odd ft is the high word of
+// fgr[ft - 1] (32-bit) or fgr[ft - 1] itself (64-bit). For an even ft both
+// modes are the same. r7 holds Status & FR (from the guard), r5 the value.
+static void fpu_access(Gen *g, u32 ft, u32 size, int store)
 {
     H64PpcCode *c = &g->c;
-    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, size, store = 0, slow[8], nSlow = 0, done, i;
+    u32 alt = 0, done = 0, pass, n = (ft & 1) ? 2 : 1;
+    for (pass = 0; pass < n; pass++)
+    {
+        // pass 0: FR = 1 (or an even register); pass 1: FR = 0 with an odd register.
+        s32 off;
+        if (pass == 0 && n == 2)
+        {
+            ppc_cmpdi(c, 0, 7, 0);
+            alt = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // beq: FR = 0
+        }
+        if (pass == 1) ppc_patch_here(c, alt);
+        if (size == 4) off = pass == 0 ? OFF_FGR(ft) + 4 : OFF_FGR(ft - 1);
+        else off = pass == 0 ? OFF_FGR(ft) : OFF_FGR(ft - 1);
+        if (store)
+        {
+            if (size == 4) ppc_lwz(c, 5, off, JR_CPU);
+            else ppc_ld(c, 5, off, JR_CPU);
+        }
+        else
+        {
+            if (size == 4) ppc_stw(c, 5, off, JR_CPU);
+            else ppc_std(c, 5, off, JR_CPU);
+        }
+        if (pass == 0 && n == 2) done = ppc_b_fwd(c);
+    }
+    if (n == 2) ppc_patch_here(c, done);
+}
+
+// emit_mem_fast emits the fast path only and appends the branches to the
+// slow path to slow[]; it returns 0 when op is not a native memory access.
+static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
+{
+    H64PpcCode *c = &g->c;
+    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, size, store = 0, nSlow = *nSlowOut, fpu = 0;
     s32 simm = (s32)(s16)(op & 0xFFFF);
     switch (opc)
     {
+    case 0x31: size = 4; fpu = 1; break;               // LWC1
+    case 0x35: size = 8; fpu = 1; break;               // LDC1
+    case 0x39: size = 4; store = 1; fpu = 1; break;    // SWC1
+    case 0x3D: size = 8; store = 1; fpu = 1; break;    // SDC1
     case 0x20: case 0x24: size = 1; break;    // LB LBU
     case 0x21: case 0x25: size = 2; break;    // LH LHU
     case 0x23: case 0x27: size = 4; break;    // LW LWU
@@ -377,6 +457,15 @@ static int emit_mem(Gen *g, u32 op, u32 pc)
     case 0x2B: size = 4; store = 1; break;    // SW
     case 0x3F: size = 8; store = 1; break;    // SD
     default: return 0;
+    }
+    if (fpu)
+    {
+        // COP1 must be usable (else the slow path raises the exception). r7
+        // keeps Status.FR for the register selection below.
+        ppc_ld(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
+        ppc_andis_(c, 7, 5, 0x0400);     // FR
+        ppc_andis_(c, 5, 5, 0x2000);     // CU1
+        slow[nSlow++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // beq: CU1 clear
     }
     load_gpr(g, 3, rs);
     ppc_addi(c, 3, 3, simm);
@@ -415,7 +504,8 @@ static int emit_mem(Gen *g, u32 op, u32 pc)
         ppc_lwz(c, 5, 0, 6);
         ppc_andi_(c, 5, 5, 0x80);
         slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
-        load_gpr(g, 5, rt);
+        if (fpu) fpu_access(g, rt, size, 1);   // the value to store, in r5
+        else load_gpr(g, 5, rt);
         switch (size)
         {
         case 1: ppc_stbx(c, 5, JR_RDRAM, 4); break;
@@ -423,6 +513,14 @@ static int emit_mem(Gen *g, u32 op, u32 pc)
         case 4: ppc_stwx(c, 5, JR_RDRAM, 4); break;
         default: ppc_stdx(c, 5, JR_RDRAM, 4); break;
         }
+    }
+    else if (fpu)
+    {
+        // LWC1 replaces one word of a 64-bit register (big-endian host: the
+        // low word is at +4), LDC1 a whole register.
+        if (size == 4) ppc_lwzx(c, 5, JR_RDRAM, 4);
+        else ppc_ldx(c, 5, JR_RDRAM, 4);
+        fpu_access(g, rt, size, 0);
     }
     else
     {
@@ -438,10 +536,17 @@ static int emit_mem(Gen *g, u32 op, u32 pc)
         }
         store_gpr(g, 5, rt);
     }
-    done = ppc_b_fwd(c);
+    *nSlowOut = nSlow;
+    return 1;
+}
 
-    // Slow path: the interpreter runs this instruction, then the block goes on
-    // with the counters as the fast path leaves them (this instruction pending).
+// Slow path shared by the native instructions that can leave their fast path:
+// the interpreter runs the instruction, then the block goes on with the
+// counters as the fast path leaves them (this instruction pending).
+static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow, u32 done)
+{
+    H64PpcCode *c = &g->c;
+    u32 i;
     for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
     {
         u32 pend = g->pending;
@@ -452,6 +557,56 @@ static int emit_mem(Gen *g, u32 op, u32 pc)
     }
     ppc_patch_here(c, done);
     g->pending++;
+}
+
+static int emit_mem(Gen *g, u32 op, u32 pc)
+{
+    u32 slow[8], nSlow = 0, done;
+    if (!emit_mem_fast(g, op, slow, &nSlow)) return 0;
+    done = ppc_b_fwd(&g->c);
+    emit_slow_tail(g, pc, slow, nSlow, done);
+    return 1;
+}
+
+// ADDI, ADD and SUB: native, with the 32-bit overflow checked; on overflow the
+// interpreter runs the instruction and raises the exception.
+static int emit_ovf_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
+{
+    H64PpcCode *c = &g->c;
+    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31, dst;
+    if (opc == 0x08)
+    {
+        dst = rt;
+        load_gpr(g, 3, rs);
+        ppc_extsw(c, 3, 3);
+        ppc_li(c, 4, (s32)(s16)(op & 0xFFFF));
+        ppc_add(c, 5, 3, 4);
+    }
+    else if (opc == 0 && ((op & 63) == 0x20 || (op & 63) == 0x22))
+    {
+        dst = rd;
+        load_gpr(g, 3, rs);
+        load_gpr(g, 4, rt);
+        ppc_extsw(c, 3, 3);
+        ppc_extsw(c, 4, 4);
+        if ((op & 63) == 0x20) ppc_add(c, 5, 3, 4);
+        else ppc_subf(c, 5, 4, 3);
+    }
+    else
+        return 0;
+    ppc_extsw(c, 6, 5);
+    ppc_cmpd(c, 0, 6, 5);
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);   // the 64-bit sum is not a 32-bit value: overflow
+    store_gpr(g, 6, dst);
+    return 1;
+}
+
+static int emit_ovf(Gen *g, u32 op, u32 pc)
+{
+    u32 slow[1], nSlow = 0, done;
+    if (!emit_ovf_fast(g, op, slow, &nSlow)) return 0;
+    done = ppc_b_fwd(&g->c);
+    emit_slow_tail(g, pc, slow, nSlow, done);
     return 1;
 }
 
@@ -541,6 +696,8 @@ static void store_branch_pc(Gen *g, int dynamicTarget, u64 target, u32 fallthrou
 static int emit_native(Gen *g, u32 op, u32 pc)
 {
     if (emit_alu(g, op)) { g->pending++; return 1; }
+    if ((op >> 26) == 0x2F) { g->pending++; return 1; }   // CACHE: caches are not emulated
+    if (emit_ovf(g, op, pc)) return 1;
     return emit_mem(g, op, pc);
 }
 
@@ -574,6 +731,24 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
         g->pending = 0;
         exit_block(g);
         return;
+    }
+    // A load or store in the slot: native fast path; its slow path is the
+    // interpreted slot below.
+    if (g->native && !is_branch(ds) && !ends_block(ds))
+    {
+        u32 slow[8], nSlow = 0, i;
+        u32 pend = g->pending;
+        if (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow))
+        {
+            add_to(g, OFF_CYCLES, (s32)(pend + 1));
+            add_to(g, OFF_INSNS, (s32)(pend + 1));
+            store_branch_pc(g, dynamicTarget, target, dsPc + 4);
+            ppc_li(c, 3, 0);
+            ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+            exit_block(g);
+            for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
+            g->pending = pend;
+        }
     }
     // Otherwise the interpreter runs the slot, as it would after the branch:
     // pc = slot, nextPc = target or fall-through, branchPending = 1.
@@ -672,6 +847,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     g.c.buf = (u32 *)start;
     g.c.cap = MAX_BLOCK_BYTES / 4;
     g.pc0 = pc;
+    g.paddr0 = paddr;
     g.native = h64_jit_kernel_mode(&sys->cpu) && !j->noNative;
 
     emit_prologue(&g);

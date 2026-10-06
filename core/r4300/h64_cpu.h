@@ -64,6 +64,7 @@ struct H64Cpu
     u64 gpr[32];
     u64 hi, lo;
 
+    u32 lastOp;        // the last instruction fetched (statistics)
     u64 pc;            // next instruction to execute
     u64 nextPc;        // the one after it (differs after a taken branch)
     int branchPending; // the instruction at pc is in a branch delay slot
@@ -115,5 +116,14 @@ void h64_cpu_reschedule_compare(H64System *sys);
 
 // Virtual -> physical for debugging tools; returns 0 when unmapped.
 int h64_cpu_translate_debug(H64Cpu *cpu, u64 vaddr, u32 *paddr);
+// One step with the instruction at pc already known (the recompiler, for an
+// instruction it read when compiling the block): the same as h64_cpu_step
+// without the fetch.
+struct H64System;
+void h64_cpu_step_op(struct H64System *sys, u32 op);
+// The instruction at cpu->pc when it is in RDRAM (statistics, no side
+// effects). Returns 0 on success.
+struct H64System;
+int h64_cpu_peek_op(struct H64System *sys, u32 *op);
 
 #endif

@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "../common/h64_log.h"
+#include "../common/h64_endian.h"
 
 static void record_jump(H64Cpu *cpu, u64 target);
 
@@ -1010,10 +1011,10 @@ static void execute(H64System *sys, u32 op)
     h64_cpu_exception(cpu, EXC_RI, 0x180);
 }
 
-void h64_cpu_step(H64System *sys)
+static void step(H64System *sys, int haveOp, u32 op)
 {
     H64Cpu *cpu = &sys->cpu;
-    u32 op, paddr;
+    u32 paddr;
     u32 sr = (u32)cpu->cop0[CP0_STATUS];
 
     cpu->curPc = cpu->pc;
@@ -1034,12 +1035,13 @@ void h64_cpu_step(H64System *sys)
         cpu->cycles++;
         return;
     }
-    if (translate(cpu, cpu->pc, ACC_FETCH, &paddr) || h64_bus_read32(sys, paddr, &op))
+    if (!haveOp && (translate(cpu, cpu->pc, ACC_FETCH, &paddr) || h64_bus_read32(sys, paddr, &op)))
     {
         cpu->cycles++;
         return;
     }
 
+    cpu->lastOp = op;
     cpu->pcHistory[cpu->pcHistoryPos++ & 31] = (u32)cpu->curPc;
     if (op == 0) { if (++cpu->nopRun == 1000 && cpu->nopHook) cpu->nopHook(cpu->excUser); }
     else cpu->nopRun = 0;
@@ -1052,4 +1054,16 @@ void h64_cpu_step(H64System *sys)
     cpu->gpr[0] = 0;
     cpu->cycles++;
     cpu->instructions++;
+}
+
+void h64_cpu_step(H64System *sys) { step(sys, 0, 0); }
+
+void h64_cpu_step_op(H64System *sys, u32 op) { step(sys, 1, op); }
+
+int h64_cpu_peek_op(H64System *sys, u32 *op)
+{
+    u32 paddr;
+    if (!h64_cpu_translate_debug(&sys->cpu, sys->cpu.pc, &paddr) || paddr + 4 > H64_RDRAM_SIZE) return -1;   // 1 = translated
+    *op = h64_load_be32(sys->rdram + paddr);
+    return 0;
 }

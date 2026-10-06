@@ -160,3 +160,32 @@ void h64_fenv_init(void)
 int h64_fenv_reliable(void) { return s_reliable; }
 
 u32 h64_fenv_flags(void) { return s_reliable ? read_flags() : 0; }
+
+// Rounding mode and cleared flags before one FPU operation. On the Xbox a
+// single FPSCR write (the control bits cached at the first call, the mode,
+// every status bit clear) instead of _controlfp and a read-modify-write.
+#if defined(_XBOX)
+static int s_ctrlKnown;
+static u64 s_ctrl;
+
+void h64_fenv_begin(int rm)
+{
+    union { double d; u64 u; } v;
+    if (!s_reliable) { h64_fenv_set_round(rm); return; }
+    if (!s_ctrlKnown)
+    {
+        v.u = 0;
+        s_fpscrRead(&v.d);
+        s_ctrl = v.u & 0xFCu;   // enables and NI; the rounding mode is set below
+        s_ctrlKnown = 1;
+    }
+    v.u = s_ctrl | (u32)(rm & 3);   // MIPS and PowerPC encode the four modes alike
+    s_fpscrWrite(&v.d);
+}
+#else
+void h64_fenv_begin(int rm)
+{
+    h64_fenv_set_round(rm);
+    h64_fenv_clear();
+}
+#endif

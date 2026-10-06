@@ -63,6 +63,8 @@ struct H64Jit
     int curInvalidated;
 
     H64JitStats stats;
+    u32 *opHist;          // optional (debug): instructions run through the interpreter helper, by
+                          // opcode: [op], [64 + SPECIAL funct], [128 + COP1 funct]
     int noNative;                   // debugging: every instruction through the interpreter
 };
 

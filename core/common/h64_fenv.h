@@ -22,6 +22,8 @@ enum { H64_RM_NEAREST = 0, H64_RM_ZERO = 1, H64_RM_UP = 2, H64_RM_DOWN = 3 };
 void h64_fenv_init(void);           // no denormal flushing, all exceptions masked
 void h64_fenv_set_round(int mipsRm);
 void h64_fenv_clear(void);
+// Both, before one FPU operation (one FPSCR write on the Xbox).
+void h64_fenv_begin(int mipsRm);
 u32 h64_fenv_flags(void);
 // 0 when the host flags failed the self-test of h64_fenv_init (Xenia):
 // h64_fenv_flags() then always returns 0.
