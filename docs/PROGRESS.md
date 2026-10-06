@@ -1,13 +1,24 @@
 # Progress
 
-## Current milestone: M4 — HLE and the Xenos renderer (in progress)
+## Current milestone: M4 — HLE and the Xenos renderer (Xenia checks done, console test pending)
 
-- Audio task HLE (port of mupen64plus-rsp-hle): done (`--hle-audio`); checked against LLE with `--hle-audio-check` (MK64 within 16 LSB, OoT mostly 1–16 LSB, SM64 −38 dB on the output).
-- Graphics task HLE (F3D, F3DEX, F3DEX2, F3DZEX): done (`--hle-gfx`); SM64, MK64, OoT draw through it; unknown microcodes fall back to LLE per task.
-- `render/api.h`, RDP triangle setup (libdragon), Xenos renderer first version: SM64 logo and title correct in Xenia.
-- Xbox front end (ROM, CPU, HLE, XAudio2, XInput, `harissa64v2.ini`): first version.
-- Xenia findings: FPSCR exception flags not emulated (fallback in `h64_fenv`), linear resolve targets scrambled (tiled frame textures now), `--readback_resolve=true` needed for in-xex screenshots.
-- To do: framebuffer copy-back, LLE graphics through Xenos, S2DEX, MK64/OoT checks in Xenia, console run.
+| Part | Status |
+|---|---|
+| Audio task HLE (port of mupen64plus-rsp-hle) | Done (`--hle-audio`); against LLE with `--hle-audio-check`: MK64 within 16 LSB, OoT mostly 1–16 LSB (FILTER larger, upstream), SM64 −38 dB on the output |
+| Graphics task HLE: F3D, F3DEX, F3DEX2, F3DZEX | Done (`--hle-gfx`); other microcodes and G_LOAD_UCODE to them fall back to LLE per task |
+| `render/api.h`; software RDP draws HLE triangles (`h64_rdp_build_triangle`, libdragon's setup) | Done |
+| Xenos renderer: combiner → HLSL, TMEM-exact textures, blender, depth, alpha compare, rectangles | Done |
+| LLE graphics through Xenos (raw RDP triangles rebuilt by `h64_rdp_decode_triangle`) | Done: SM64 logo with `hle=0` in Xenia |
+| Framebuffer emulation: copy back to RDRAM before the RDP reads a frame as a texture; new colour images start from RDRAM | Done (not yet seen exercised by the three games) |
+| Xbox front end: ROM, recompiler/interpreter, HLE, XAudio2, XInput, ini, scripted input, screenshots, crash handler | Done |
+| S2DEX HLE, VI filters on Xenos | To do (S2DEX runs through LLE) |
+
+### Checks in Xenia (interpreter, RSP HLE, Xenos), 2026-10-06
+
+- SM64: logo (compared with the software RDP at the same VI: same geometry and animation frame, mean difference 3.6 per channel, differences on edges: VI anti-aliasing and 320x240 upscale vs native 640x480), title screen, gameplay in the castle grounds with the input script of `run_games.py`.
+- MK64: title screen, race on Luigi Raceway with the scenario's input script.
+- OoT: title screen over Hyrule field.
+- Speed 5–6 VI/s (Xenia cannot run the recompiler); audio buffers queued to XAudio2.
 
 ## M3 — Dynarec (complete, console check pending)
 
