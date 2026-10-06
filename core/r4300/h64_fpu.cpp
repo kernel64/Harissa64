@@ -58,6 +58,10 @@ static void set_result32(H64Cpu *cpu, int fd, u32 v) { cpu->fgr[fd] = v; }
 static u32 get_fs32(H64Cpu *cpu, int fs) { return (u32)cpu->fgr[fr(cpu) ? fs : (fs & ~1)]; }
 static u32 get_ft32(H64Cpu *cpu, int ft) { return (u32)cpu->fgr[ft]; }
 void h64_fpr_set64(H64Cpu *cpu, int n, u64 v) { cpu->fgr[fr(cpu) ? n : (n & ~1)] = v; }
+// The same rules for 64-bit operands and results: fs drops its low bit in
+// half mode, ft and fd are used as is.
+static void set_result64(H64Cpu *cpu, int fd, u64 v) { cpu->fgr[fd] = v; }
+static u64 get_fs64(H64Cpu *cpu, int fs) { return cpu->fgr[fr(cpu) ? fs : (fs & ~1)]; }
 
 // ---- Bit-level classification ----
 static float f_from(u32 b) { float f; memcpy(&f, &b, 4); return f; }
@@ -275,7 +279,7 @@ static void op_single(H64System *sys, u32 op)
         u64 r;
         if (s_is_denormal(a)) { fpu_finish(cpu, CAUSE_E); return; }
         if (to_int(cpu, (double)f_from(a), s_is_nan(a) || s_is_inf(a), mode, bits64, &r)) return;
-        if (bits64) h64_fpr_set64(cpu, fd, r);
+        if (bits64) set_result64(cpu, fd, r);
         else set_result32(cpu, fd, (u32)r);
         return;
     }
@@ -283,9 +287,9 @@ static void op_single(H64System *sys, u32 op)
     {
         u64 r;
         if (s_check(cpu, a, &cause)) return;
-        if (s_is_nan(a)) { if (!d_result(cpu, d_from(NAN_D), cause, &r)) h64_fpr_set64(cpu, fd, r); return; }
+        if (s_is_nan(a)) { if (!d_result(cpu, d_from(NAN_D), cause, &r)) set_result64(cpu, fd, r); return; }
         fpu_begin(cpu);
-        if (!d_result(cpu, (double)x, cause | host_cause(), &r)) h64_fpr_set64(cpu, fd, r);
+        if (!d_result(cpu, (double)x, cause | host_cause(), &r)) set_result64(cpu, fd, r);
         return;
     }
     default:
@@ -303,7 +307,7 @@ static void op_double(H64System *sys, u32 op)
 {
     H64Cpu *cpu = &sys->cpu;
     int fs = RD(op), ft = RT(op), fd = SA(op);
-    u64 a = h64_fpr_get64(cpu, fs), b = h64_fpr_get64(cpu, ft), out;
+    u64 a = get_fs64(cpu, fs), b = cpu->fgr[ft], out;
     volatile double x = d_from(a), y = d_from(b);
     u32 cause = 0;
     switch (FUNCT(op))
@@ -312,7 +316,7 @@ static void op_double(H64System *sys, u32 op)
     {
         volatile double r;
         if (d_check(cpu, a, &cause) || d_check(cpu, b, &cause)) return;
-        if (d_is_nan(a) || d_is_nan(b)) { if (!d_result(cpu, d_from(NAN_D), cause, &out)) h64_fpr_set64(cpu, fd, out); return; }
+        if (d_is_nan(a) || d_is_nan(b)) { if (!d_result(cpu, d_from(NAN_D), cause, &out)) set_result64(cpu, fd, out); return; }
         fpu_begin(cpu);
         switch (FUNCT(op))
         {
@@ -322,30 +326,30 @@ static void op_double(H64System *sys, u32 op)
         default: r = x / y; break;
         }
         cause |= host_cause();
-        if (!d_result(cpu, r, cause, &out)) h64_fpr_set64(cpu, fd, out);
+        if (!d_result(cpu, r, cause, &out)) set_result64(cpu, fd, out);
         return;
     }
     case 0x04:
     {
         volatile double r;
         if (d_check(cpu, a, &cause)) return;
-        if (d_is_nan(a)) { if (!d_result(cpu, d_from(NAN_D), cause, &out)) h64_fpr_set64(cpu, fd, out); return; }
+        if (d_is_nan(a)) { if (!d_result(cpu, d_from(NAN_D), cause, &out)) set_result64(cpu, fd, out); return; }
         fpu_begin(cpu);
         r = sqrt(x);
         cause |= host_cause();
-        if (!d_result(cpu, r, cause, &out)) h64_fpr_set64(cpu, fd, out);
+        if (!d_result(cpu, r, cause, &out)) set_result64(cpu, fd, out);
         return;
     }
     case 0x05:
         if (d_check(cpu, a, &cause)) return;
-        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, NAN_D); return; }
-        if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, a & 0x7FFFFFFFFFFFFFFFull);
+        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause)) set_result64(cpu, fd, NAN_D); return; }
+        if (!fpu_finish(cpu, cause)) set_result64(cpu, fd, a & 0x7FFFFFFFFFFFFFFFull);
         return;
-    case 0x06: h64_fpr_set64(cpu, fd, a); return;
+    case 0x06: set_result64(cpu, fd, a); return;
     case 0x07:
         if (d_check(cpu, a, &cause)) return;
-        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, NAN_D); return; }
-        if (!fpu_finish(cpu, cause)) h64_fpr_set64(cpu, fd, a ^ 0x8000000000000000ull);
+        if (d_is_nan(a)) { if (!fpu_finish(cpu, cause)) set_result64(cpu, fd, NAN_D); return; }
+        if (!fpu_finish(cpu, cause)) set_result64(cpu, fd, a ^ 0x8000000000000000ull);
         return;
     case 0x08: case 0x09: case 0x0A: case 0x0B:
     case 0x0C: case 0x0D: case 0x0E: case 0x0F:
@@ -357,7 +361,7 @@ static void op_double(H64System *sys, u32 op)
         u64 r;
         if (d_is_denormal(a)) { fpu_finish(cpu, CAUSE_E); return; }
         if (to_int(cpu, x, d_is_nan(a) || d_is_inf(a), mode, bits64, &r)) return;
-        if (bits64) h64_fpr_set64(cpu, fd, r);
+        if (bits64) set_result64(cpu, fd, r);
         else set_result32(cpu, fd, (u32)r);
         return;
     }
@@ -391,7 +395,7 @@ static void op_fixed(H64System *sys, u32 op, int isLong)
 {
     H64Cpu *cpu = &sys->cpu;
     int fs = RD(op), fd = SA(op);
-    s64 v = isLong ? (s64)h64_fpr_get64(cpu, fs) : (s64)(s32)h64_fpr_get32(cpu, fs);
+    s64 v = isLong ? (s64)get_fs64(cpu, fs) : (s64)(s32)get_fs32(cpu, fs);
     if (isLong && (v >= (1ll << 55) || v < -(1ll << 55))) { fpu_finish(cpu, CAUSE_E); return; }
     switch (FUNCT(op))
     {
@@ -410,7 +414,7 @@ static void op_fixed(H64System *sys, u32 op, int isLong)
         u64 out;
         fpu_begin(cpu);
         r = (double)v;
-        if (!d_result(cpu, r, host_cause(), &out)) h64_fpr_set64(cpu, fd, out);
+        if (!d_result(cpu, r, host_cause(), &out)) set_result64(cpu, fd, out);
         return;
     }
     }

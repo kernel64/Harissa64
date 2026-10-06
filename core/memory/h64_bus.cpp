@@ -22,6 +22,9 @@
 #define ISV_BASE 0x13FF0000u
 #define ISV_END  0x13FF1000u
 
+static void rdram_repeat(H64System *sys, u32 paddr, u64 data);
+static u64 repeat32(u32 v);
+
 // Reads from a cartridge domain with nothing behind the address return the
 // last value on the PI bus: the low 16 bits of the address, twice.
 static u32 open_bus(u32 paddr)
@@ -67,7 +70,8 @@ int h64_bus_read32(H64System *sys, u32 paddr, u32 *value)
     if (paddr < 0x04000000u) { *value = h64_mmio_read(sys, paddr); return 0; }
     if (paddr < 0x04040000u) { *value = h64_load_be32(sys->spMem + (paddr & 0x1FFFu)); return 0; }
     if (paddr < 0x04900000u) { *value = h64_mmio_read(sys, paddr); return 0; }
-    if (paddr < 0x10000000u) { *value = paddr >= 0x05000000u ? open_bus(paddr) : 0; return 0; }
+    if (paddr < 0x05000000u) { *value = 0; return 0; }
+    if (paddr < 0x10000000u) { sys->pi.regs[1] = (paddr + 4) & ~1u; *value = open_bus(paddr); return 0; }
     if (paddr < 0x1FC00000u)
     {
         u32 off = paddr - 0x10000000u;
@@ -79,6 +83,7 @@ int h64_bus_read32(H64System *sys, u32 paddr, u32 *value)
             else *value = 0;
             return 0;
         }
+        sys->pi.regs[1] = (paddr + 4) & ~1u;   // the PI's bus address follows CPU accesses (ares)
         // A CPU write to the cartridge bus is latched by the PI: the next read
         // returns it (once), for ~250 cycles (n64-systemtest cart-writing).
         if (sys->cpu.cycles < sys->pi.latchUntil)
@@ -101,7 +106,9 @@ int h64_bus_write32(H64System *sys, u32 paddr, u32 value, u32 mask)
     paddr &= ~3u;
     if (paddr < 0x03F00000u)
     {
-        if (paddr < H64_RDRAM_SIZE)
+        if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80) && mask == 0xFFFFFFFFu)
+            rdram_repeat(sys, paddr, repeat32(value));
+        else if (paddr < H64_RDRAM_SIZE)
         {
             u32 old = h64_load_be32(sys->rdram + paddr);
             h64_store_be32(sys->rdram + paddr, (old & ~mask) | (value & mask));
@@ -134,6 +141,7 @@ int h64_bus_write32(H64System *sys, u32 paddr, u32 value, u32 mask)
         // ROM is read-only; the PI latches the value while it is not busy.
         if (sys->cpu.cycles >= sys->pi.latchUntil)
         {
+            sys->pi.regs[1] = (paddr + 4) & ~1u;
             sys->pi.latch = value;
             sys->pi.latchUntil = sys->cpu.cycles + 250;   // model: decays after ~70 3-instruction loop iterations
         }
@@ -162,6 +170,7 @@ static int cart_sub_read(H64System *sys, u32 paddr, u32 *w)
     if (sys->cpu.cycles < sys->pi.latchUntil || off + 4 > sys->rom.size || (paddr >= ISV_BASE && paddr < ISV_END))
         return h64_bus_read32(sys, paddr, w);
     *w = h64_load_be32(sys->rom.data + off);
+    sys->pi.regs[1] = (paddr + 4) & ~1u;
     return 0;
 }
 
@@ -208,9 +217,28 @@ int h64_bus_read64(H64System *sys, u32 paddr, u64 *value)
 // RCP registers, cartridge) the whole 32-bit word is written with the
 // register value shifted into the lane (n64-systemtest spmem/pifram tests),
 // so the caller passes the full register value.
+// MI repeat mode (MI_MODE bit 7; n64-systemtest mi/repeat.rs): the next
+// RDRAM write fills the bytes from its address up to (MI_MODE & 0x7F) + 1
+// bytes past its 8-byte aligned address, each byte taking its lane of the
+// store data (32-bit stores repeat in both halves), wrapping inside the 2 KB
+// RDRAM row. The mode then clears itself.
+static void rdram_repeat(H64System *sys, u32 paddr, u64 data)
+{
+    u32 base = paddr & ~7u, end = base + (sys->mi.mode & 0x7F) + 1, a;
+    sys->mi.mode &= ~0x80u;
+    for (a = paddr; a < end; a++)
+    {
+        u32 b = (base & ~0x7FFu) | (a & 0x7FFu);
+        if (b < H64_RDRAM_SIZE) sys->rdram[b] = (u8)(data >> (8 * (7 - (a & 7))));
+    }
+}
+
+static u64 repeat32(u32 v) { return ((u64)v << 32) | v; }
+
 int h64_bus_write8(H64System *sys, u32 paddr, u32 regValue)
 {
     u32 shift = 8 * (3 - (paddr & 3));
+    if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80)) { rdram_repeat(sys, paddr, repeat32(regValue << shift)); return 0; }
     if (paddr < H64_RDRAM_SIZE) { sys->rdram[paddr] = (u8)regValue; return 0; }
     return h64_bus_write32(sys, paddr, regValue << shift, 0xFFFFFFFFu);
 }
@@ -218,6 +246,7 @@ int h64_bus_write8(H64System *sys, u32 paddr, u32 regValue)
 int h64_bus_write16(H64System *sys, u32 paddr, u32 regValue)
 {
     u32 shift = 8 * (2 - (paddr & 2));
+    if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80)) { rdram_repeat(sys, paddr, repeat32(regValue << shift)); return 0; }
     if (paddr < H64_RDRAM_SIZE) { h64_store_be16(sys->rdram + paddr, (u16)regValue); return 0; }
     return h64_bus_write32(sys, paddr, regValue << shift, 0xFFFFFFFFu);
 }
@@ -225,6 +254,7 @@ int h64_bus_write16(H64System *sys, u32 paddr, u32 regValue)
 // SD outside RDRAM only writes the upper word (n64-systemtest spmem SD).
 int h64_bus_write64(H64System *sys, u32 paddr, u64 value)
 {
+    if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80)) { rdram_repeat(sys, paddr, value); return 0; }
     if (paddr < H64_RDRAM_SIZE - 7) { h64_store_be64(sys->rdram + paddr, value); return 0; }
     return h64_bus_write32(sys, paddr, (u32)(value >> 32), 0xFFFFFFFFu);
 }

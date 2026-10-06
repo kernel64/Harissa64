@@ -10,8 +10,34 @@
 #include "../common/h64_log.h"
 
 // ---- CIC-NUS-6105 challenge/response ----
-// Algorithm by X-Scale (2011), BSD 2-clause licence, as distributed with
-// mupen64plus (n64_cic_nus_6105.c) and Harissa64 V1. See THIRD_PARTY.md.
+// Algorithm by X-Scale, as distributed with mupen64plus (n64_cic_nus_6105.c)
+// and Harissa64 V1. See THIRD_PARTY.md. Its licence:
+//
+// Copyright 2011 X-Scale. All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//    1. Redistributions of source code must retain the above copyright notice,
+//       this list of conditions and the following disclaimer.
+//    2. Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+// THIS SOFTWARE IS PROVIDED BY X-Scale ``AS IS'' AND ANY EXPRESS OR IMPLIED
+// WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+// MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO
+// EVENT SHALL X-Scale OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+// INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+// OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+// LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+// NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+// EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//
+// The views and conclusions contained in the software and documentation are
+// those of the authors and should not be interpreted as representing official
+// policies, either expressed or implied, of X-Scale.
 static void cic_6105_response(const u8 *chl, u8 *rsp, int len)
 {
     static const u8 lut0[16] = { 0x4, 0x7, 0xA, 0x7, 0xE, 0x5, 0xE, 0x1, 0xC, 0xF, 0x8, 0xF, 0x6, 0x3, 0x6, 0x9 };
@@ -167,6 +193,11 @@ void h64_hle_boot(H64System *sys)
     sys->pi.regs[6] = (hdr >> 8) & 0xFF;     // BSD_DOM1_PWD
     sys->pi.regs[7] = (hdr >> 16) & 0x0F;    // BSD_DOM1_PGS
     sys->pi.regs[8] = (hdr >> 20) & 0x03;    // BSD_DOM1_RLS
+    // DMA registers as IPL3 leaves them (PeterLemon DMAAlignment-PI-ROM-FROM).
+    sys->pi.regs[0] = 0x00101000;
+    sys->pi.regs[1] = 0x1000000C;
+    sys->pi.regs[2] = 0x7F;
+    sys->pi.regs[3] = 0x7F;
     sys->ri.regs[0] = 0x0E;                  // RI_MODE
     sys->ri.regs[1] = 0x40;                  // RI_CONFIG
     sys->ri.regs[3] = 0x14;                  // RI_SELECT
@@ -179,6 +210,10 @@ void h64_hle_boot(H64System *sys)
     cpu->gpr[23] = 0;                                    // s7: version
     cpu->gpr[29] = (u64)(s64)(s32)0xA4001FF0u;           // sp
     cpu->cop0[CP0_STATUS] = 0x34000000u;                 // CU1 | CU0 | FR
+    // Cause as the IPL3 leaves it on hardware (PeterLemon COP0Cause reference
+    // capture: BD, CE = 3, ExcCode 31).
+    cpu->cop0[CP0_CAUSE] = 0xB000007Cu;
+    cpu->cop0[CP0_LLADDR] = 0xFFFFFFFFu;               // usual power-on value (PeterLemon LL_LLD_SC_SCD)
     cpu->pc = (u64)(s64)(s32)entry;
     cpu->nextPc = cpu->pc + 4;
     H64_INFO("[boot] HLE boot: CIC %s seed %02X, TV type %d, entry %08X", h64_cic_name(sys->rom.cic),

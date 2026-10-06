@@ -430,7 +430,7 @@ static void tlb_probe(H64Cpu *cpu)
 {
     int i;
     u64 hi = cpu->cop0[CP0_ENTRYHI];
-    cpu->cop0[CP0_INDEX] |= 0x80000000u;
+    cpu->cop0[CP0_INDEX] = 0x80000000u;   // miss: P set, index cleared (n64-systemtest TLBP)
     for (i = 0; i < 32; i++)
     {
         const H64TlbEntry *e = &cpu->tlb[i];
@@ -593,12 +593,33 @@ static int sub64_overflows(u64 a, u64 b, u64 r) { return (((a ^ b) & (a ^ r)) >>
 // SPECIAL and REGIMM
 // ---------------------------------------------------------------------------
 
+// 64-bit operations (doubleword arithmetic, shifts, loads and stores) are
+// Reserved Instructions in user and supervisor mode unless that mode's
+// 64-bit bit (UX/SX) is set (VR4300 manual; n64-systemtest privilege tests).
+// Raises RI and returns 1 when the instruction must not run.
+static int reserved_64bit(H64Cpu *cpu)
+{
+    u64 sr = cpu->cop0[CP0_STATUS];
+    u32 ksu = (u32)(sr >> 3) & 3;
+    if ((sr & (SR_EXL | SR_ERL)) || ksu == 0) return 0;
+    if (ksu == 1 ? (sr & SR_SX) != 0 : (sr & SR_UX) != 0) return 0;
+    h64_cpu_exception(cpu, EXC_RI, 0x180);
+    return 1;
+}
+
 static void do_special(H64System *sys, u32 op)
 {
     H64Cpu *cpu = &sys->cpu;
     u64 *g = cpu->gpr;
     u64 rs = g[RS(op)], rt = g[RT(op)];
     int rd = RD(op), sa = SA(op);
+    switch (FUNCT(op))
+    {
+    case 0x14: case 0x16: case 0x17: case 0x1C: case 0x1D: case 0x1E: case 0x1F: case 0x2C: case 0x2D:
+    case 0x2E: case 0x2F: case 0x38: case 0x3A: case 0x3B: case 0x3C: case 0x3E: case 0x3F:
+        if (reserved_64bit(cpu)) return;
+        break;
+    }
     switch (FUNCT(op))
     {
     case 0x00: g[rd] = SEXT32((u32)rt << sa); return;                              // SLL
@@ -962,11 +983,12 @@ static void execute(H64System *sys, u32 op)
     case 0x18:                                                                     // DADDI
     {
         u64 r = rs + IMM16(op);
+        if (reserved_64bit(cpu)) return;
         if (add64_overflows(rs, IMM16(op), r)) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
         g[t] = r;
         return;
     }
-    case 0x19: g[t] = rs + IMM16(op); return;                                      // DADDIU
+    case 0x19: if (!reserved_64bit(cpu)) g[t] = rs + IMM16(op); return;           // DADDIU
     case 0x2F: return;                                                             // CACHE (caches not emulated)
     case 0x31: case 0x35: case 0x39: case 0x3D: do_fpu_load_store(sys, op); return;
     case 0x32: case 0x36: case 0x3A: case 0x3E:                                    // LWC2/LDC2/SWC2/SDC2
@@ -976,6 +998,12 @@ static void execute(H64System *sys, u32 op)
     case 0x1A: case 0x1B: case 0x20: case 0x21: case 0x22: case 0x23: case 0x24: case 0x25: case 0x26:
     case 0x27: case 0x28: case 0x29: case 0x2A: case 0x2B: case 0x2C: case 0x2D: case 0x2E: case 0x30:
     case 0x34: case 0x37: case 0x38: case 0x3C: case 0x3F:
+        switch (op >> 26)
+        {
+        case 0x1A: case 0x1B: case 0x2C: case 0x2D: case 0x34: case 0x37: case 0x3C: case 0x3F:   // LDL LDR SDL SDR LLD LD SCD SD
+            if (reserved_64bit(cpu)) return;
+            break;
+        }
         do_load_store(sys, op);
         return;
     }

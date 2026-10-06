@@ -9,6 +9,7 @@
 //     --info              print the ROM header and exit
 //     --state             print the CPU state at the end
 //     --trace-exc N       print the first N exceptions (not interrupts)
+//     --fb-png FILE       write the framebuffer the VI shows at the end (raw, no VI filtering)
 //   --verbose             debug log level
 // Exit code: 0 normally, 1 for a failed unit test or Dillonb test, 2 for bad usage.
 #include <stdio.h>
@@ -19,6 +20,8 @@
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "../../core/system/h64_system.h"
+#include "../../core/vi/h64_vi.h"
+#include "png_write.h"
 #include "../../tests/unit/unit_tests.h"
 
 static void stdout_sink(int level, const char *line)
@@ -175,6 +178,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
     int stopOnNops = 0;
+    const char *fbPng = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
     u64 limit;
@@ -191,6 +195,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--watch-pc") && i + 1 < argc) watchPc = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--jump-limit") && i + 1 < argc) jumpLimit = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--stop-on-nops")) stopOnNops = 1;
+        else if (!strcmp(argv[i], "--fb-png") && i + 1 < argc) fbPng = argv[++i];
         else if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
@@ -232,6 +237,15 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
            sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
     if (state) print_state(sys);
+    if (fbPng)
+    {
+        static u8 rgb[1024 * 1024 * 3];
+        int w = 0, h = 0;
+        if (h64_vi_capture(sys, rgb, 1024, 1024, &w, &h) == 0 && h64_png_write_rgb(fbPng, rgb, w, h) == 0)
+            printf("[run] framebuffer %dx%d written to %s\n", w, h, fbPng);
+        else
+            printf("[run] no framebuffer (VI blank)\n");
+    }
     h64_system_free(sys);
     free(sys);
     return result;

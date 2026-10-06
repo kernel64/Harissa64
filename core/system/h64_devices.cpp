@@ -15,7 +15,6 @@
 
 // ---- Timing models (CPU cycles at 93.75 MHz) ----
 #define CPU_HZ 93750000u
-#define PI_CYCLES_PER_BYTE 19u      // model: ~5 MB/s ROM reads with IPL3's domain 1 timing
 #define SI_DMA_CYCLES 4500u         // model: PIF command round trip
 #define SP_TASK_CYCLES 20000u       // M1 RSP stub: delay before a task "finishes"
 #define DP_AFTER_SP_CYCLES 2000u    // M1 RSP stub: RDP done after the graphics task
@@ -187,30 +186,106 @@ static void sp_status_write(H64System *sys, u32 v)
 }
 
 // ---- PI DMA ----
+// Block model and timing follow ares (ISC licence, ares/n64/pi/dma.cpp, see
+// THIRD_PARTY.md): the PI moves cartridge -> RDRAM transfers in blocks of up
+// to 128 bytes that end on a 2 KB RDRAM row, realigns the RDRAM address to
+// 8 bytes after each block, and the odd first-block rules below decide how
+// many bytes of a misaligned block land (PeterLemon DMAAlignment-PI-cart).
+
+// Domain 2 covers 0x05000000-0x05FFFFFF (64DD) and 0x08000000-0x0FFFFFFF (SRAM/FlashRAM).
+static const u32 *pi_bsd(H64System *sys, u32 cart)
+{
+    int dom2 = (cart >= 0x05000000u && cart < 0x06000000u) || (cart >= 0x08000000u && cart < 0x10000000u);
+    return &sys->pi.regs[dom2 ? 9 : 5];   // latency, pulse width, page size, release
+}
+
+static u16 pi_bus_half(H64System *sys, u32 cart)
+{
+    if (cart >= 0x10000000u && cart - 0x10000000u + 1 < sys->rom.size)
+        return h64_load_be16(sys->rom.data + (cart - 0x10000000u));
+    return (u16)cart;   // nothing answers: the bus still holds the address
+}
+
+// DMA duration in CPU cycles (ares's formula in RCP cycles, x1.5).
+static u64 pi_dma_cycles(H64System *sys, u32 len)
+{
+    const u32 *bsd = pi_bsd(sys, sys->pi.regs[1]);
+    u32 pageShift = (bsd[2] & 0xF) + 2, pageSize = 1u << pageShift, pageMask = pageSize - 1;
+    u32 first = sys->pi.regs[1], last = first + len - 2;
+    u32 firstPage = first >> pageShift, lastPage = last >> pageShift, pages = lastPage - firstPage + 1;
+    u32 buffers = 0, partial = 0;
+    u64 cycles;
+    if (firstPage == lastPage)
+    {
+        if (len == 128) buffers = 1;
+        else partial = len;
+    }
+    else
+    {
+        if ((first & pageMask) == 0) buffers++;
+        else partial += pageSize - (first & pageMask);
+        if (((last + 2) & pageMask) == 0) buffers++;
+        else partial += (last & pageMask) + 2;
+        if (firstPage + 1 < lastPage)
+            buffers += (pages - 2) * pageSize / 128;
+    }
+    cycles = (u64)(14 + bsd[0] + 1) * pages + (u64)(bsd[1] + 1 + bsd[3] + 1) * len / 2 + buffers * 28 + partial;
+    return cycles * 3 / 2;
+}
+
 static void pi_dma(H64System *sys, int toRdram, u32 value)
 {
     u32 len = (value & 0x00FFFFFF) + 1;
-    u32 dram = sys->pi.regs[0] & 0x00FFFFFE;
-    u32 cart = sys->pi.regs[1] & ~1u;
-    u32 i;
-    H64_DEBUG("[pi] DMA %s cart %08X dram %08X len %X", toRdram ? "cart->rdram" : "rdram->cart", cart, dram, len);
+    u64 cycles = pi_dma_cycles(sys, ((len - 1) | 1) + 1);   // ares: (length | 1) + 1 bytes
+    H64_DEBUG("[pi] DMA %s cart %08X dram %08X len %X", toRdram ? "cart->rdram" : "rdram->cart",
+              sys->pi.regs[1], sys->pi.regs[0], len);
     if (toRdram)
     {
-        for (i = 0; i < len; i++)
+        u8 mem[128];
+        s32 left = (s32)len, maxBlock = 128;
+        int firstBlock = 1;
+        u32 dram = sys->pi.regs[0], cart = sys->pi.regs[1];
+        while (left > 0)
         {
-            u32 c = cart + i, d = dram + i;
-            u8 b = 0;
-            if (c >= 0x10000000u && c - 0x10000000u < sys->rom.size)
-                b = sys->rom.data[c - 0x10000000u];
-            if (d < H64_RDRAM_SIZE)
-                sys->rdram[d] = b;
+            s32 misalign = (s32)(dram & 7), distEndOfRow = 0x800 - (s32)(dram & 0x7FF);
+            s32 blockLen = maxBlock - misalign < distEndOfRow ? maxBlock - misalign : distEndOfRow;
+            s32 curLen = left < blockLen ? left : blockLen, i;
+            for (i = 0; i < curLen; i += 2)
+            {
+                u16 h = pi_bus_half(sys, cart);
+                mem[i] = (u8)(h >> 8);
+                mem[i + 1] = (u8)h;
+                cart += 2;
+                left -= 2;
+            }
+            // ares writes curLen - misalign bytes, pairwise except in a short first block.
+            if (firstBlock && curLen < 127 - misalign)
+                for (i = 0; i < curLen - misalign; i++, dram++)
+                {
+                    if (dram < H64_RDRAM_SIZE) sys->rdram[dram] = mem[i];
+                }
+            else
+                for (i = 0; i < curLen - misalign; i += 2, dram += 2)
+                {
+                    if (dram < H64_RDRAM_SIZE) sys->rdram[dram] = mem[i];
+                    if (dram + 1 < H64_RDRAM_SIZE) sys->rdram[dram + 1] = mem[i + 1];
+                }
+            dram = (dram + 7) & ~7u;
+            sys->pi.regs[3] = curLen <= 8 ? (u32)(127 - misalign) : 127u;
+            firstBlock = 0;
+            maxBlock = distEndOfRow < 8 ? 128 - misalign : 128;
         }
+        sys->pi.regs[0] = dram & 0x00FFFFFF;
+        sys->pi.regs[1] = cart;
     }
-    // RDRAM -> cartridge: only SRAM/FlashRAM would take it (M5).
-    sys->pi.regs[0] = (dram + len + 7) & 0x00FFFFF8;
-    sys->pi.regs[1] = (cart + len + 1) & ~1u;
+    else
+    {
+        // RDRAM -> cartridge: only SRAM/FlashRAM would take it (M5). The
+        // length register reads back rounded up to a whole halfword pair.
+        sys->pi.regs[2] = ((value & 0x00FFFFFF) | 1) + 1;
+    }
     sys->pi.regs[4] |= 1;   // DMA busy
-    h64_sched_set(&sys->sched, H64_EV_PI, now(sys) + 64 + (u64)len * PI_CYCLES_PER_BYTE);
+    h64_sched_set(&sys->sched, H64_EV_PI, now(sys) + cycles);
 }
 
 // ---- SI DMA ----
@@ -397,6 +472,12 @@ void h64_mmio_write(H64System *sys, u32 paddr, u32 value, u32 mask)
         return;
     case 0x046:
         reg &= 0xF;
+        // Only PI_STATUS can be written while a DMA or a CPU write is in flight (ares).
+        if (reg != 4 && ((sys->pi.regs[4] & 1) || now(sys) < sys->pi.latchUntil))
+        {
+            sys->pi.regs[4] |= 4;   // error
+            return;
+        }
         switch (reg)
         {
         case 0: sys->pi.regs[0] = value & 0x00FFFFFE; return;
@@ -405,8 +486,10 @@ void h64_mmio_write(H64System *sys, u32 paddr, u32 value, u32 mask)
         case 3: sys->pi.regs[3] = value & 0x00FFFFFF; pi_dma(sys, 1, value); return;
         case 4:
             if (value & 2) { h64_mi_clear(sys, MI_INTR_PI); sys->pi.regs[4] &= ~8u; }
-            if (value & 1) { sys->pi.regs[4] = 0; h64_sched_cancel(&sys->sched, H64_EV_PI); }
+            if (value & 1) { sys->pi.regs[4] &= ~5u; h64_sched_cancel(&sys->sched, H64_EV_PI); }
             return;
+        case 7: sys->pi.regs[7] = value & 0xF; return;   // DOM1 page size
+        case 8: sys->pi.regs[8] = value & 0x3; return;   // DOM1 release
         default:
             if (reg < 13) sys->pi.regs[reg] = value & 0xFF;
             return;

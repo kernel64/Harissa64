@@ -28,7 +28,7 @@ target_compile_definitions(h64core PUBLIC H64_VERSION=${H64_VERSION})
 file(GLOB H64_UNIT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/unit/*.cpp")
 
 # ---- Headless runner ----
-add_executable(h64test platform/host/h64test.cpp ${H64_UNIT_SOURCES})
+add_executable(h64test platform/host/h64test.cpp platform/host/png_write.cpp ${H64_UNIT_SOURCES})
 target_link_libraries(h64test PRIVATE h64core)
 
 enable_testing()
