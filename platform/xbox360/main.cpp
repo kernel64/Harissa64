@@ -24,6 +24,7 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
 #include "../../core/dynarec/h64_lockstep.h"
+#include "../../core/pif/h64_input_script.h"
 #include "../../render/xenos/h64_xenos.h"
 #include "../../tests/unit/unit_tests.h"
 #include "font8x8_basic.h"
@@ -71,7 +72,8 @@ struct Config
     int hle;
     int softRenderer;
     int xenosDebug;
-    u32 pauseAt;        // pauseat=N: hold the frame shown at VI N for 20 s (window captures in Xenia)     // xenosdebug=1..3: renderer debug output (h64_xenos_set_debug)   // renderer=soft: the software RDP draws into RDRAM, Xenos only shows RDRAM (diagnosis)
+    u32 pauseAt;
+    H64InputScript input;   // input=SCRIPT: scripted controller 1 (h64test --input syntax) instead of the pad        // pauseat=N: hold the frame shown at VI N for 20 s (window captures in Xenia)     // xenosdebug=1..3: renderer debug output (h64_xenos_set_debug)   // renderer=soft: the software RDP draws into RDRAM, Xenos only shows RDRAM (diagnosis)
     u32 shots[16];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)
     int shotCount;
     u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
@@ -96,6 +98,7 @@ static void LoadConfig(Config *c)
     c->softRenderer = 0;
     c->xenosDebug = 0;
     c->pauseAt = 0;
+    memset(&c->input, 0, sizeof(c->input));
     c->trace = c->traceStep = 0;
     c->exitAfter = 0;
     if (!f) return;
@@ -114,6 +117,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "trace")) c->trace = (u32)atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
         else if (!strcmp(line, "tracestep")) c->traceStep = (u32)strtoul(eq + 1, NULL, 10);
         else if (!strcmp(line, "shots"))
         {
@@ -312,6 +316,7 @@ static void RunDynarecTest(const Config *c, char *report, size_t len)
 // ---- mode=play ----
 static XINPUT_STATE s_pad;
 static int s_padValid;
+static const H64InputScript *s_script;   // scripted input (input=), NULL: the controller
 
 static s8 StickAxis(SHORT v)
 {
@@ -327,6 +332,7 @@ static void PadHook(H64System *sys)
 {
     const XINPUT_GAMEPAD *g = &s_pad.Gamepad;
     u16 b = 0;
+    if (s_script) { h64_input_script_apply(s_script, sys); return; }
     if (!s_padValid) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; return; }
     if (g->wButtons & XINPUT_GAMEPAD_A) b |= 0x8000;
     if (g->wButtons & XINPUT_GAMEPAD_B) b |= 0x4000;
@@ -395,6 +401,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     sys->options.hleGfx = c->hle;
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
+    s_script = c->input.count ? &c->input : NULL;
     if (xb_audio_init() == 0)
     {
         sys->aiSink = xb_audio_sink;

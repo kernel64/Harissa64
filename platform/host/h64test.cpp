@@ -23,6 +23,7 @@
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/vi/h64_vi.h"
 #include "../../core/rdp/h64_rdp.h"
+#include "../../core/pif/h64_input_script.h"
 #include "../../render/api.h"
 #include "png_write.h"
 #include "../../tests/unit/unit_tests.h"
@@ -212,39 +213,11 @@ static void print_state(H64System *sys)
 
 // ---- Input script: "BUTTON@first[-last],..." in VI frames, e.g. "START@300-305,A@600".
 // Buttons: A B Z START L R DU DD DL DR CU CD CL CR, or X=n / Y=n for the stick.
-struct InputEvent { u32 first, last; u16 buttons; int axis; int value; };
-static InputEvent s_input[64];
-static int s_inputCount;
 
-static int parse_input(const char *script)
-{
-    static const struct { const char *name; u16 bit; } names[] = {
-        { "A", 0x8000 }, { "B", 0x4000 }, { "Z", 0x2000 }, { "START", 0x1000 }, { "DU", 0x0800 }, { "DD", 0x0400 },
-        { "DL", 0x0200 }, { "DR", 0x0100 }, { "L", 0x0020 }, { "R", 0x0010 }, { "CU", 0x0008 }, { "CD", 0x0004 },
-        { "CL", 0x0002 }, { "CR", 0x0001 } };
-    const char *p = script;
-    while (*p && s_inputCount < 64)
-    {
-        InputEvent *e = &s_input[s_inputCount];
-        char name[16];
-        int n = 0;
-        unsigned i;
-        memset(e, 0, sizeof(*e));
-        while (*p && *p != '@' && *p != '=' && n < 15) name[n++] = *p++;
-        name[n] = 0;
-        if (*p == '=') { e->axis = name[0] == 'X' ? 1 : 2; e->value = (int)strtol(p + 1, (char **)&p, 10); }
-        else
-            for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
-                if (!strcmp(name, names[i].name)) e->buttons = names[i].bit;
-        if (!e->buttons && !e->axis) { fprintf(stderr, "bad input event \"%s\"\n", name); return -1; }
-        if (*p != '@') { fprintf(stderr, "input event \"%s\" needs @frame\n", name); return -1; }
-        e->first = e->last = (u32)strtoul(p + 1, (char **)&p, 10);
-        if (*p == '-') e->last = (u32)strtoul(p + 1, (char **)&p, 10);
-        if (*p == ',') p++;
-        s_inputCount++;
-    }
-    return 0;
-}
+
+static H64InputScript s_script;
+
+static int parse_input(const char *script) { return h64_input_script_parse(&s_script, script); }
 
 // --null-renderer: the configuration of a GPU renderer without a GPU (the
 // software RDP keeps state only; primitives are counted, not drawn).
@@ -258,19 +231,7 @@ static void null_triangle(void *user, const H64RenderVertex *a, const H64RenderV
 }
 static H64Renderer s_nullRenderer;
 
-static void apply_input(H64System *sys)
-{
-    int i;
-    sys->pad[0].buttons = 0;
-    sys->pad[0].x = sys->pad[0].y = 0;
-    for (i = 0; i < s_inputCount; i++)
-        if (sys->vi.frames >= s_input[i].first && sys->vi.frames <= s_input[i].last)
-        {
-            sys->pad[0].buttons |= s_input[i].buttons;
-            if (s_input[i].axis == 1) sys->pad[0].x = (s8)s_input[i].value;
-            if (s_input[i].axis == 2) sys->pad[0].y = (s8)s_input[i].value;
-        }
-}
+static void apply_input(H64System *sys) { h64_input_script_apply(&s_script, sys); }
 
 // ---- Audio capture to WAV ----
 struct WavCapture { u8 *data; u32 size, cap, rate; };
