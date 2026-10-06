@@ -43,6 +43,7 @@ struct FbSlot
     u32 bytes;         // bytes per pixel
     IDirect3DTexture9 *tex;   // resolved copy (RT_WIDTH x RT_HEIGHT)
     int valid;
+    int gpuDirty;      // drawn by the GPU since the last copy back to RDRAM
     u32 lastUse;
 };
 
@@ -79,6 +80,9 @@ struct Xenos
 
     FbSlot fb[FB_SLOTS];
     int curSlot;        // slot whose image is in the N64 render target (-1: none)
+    int edramOwner;     // slot whose colour and depth the N64 EDRAM target holds (-1: none)
+    std::vector<u32> copyBuf;
+    u32 copyBacks;
     u32 useCounter;
     int debug;
     IDirect3DTexture9 *shown;   // texture shown at the last present
@@ -445,6 +449,8 @@ static void resolve_current(Xenos *x)
     s->valid = 1;
 }
 
+static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32);
+
 // Makes the N64 target hold the colour image the RDP draws to now.
 static void select_framebuffer(Xenos *x)
 {
@@ -459,25 +465,87 @@ static void select_framebuffer(Xenos *x)
         if (x->fb[i].tex && x->fb[i].addr == addr && x->fb[i].valid) { best = (int)i; break; }
     if (best < 0)
     {
+        // A colour image the GPU has not drawn: start from its RDRAM content
+        // (cleared by the game, or drawn by the CPU).
         u32 oldest = 0xFFFFFFFF;
+        IDirect3DTexture9 *init;
         for (i = 0; i < FB_SLOTS; i++)
             if (x->fb[i].lastUse < oldest) { oldest = x->fb[i].lastUse; best = (int)i; }
         s = &x->fb[best];
         s->addr = addr;
         s->valid = 0;
         x->dev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, x->debug == 1 ? 0xFF0000FF : 0xFF000000, 1.0f, 0);
+        init = x->debug == 1 ? NULL : upload_rdram(x, addr, x->st->colorWidth, x->st->colorFmt == FB_RGBA8888);
+        if (init)
+        {
+            u32 w = x->st->colorWidth;
+            draw_fullscreen(x, init, (float)w / RT_WIDTH, (float)fb_height(w) / RT_HEIGHT);
+        }
     }
-    else
+    else if (best != x->edramOwner)
     {
+        // The EDRAM target holds another image: restore this one (its depth is lost).
         s = &x->fb[best];
         x->dev->Clear(0, NULL, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         draw_fullscreen(x, s->tex, 1.0f, 1.0f);
     }
+    else
+        s = &x->fb[best];   // still in EDRAM (presenting draws to the back buffer elsewhere in EDRAM)
+    x->edramOwner = best;
+    s->gpuDirty = 1;
     s->width = x->st->colorWidth;
     s->height = fb_height(s->width);
     s->bytes = x->st->colorFmt == FB_RGBA8888 ? 4 : 2;
     s->lastUse = ++x->useCounter;
     x->curSlot = best;
+}
+
+// Writes a GPU frame back into RDRAM (scaled to the N64 size, in the colour
+// image's format), so that the RDP or the CPU can read it.
+static void copy_back(Xenos *x, int slot)
+{
+    FbSlot *s = &x->fb[slot];
+    D3DLOCKED_RECT lr;
+    u32 y, xx, w = s->width ? s->width : 320, h = s->height ? s->height : 240;
+    u8 *ram = x->sys->rdram;
+    if (slot == x->curSlot && x->targetBound) resolve_current(x);
+    if (!s->tex || !s->valid) return;
+    x->dev->BlockUntilIdle();
+    if (FAILED(s->tex->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) return;
+    if (x->copyBuf.size() < RT_WIDTH * RT_HEIGHT) x->copyBuf.resize(RT_WIDTH * RT_HEIGHT);
+    XGUntileSurface(&x->copyBuf[0], RT_WIDTH * 4, NULL, lr.pBits, RT_WIDTH, RT_HEIGHT, NULL, 4);
+    s->tex->UnlockRect(0);
+    for (y = 0; y < h; y++)
+    {
+        const u32 *src = &x->copyBuf[(y * RT_HEIGHT / h) * RT_WIDTH];
+        for (xx = 0; xx < w; xx++)
+        {
+            u32 c = src[xx * RT_WIDTH / w], a = s->addr + (y * w + xx) * s->bytes;
+            if (a + s->bytes > H64_RDRAM_SIZE) break;
+            if (s->bytes == 4)
+                h64_store_be32(ram + a, (c << 8) | 0xFF);
+            else
+                h64_store_be16(ram + a, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
+        }
+    }
+    h64_jit_notify_write(x->sys, s->addr, w * h * s->bytes);
+    s->gpuDirty = 0;
+    x->stats.copyBacks++;
+}
+
+// Texture loads from a colour image the GPU drew: copy it back first.
+static void check_texture_source(Xenos *x)
+{
+    u32 a = x->st->texAddr & 0xFFFFFF, i;
+    for (i = 0; i < FB_SLOTS; i++)
+    {
+        FbSlot *s = &x->fb[i];
+        if (s->gpuDirty && s->tex && a >= s->addr && a < s->addr + s->width * s->height * s->bytes)
+        {
+            copy_back(x, (int)i);
+            return;
+        }
+    }
 }
 
 // ---------------------------------------------------------------- render states
@@ -760,6 +828,14 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     x->stats.draws++;
 }
 
+// A raw RDP triangle (LLE graphics): drawn from its rebuilt vertices.
+static void raw_triangle(Xenos *x, const u32 *w, u32 op)
+{
+    H64RenderVertex v[3];
+    h64_rdp_decode_triangle(w, (x->st->rasterFlags & RS_PERSPECTIVE) != 0, v);
+    xenos_triangle(x, &v[0], &v[1], &v[2], op & 7, (w[0] >> 16) & 7, ((w[0] >> 19) & 7) + 1);
+}
+
 static void xenos_rdp(void *user, const u64 *words, u32 count)
 {
     Xenos *x = (Xenos *)user;
@@ -771,6 +847,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     }
     op = (w[0] >> 24) & 0x3F;
     if (op == 0x3C) x->combineRaw = words[0];
+    if (op == 0x33 || op == 0x34) check_texture_source(x);
     // State and TMEM: the software RDP (state only).
     h64_rdp_command(x->sys, words, count);
     switch (op)
@@ -788,26 +865,23 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         }
         break;
     default:
-        if (op >= 0x08 && op <= 0x0F)
-        {
-            static int warned;
-            if (!warned) { H64_WARN("[xenos] raw RDP triangles (LLE graphics) are not drawn yet"); warned = 1; }
-        }
+        if (op >= 0x08 && op <= 0x0F) raw_triangle(x, w, op);
         break;
     }
 }
 
 // ---------------------------------------------------------------- presentation
-static void show_rdram_frame(Xenos *x, u32 origin, u32 width, int bpp32)
+// Decodes an RDRAM colour image into one of the two CPU frame textures.
+static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32)
 {
     IDirect3DTexture9 *tex = x->cpuFb[x->cpuFbNext];
     D3DLOCKED_RECT lr;
     u32 h = fb_height(width), y, xx;
     const u8 *ram = x->sys->rdram;
     x->cpuFbNext ^= 1;
-    if (!tex || width == 0 || width > RT_WIDTH) return;
+    if (!tex || width == 0 || width > RT_WIDTH) return NULL;
     tex->BlockUntilNotBusy();
-    if (FAILED(tex->LockRect(0, &lr, NULL, 0))) return;
+    if (FAILED(tex->LockRect(0, &lr, NULL, 0))) return NULL;
     for (y = 0; y < h && y < RT_HEIGHT; y++)
     {
         u32 *row = (u32 *)((u8 *)lr.pBits + y * lr.Pitch);
@@ -828,6 +902,14 @@ static void show_rdram_frame(Xenos *x, u32 origin, u32 width, int bpp32)
         }
     }
     tex->UnlockRect(0);
+    return tex;
+}
+
+static void show_rdram_frame(Xenos *x, u32 origin, u32 width, int bpp32)
+{
+    u32 h = fb_height(width);
+    IDirect3DTexture9 *tex = upload_rdram(x, origin, width, bpp32);
+    if (!tex) return;
     draw_display(x, tex, (float)width / RT_WIDTH, (float)h / RT_HEIGHT);
     x->shown = tex;
     x->shownTiled = 0;
@@ -907,6 +989,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->st = h64_rdp_state(sys);
     x->combineRaw = 0;
     x->curSlot = -1;
+    x->edramOwner = -1;
+    x->copyBacks = 0;
     x->useCounter = 0;
     x->debug = 0;
     x->targetBound = 0;

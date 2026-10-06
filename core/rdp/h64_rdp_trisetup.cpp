@@ -9,6 +9,7 @@
 #include "h64_rdp.h"
 
 #include <math.h>
+#include <string.h>
 
 #include "../../render/api.h"
 
@@ -134,7 +135,13 @@ u32 h64_rdp_build_triangle(const H64RenderVertex *a, const H64RenderVertex *b, c
         int i;
         if (w2 > maxw) maxw = w2;
         if (w3 > maxw) maxw = w3;
+        // Largest 1/w scaled to 0x7FFF, or to 0x7000 when W varies: the W sent
+        // is extrapolated to the scanline above the top vertex and must not
+        // wrap past 0x7FFF (libdragon always scales to 0x7FFF). The RDP's S/W
+        // is unchanged; with a constant W (2D, or perspective correction
+        // off, where the RDP reads S directly) S stays the coordinate itself.
         minw = maxw > 0 ? 1.0 / maxw : 1.0;
+        if (w1 != w2 || w2 != w3) minw *= (double)0x7000 / 0x7FFF;
         w1 *= minw;
         w2 *= minw;
         w3 *= minw;
@@ -170,3 +177,91 @@ u32 h64_rdp_build_triangle(const H64RenderVertex *a, const H64RenderVertex *b, c
     }
     return n;
 }
+
+static s32 sext(s32 v, int bits) { return (s32)((u32)v << (32 - bits)) >> (32 - bits); }
+
+// The inverse of h64_rdp_build_triangle: rebuilds the three vertices of an
+// RDP triangle command from its edges and attribute gradients.
+// Attributes are given on the major edge at the top scanline (integer part
+// of YH): a(x, y) = A + DaDe (y - y0) + DaDx (x - xh(y)).
+static double fix16(u32 hi, u32 lo) { return (double)(s32)((hi & 0xFFFF0000u) | (lo >> 16)) / 65536.0; }
+static double fix16lo(u32 hi, u32 lo) { return (double)(s32)((hi << 16) | (lo & 0xFFFF)) / 65536.0; }
+
+void h64_rdp_decode_triangle(const u32 *w, int persp, H64RenderVertex *v)
+{
+    u32 op = (w[0] >> 24) & 0x3F;
+    double yl = sext((s32)(w[0] & 0x3FFF), 14) / 4.0, ym = sext((s32)((w[1] >> 16) & 0x3FFF), 14) / 4.0;
+    double yh = sext((s32)(w[1] & 0x3FFF), 14) / 4.0;
+    double xl = (s32)w[2] / 65536.0, xh = (s32)w[4] / 65536.0, dxh = (s32)w[5] / 65536.0;
+    double y0 = floor(yh), vx[3], vy[3];
+    double attr[3][8];   // r g b a, s t w, z
+    const u32 *p = w + 8;
+    int i, k;
+    vy[0] = yh; vx[0] = xh + dxh * (yh - y0);
+    vy[1] = ym; vx[1] = xl;
+    vy[2] = yl; vx[2] = xh + dxh * (yl - y0);
+    memset(attr, 0, sizeof(attr));
+    for (i = 0; i < 3; i++)
+    {
+        double ex = vx[i] - (xh + dxh * (vy[i] - y0)), ey = vy[i] - y0;
+        if (op & 4)
+        {
+            // r g b a: value, d/dx, d/de, d/dy as (int, frac) halves.
+            for (k = 0; k < 4; k++)
+            {
+                u32 wi = k < 2 ? 0 : 1, hiHalf = (k & 1) == 0;
+                double val = hiHalf ? fix16(p[wi], p[4 + wi]) : fix16lo(p[wi], p[4 + wi]);
+                double ddx = hiHalf ? fix16(p[2 + wi], p[6 + wi]) : fix16lo(p[2 + wi], p[6 + wi]);
+                double dde = hiHalf ? fix16(p[8 + wi], p[12 + wi]) : fix16lo(p[8 + wi], p[12 + wi]);
+                attr[i][k] = val + dde * ey + ddx * ex;
+            }
+        }
+    }
+    if (op & 4) p += 16;
+    if (op & 2)
+    {
+        for (i = 0; i < 3; i++)
+        {
+            double ex = vx[i] - (xh + dxh * (vy[i] - y0)), ey = vy[i] - y0;
+            for (k = 0; k < 3; k++)
+            {
+                u32 wi = k < 2 ? 0 : 1, hiHalf = (k & 1) == 0;
+                double val = hiHalf ? fix16(p[wi], p[4 + wi]) : fix16lo(p[wi], p[4 + wi]);
+                double ddx = hiHalf ? fix16(p[2 + wi], p[6 + wi]) : fix16lo(p[2 + wi], p[6 + wi]);
+                double dde = hiHalf ? fix16(p[8 + wi], p[12 + wi]) : fix16lo(p[8 + wi], p[12 + wi]);
+                attr[i][4 + k] = val + dde * ey + ddx * ex;
+            }
+        }
+        p += 16;
+    }
+    if (op & 1)
+    {
+        double z = (s32)p[0] / 65536.0, dzdx = (s32)p[1] / 65536.0, dzde = (s32)p[2] / 65536.0;
+        for (i = 0; i < 3; i++)
+            attr[i][7] = z + dzde * (vy[i] - y0) + dzdx * (vx[i] - (xh + dxh * (vy[i] - y0)));
+    }
+    for (i = 0; i < 3; i++)
+    {
+        double ww = attr[i][6] > 1.0 ? attr[i][6] : 1.0;
+        v[i].x = (float)vx[i];
+        v[i].y = (float)vy[i];
+        v[i].z = (float)attr[i][7];
+        v[i].r = (float)attr[i][0];
+        v[i].g = (float)attr[i][1];
+        v[i].b = (float)attr[i][2];
+        v[i].a = (float)attr[i][3];
+        if (persp)
+        {
+            v[i].s = (float)(attr[i][4] * 32767.0 / ww);
+            v[i].t = (float)(attr[i][5] * 32767.0 / ww);
+            v[i].invw = (float)(ww / 32767.0);
+        }
+        else
+        {
+            v[i].s = (float)attr[i][4];
+            v[i].t = (float)attr[i][5];
+            v[i].invw = 1.0f;
+        }
+    }
+}
+

@@ -21,6 +21,7 @@
 #include "../../core/common/h64_types.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
+#include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../render/xenos/h64_xenos.h"
@@ -511,9 +512,9 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
             XbAudioStats as;
             h64_xenos_stats(renderer, &xs, 1);
             xb_audio_stats(&as, 1);
-            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u shaders=%u audio=%u buffers %u underruns",
+            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u shaders=%u copyback=%u audio=%u buffers %u underruns",
                      framesSincePerf * 1000.0 / ms, (double)(sys->cpu.instructions - instrAtPerf) / (ms * 1000.0),
-                     xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.shaderCompiles, as.buffers, as.underruns);
+                     xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.shaderCompiles, xs.copyBacks, as.buffers, as.underruns);
             H64_INFO("[state] pc=%08X frames=%u rsp tasks=%u (hle %u) irq SP %u SI %u AI %u VI %u PI %u DP %u mi intr=%02X mask=%02X origin=%06X",
                      (u32)sys->cpu.pc, sys->vi.frames, sys->rsp.tasks, sys->rsp.hleTasks, sys->miRaised[0],
                      sys->miRaised[1], sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5],
@@ -594,6 +595,10 @@ int __cdecl main()
 
     if (s_log)
         fclose(s_log);
-    XLaunchNewImage(XLAUNCH_KEYWORD_DEFAULT_APP, 0);
+    // Back to the dashboard (Aurora on the console). Xenia has none: it looks
+    // for game:\default.xex and shows "Title Launch Failed", so under Xenia
+    // (detected by its FPU flags, see h64_fenv) the title just ends.
+    if (h64_fenv_reliable())
+        XLaunchNewImage(XLAUNCH_KEYWORD_DEFAULT_APP, 0);
     return 0;
 }

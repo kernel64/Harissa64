@@ -45,5 +45,8 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count);
 struct H64RenderVertex;
 u32 h64_rdp_build_triangle(const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c, u32 flags,
                            u32 tile, u32 levels, u64 *out);
+// The inverse: the three vertices of an RDP triangle command given as 32-bit
+// words (`persp`: the other modes' perspective correction is on).
+void h64_rdp_decode_triangle(const u32 *w, int persp, H64RenderVertex *v);
 
 #endif

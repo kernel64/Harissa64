@@ -8,6 +8,7 @@
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
+#include "../../render/api.h"
 
 // Command length in 64-bit words, from the opcode (bits 56..61).
 static u32 command_words(u32 opcode)
@@ -56,7 +57,8 @@ static void run_commands(H64System *sys)
         if (sys->dpPendingWords >= command_words((u32)(sys->dpCommand[0] >> 56) & 0x3F))
         {
             u32 opcode = (u32)(sys->dpCommand[0] >> 56) & 0x3F;
-            h64_rdp_command(sys, sys->dpCommand, sys->dpPendingWords);
+            if (sys->renderer) sys->renderer->rdp(sys->renderer->user, sys->dpCommand, sys->dpPendingWords);
+            else h64_rdp_command(sys, sys->dpCommand, sys->dpPendingWords);
             sys->dpPendingWords = 0;
             sys->dpCommands++;
             if (opcode == 0x29)   // SYNC_FULL: the RDP is idle, interrupt the CPU
