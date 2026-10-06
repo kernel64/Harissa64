@@ -191,6 +191,12 @@ static void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
 {
     u8 *r = sys->rdram, *hid = sys->rdramHidden;
     u32 idx = p->colorIndex;
+    if (sys->jit)
+    {
+        u32 shift = st->colorFmt == FB_RGBA8888 ? 2 : (st->colorFmt == FB_I4 || st->colorFmt == FB_I8) ? 0 : 1;
+        if (p->colorDirty) h64_jit_notify_write(sys, idx << shift, 4);
+        if (p->depthDirty) h64_jit_notify_write(sys, p->depthIndex << 1, 2);
+    }
     if (p->colorDirty)
     {
         switch (st->colorFmt)

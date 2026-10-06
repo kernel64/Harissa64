@@ -31,6 +31,93 @@ static void stdout_sink(int level, const char *line)
     fflush(f);
 }
 
+// ---- Executable memory for the recompiler (ppc64 Linux, used under QEMU) ----
+#if H64_JIT_CAN_RUN && defined(__linux__)
+#include <sys/mman.h>
+static void *exec_alloc(u32 size)
+{
+    void *p = mmap(0, size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return p == MAP_FAILED ? 0 : p;
+}
+static void flush_icache(void *addr, u32 len) { __builtin___clear_cache((char *)addr, (char *)addr + len); }
+#else
+static void *exec_alloc(u32 size) { (void)size; return 0; }
+static void flush_icache(void *addr, u32 len) { (void)addr; (void)len; }
+#endif
+
+#if defined(__linux__) && defined(__powerpc64__)
+// Static ppc64 build: report where a stack-protector check failed (resolve
+// the addresses with powerpc64-linux-gnu-addr2line -f -e build-ppc64/h64test).
+extern "C" void __stack_chk_fail(void)
+{
+    fprintf(stderr, "STACK SMASH in the function returning to %p\n", __builtin_return_address(0));
+    abort();
+}
+#endif
+
+static int enable_jit(H64System *sys)
+{
+    const u32 size = 32u << 20;
+    void *mem = exec_alloc(size);
+    if (!mem || h64_jit_init(sys, mem, size, flush_icache))
+    {
+        fprintf(stderr, "the recompiler needs a PowerPC host (ppc64 big-endian Linux or the Xbox 360)\n");
+        return -1;
+    }
+    return 0;
+}
+
+// ---- Lockstep: the recompiler (b) against the interpreter (a) ----
+static int compare_cpu(const H64System *a, const H64System *b, char *why, size_t whyLen)
+{
+    const H64Cpu *x = &a->cpu, *y = &b->cpu;
+    int i;
+    for (i = 0; i < 32; i++)
+        if (x->gpr[i] != y->gpr[i]) { snprintf(why, whyLen, "gpr[%d] interp %016llX jit %016llX", i, (unsigned long long)x->gpr[i], (unsigned long long)y->gpr[i]); return 1; }
+    for (i = 0; i < 32; i++)
+        if (x->fgr[i] != y->fgr[i]) { snprintf(why, whyLen, "fgr[%d] interp %016llX jit %016llX", i, (unsigned long long)x->fgr[i], (unsigned long long)y->fgr[i]); return 1; }
+    for (i = 0; i < 32; i++)
+        if (i != CP0_RANDOM && x->cop0[i] != y->cop0[i]) { snprintf(why, whyLen, "cop0[%d] interp %016llX jit %016llX", i, (unsigned long long)x->cop0[i], (unsigned long long)y->cop0[i]); return 1; }
+    if (x->hi != y->hi || x->lo != y->lo) { snprintf(why, whyLen, "hi/lo"); return 1; }
+    if (x->pc != y->pc || x->nextPc != y->nextPc || x->branchPending != y->branchPending)
+    {
+        snprintf(why, whyLen, "pc interp %016llX/%016llX/%d jit %016llX/%016llX/%d", (unsigned long long)x->pc,
+                 (unsigned long long)x->nextPc, x->branchPending, (unsigned long long)y->pc, (unsigned long long)y->nextPc, y->branchPending);
+        return 1;
+    }
+    if (x->fcr31 != y->fcr31 || x->llbit != y->llbit) { snprintf(why, whyLen, "fcr31/llbit"); return 1; }
+    if (x->instructions != y->instructions) { snprintf(why, whyLen, "instruction count interp %llu jit %llu", (unsigned long long)x->instructions, (unsigned long long)y->instructions); return 1; }
+    return 0;
+}
+
+// Runs b (recompiler) one dispatch at a time and a (interpreter) up to the
+// same cycle; compares the CPU after each dispatch and RDRAM now and then.
+static int run_lockstep(H64System *a, H64System *b, u64 limit, u64 *dispatches)
+{
+    char why[256];
+    u64 n = 0;
+    while (b->cpu.cycles < limit && !a->exitRequested && !b->exitRequested)
+    {
+        u64 before = b->cpu.cycles;
+        u32 pc = (u32)b->cpu.pc;
+        h64_jit_run_one(b);
+        while (a->cpu.cycles < b->cpu.cycles) h64_system_step(a);
+        n++;
+        if (a->cpu.cycles != b->cpu.cycles || compare_cpu(a, b, why, sizeof(why)) ||
+            ((n & 0x3FFF) == 0 && memcmp(a->rdram, b->rdram, H64_RDRAM_SIZE) && snprintf(why, sizeof(why), "RDRAM differs")))
+        {
+            if (a->cpu.cycles != b->cpu.cycles) snprintf(why, sizeof(why), "cycles interp %llu jit %llu", (unsigned long long)a->cpu.cycles, (unsigned long long)b->cpu.cycles);
+            printf("LOCKSTEP DIVERGENCE after dispatch %llu at pc %08X (cycles %llu..%llu, frame %u): %s\n",
+                   (unsigned long long)n, pc, (unsigned long long)before, (unsigned long long)b->cpu.cycles, b->vi.frames, why);
+            *dispatches = n;
+            return 1;
+        }
+    }
+    if (memcmp(a->rdram, b->rdram, H64_RDRAM_SIZE)) { printf("LOCKSTEP DIVERGENCE at the end: RDRAM differs\n"); return 1; }
+    *dispatches = n;
+    return 0;
+}
+
 static const char *s_untilText = 0;
 static int s_untilHit = 0;
 
@@ -273,6 +360,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 watchPc = 0, jumpLimit = 0;
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0;
+    int useJit = 0, lockstep = 0;
+    H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
     u64 limit;
@@ -303,6 +392,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             shotCount++;
         }
         else if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
+        else if (!strcmp(argv[i], "--cpu") && i + 1 < argc) { i++; useJit = !strcmp(argv[i], "dynarec"); }
+        else if (!strcmp(argv[i], "--lockstep")) lockstep = 1;
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
 
@@ -310,8 +401,16 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (!file) { fprintf(stderr, "cannot read %s\n", path); return 2; }
     sys = (H64System *)malloc(sizeof(H64System));
     if (!sys || h64_system_init(sys, file, size, 0)) { fprintf(stderr, "not an N64 ROM: %s\n", path); return 2; }
+    if (lockstep)
+    {
+        // The reference system: same ROM, interpreter.
+        ref = (H64System *)malloc(sizeof(H64System));
+        if (!ref || h64_system_init(ref, file, size, 0)) { fprintf(stderr, "cannot create the reference system\n"); return 2; }
+        useJit = 1;
+    }
     free(file);
     if (info) { h64_system_free(sys); free(sys); return 0; }
+    if (useJit && enable_jit(sys)) return 2;
     sys->isvSink = isv_sink;
     sys->isvUser = sys;
     sys->cpu.excHook = exc_hook;
@@ -323,6 +422,19 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (wavPath) { sys->aiSink = wav_sink; sys->aiUser = &wav; }
 
     limit = seconds > 0 ? (u64)(seconds * 93750000.0) : (u64)frames * sys->vi.frameCycles;
+    if (lockstep)
+    {
+        u64 dispatches = 0;
+        int bad = run_lockstep(ref, sys, limit, &dispatches);
+        printf("[lockstep] %s: %llu dispatches, %llu blocks run, %llu interpreter steps, %llu blocks compiled, %llu invalidations, %llu cache flushes\n",
+               bad ? "DIVERGED" : "OK, no divergence", (unsigned long long)dispatches, (unsigned long long)sys->jit->stats.blocksRun,
+               (unsigned long long)sys->jit->stats.interpSteps, (unsigned long long)sys->jit->stats.blocksCompiled,
+               (unsigned long long)sys->jit->stats.invalidations, (unsigned long long)sys->jit->stats.flushes);
+        if (bad) result = 1;
+        h64_system_free(ref);
+        free(ref);
+        ref = 0;
+    }
     while (sys->cpu.cycles < limit && !s_untilHit && !sys->exitRequested && !s_jumpStop)
     {
         apply_input(sys);
@@ -413,8 +525,18 @@ int main(int argc, char **argv)
         }
         return 0;
     }
-    if (!strcmp(argv[1], "--rom") && argc >= 3)
-        return run_rom(argv[2], argc, argv, 3);
+    // --rom FILE may come anywhere among the options.
+    for (i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--rom"))
+        {
+            static char *rest[256];
+            int n = 1, k;
+            const char *path = argv[i + 1];
+            rest[0] = argv[0];
+            for (k = 1; k < argc && n < 255; k++)
+                if (k != i && k != i + 1) rest[n++] = argv[k];
+            return run_rom(path, n, rest, 1);
+        }
     usage();
     return 2;
 }

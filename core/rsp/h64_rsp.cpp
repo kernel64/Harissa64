@@ -7,6 +7,7 @@
 
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
+#include "../rdp/h64_rdp.h"
 #include "../system/h64_system.h"
 
 // SP_STATUS bits
@@ -65,6 +66,7 @@ void h64_sp_dma_event(H64System *sys)
     H64SpDma *d = &rsp->current;
     u32 i;
     if (!rsp->dmaBusy) return;
+    if (d->toRdram) h64_jit_notify_write(sys, d->dramAddr & 0xFFFFF8, d->length + 8);
     for (i = 0; i <= d->length; i += 8)
     {
         u32 m = (d->memAddr & 0x1000) | (d->memAddr & 0xFF8);
@@ -171,6 +173,8 @@ void h64_sp_write(H64System *sys, u32 reg, u32 v)
         if (wasHalted && !(s & ST_HALT))
         {
             rsp->cycleFrac = 0;
+            rsp->syncedCycles = sys->cpu.cycles;
+            h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);
             log_task(sys);
         }
         return;
@@ -207,13 +211,13 @@ static void do_break(H64System *sys)
 // COP0: SP registers (0..7) and DP registers (8..15).
 static u32 cop0_read(H64System *sys, u32 rd)
 {
-    if (rd & 8) return h64_mmio_read(sys, 0x04100000u + ((rd & 7) << 2));
+    if (rd & 8) return h64_dp_read(sys, rd & 7);
     return h64_sp_read(sys, rd & 7);
 }
 
 static void cop0_write(H64System *sys, u32 rd, u32 v)
 {
-    if (rd & 8) h64_mmio_write(sys, 0x04100000u + ((rd & 7) << 2), v, 0xFFFFFFFFu);
+    if (rd & 8) h64_dp_write(sys, rd & 7, v);
     else h64_sp_write(sys, rd & 7, v);
 }
 
@@ -322,4 +326,29 @@ void h64_rsp_advance(H64System *sys, u32 cpuCycles)
             return;
         }
     }
+}
+
+void h64_rsp_sync(H64System *sys)
+{
+    H64Rsp *rsp = &sys->rsp;
+    u64 now = sys->cpu.cycles, delta;
+    if (rsp->inSync || now <= rsp->syncedCycles) return;
+    delta = now - rsp->syncedCycles;
+    rsp->syncedCycles = now;
+    if (rsp->status & ST_HALT) return;
+    rsp->inSync = 1;
+    while (delta && !(rsp->status & ST_HALT))
+    {
+        u32 c = delta > 0x10000000u ? 0x10000000u : (u32)delta;
+        h64_rsp_advance(sys, c);
+        delta -= c;
+    }
+    rsp->inSync = 0;
+}
+
+void h64_rsp_slice_event(H64System *sys)
+{
+    h64_rsp_sync(sys);
+    if (!(sys->rsp.status & ST_HALT))
+        h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);
 }

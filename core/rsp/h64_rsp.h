@@ -6,9 +6,16 @@
 // ares/n64/rsp, commit a776c509, see THIRD_PARTY.md), scalar paths only.
 //
 // Timing: one instruction per RCP cycle (62.5 MHz, 2 RCP cycles every 3
-// CPU cycles), without the pipeline stall and dual-issue model of ares.
+// CPU cycles), without the pipeline stall and dual-issue model of ares. A
+// running RSP advances in slices driven by the scheduler (H64_EV_RSP every
+// H64_RSP_SLICE CPU cycles) and catches up to the exact cycle whenever the
+// CPU touches the RCP (h64_rsp_sync from the bus). Its effects on the CPU
+// therefore don't depend on how CPU instructions are grouped (interpreter
+// step by step, or dynarec blocks), which keeps the two in lockstep.
 #ifndef H64_RSP_H
 #define H64_RSP_H
+
+#define H64_RSP_SLICE 512u   // CPU cycles
 
 #include "../common/h64_types.h"
 
@@ -45,6 +52,8 @@ struct H64Rsp
     int dmaFull, dmaBusy;
 
     u32 cycleFrac;             // CPU cycles not yet turned into RCP cycles (x2)
+    u64 syncedCycles;          // CPU cycle the RSP has run up to
+    int inSync;                // the RSP is running (its own register accesses must not re-enter)
     u64 instructions;
     u32 tasks;                 // tasks started (logged)
 };
@@ -52,6 +61,9 @@ struct H64Rsp
 void h64_rsp_reset(H64System *sys);
 // Runs the RSP for the RCP cycles matching `cpuCycles` CPU cycles (no-op while halted).
 void h64_rsp_advance(H64System *sys, u32 cpuCycles);
+// Runs the RSP up to the current CPU cycle.
+void h64_rsp_sync(H64System *sys);
+void h64_rsp_slice_event(H64System *sys);   // scheduler: H64_EV_RSP
 // One instruction (for tests).
 void h64_rsp_step(H64System *sys);
 

@@ -163,6 +163,7 @@ static void pi_dma(H64System *sys, int toRdram, u32 value)
         s32 left = (s32)len, maxBlock = 128;
         int firstBlock = 1;
         u32 dram = sys->pi.regs[0], cart = sys->pi.regs[1];
+        h64_jit_notify_write(sys, dram, len + 8);
         while (left > 0)
         {
             s32 misalign = (s32)(dram & 7), distEndOfRow = 0x800 - (s32)(dram & 0x7FF);
@@ -220,6 +221,7 @@ static void si_dma(H64System *sys, int toPif)
     else
     {
         h64_pif_read_hook(sys);
+        h64_jit_notify_write(sys, dram, 64);
         for (i = 0; i < 64; i++)
             if (dram + i < H64_RDRAM_SIZE)
                 sys->rdram[dram + i] = sys->pifRam[i];
@@ -426,6 +428,9 @@ void h64_device_event(H64System *sys, int ev)
         break;
     case H64_EV_SP:
         h64_sp_dma_event(sys);
+        break;
+    case H64_EV_RSP:
+        h64_rsp_slice_event(sys);
         break;
     case H64_EV_DP:
         h64_mi_raise(sys, MI_INTR_DP);

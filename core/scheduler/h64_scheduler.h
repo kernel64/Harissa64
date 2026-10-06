@@ -19,6 +19,7 @@ enum H64Event
     H64_EV_SI,            // SI DMA finished
     H64_EV_SP,            // SP DMA block finished
     H64_EV_DP,            // RDP finished processing (interrupt after a full sync)
+    H64_EV_RSP,           // the running RSP catches up (every H64_RSP_SLICE CPU cycles)
     H64_EV_COUNT
 };
 

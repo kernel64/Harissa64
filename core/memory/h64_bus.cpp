@@ -62,6 +62,7 @@ static void isv_flush(H64System *sys, u32 len)
 int h64_bus_read32(H64System *sys, u32 paddr, u32 *value)
 {
     paddr &= ~3u;
+    if (paddr - 0x03F00000u < 0x00A00000u) h64_rsp_sync(sys);   // RCP: let the RSP catch up to this cycle
     if (paddr < 0x03F00000u)
     {
         *value = paddr < H64_RDRAM_SIZE ? h64_load_be32(sys->rdram + paddr) : 0;
@@ -104,8 +105,10 @@ int h64_bus_read32(H64System *sys, u32 paddr, u32 *value)
 int h64_bus_write32(H64System *sys, u32 paddr, u32 value, u32 mask)
 {
     paddr &= ~3u;
+    if (paddr - 0x03F00000u < 0x00A00000u) h64_rsp_sync(sys);
     if (paddr < 0x03F00000u)
     {
+        if (paddr < H64_RDRAM_SIZE) h64_jit_notify_write(sys, (sys->mi.mode & 0x80) ? paddr & ~0x7FFu : paddr, (sys->mi.mode & 0x80) ? 0x800 : 4);
         if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80) && mask == 0xFFFFFFFFu)
             rdram_repeat(sys, paddr, repeat32(value));
         else if (paddr < H64_RDRAM_SIZE)
@@ -237,6 +240,7 @@ static u64 repeat32(u32 v) { return ((u64)v << 32) | v; }
 
 int h64_bus_write8(H64System *sys, u32 paddr, u32 regValue)
 {
+    if (paddr < H64_RDRAM_SIZE) h64_jit_notify_write(sys, (sys->mi.mode & 0x80) ? paddr & ~0x7FFu : paddr, (sys->mi.mode & 0x80) ? 0x800 : 1);
     u32 shift = 8 * (3 - (paddr & 3));
     if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80)) { rdram_repeat(sys, paddr, repeat32(regValue << shift)); return 0; }
     if (paddr < H64_RDRAM_SIZE) { sys->rdram[paddr] = (u8)regValue; return 0; }
@@ -245,6 +249,7 @@ int h64_bus_write8(H64System *sys, u32 paddr, u32 regValue)
 
 int h64_bus_write16(H64System *sys, u32 paddr, u32 regValue)
 {
+    if (paddr < H64_RDRAM_SIZE) h64_jit_notify_write(sys, (sys->mi.mode & 0x80) ? paddr & ~0x7FFu : paddr, (sys->mi.mode & 0x80) ? 0x800 : 2);
     u32 shift = 8 * (2 - (paddr & 2));
     if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80)) { rdram_repeat(sys, paddr, repeat32(regValue << shift)); return 0; }
     if (paddr < H64_RDRAM_SIZE) { h64_store_be16(sys->rdram + paddr, (u16)regValue); return 0; }
@@ -254,6 +259,7 @@ int h64_bus_write16(H64System *sys, u32 paddr, u32 regValue)
 // SD outside RDRAM only writes the upper word (n64-systemtest spmem SD).
 int h64_bus_write64(H64System *sys, u32 paddr, u64 value)
 {
+    if (paddr < H64_RDRAM_SIZE) h64_jit_notify_write(sys, (sys->mi.mode & 0x80) ? paddr & ~0x7FFu : paddr, (sys->mi.mode & 0x80) ? 0x800 : 8);
     if (paddr < H64_RDRAM_SIZE && (sys->mi.mode & 0x80)) { rdram_repeat(sys, paddr, value); return 0; }
     if (paddr < H64_RDRAM_SIZE - 7) { h64_store_be64(sys->rdram + paddr, value); return 0; }
     return h64_bus_write32(sys, paddr, (u32)(value >> 32), 0xFFFFFFFFu);

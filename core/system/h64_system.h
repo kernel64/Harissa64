@@ -8,6 +8,7 @@
 #include "../r4300/h64_cpu.h"
 #include "../rdp/h64_rdp.h"
 #include "../rsp/h64_rsp.h"
+#include "../dynarec/h64_jit.h"
 #include "../scheduler/h64_scheduler.h"
 
 #define H64_RDRAM_SIZE 0x800000u   // 8 MB (with the Expansion Pak)
@@ -62,6 +63,7 @@ struct H64System
     u64 dpCommand[22];   // RDP command being assembled
     u32 dpPendingWords;
     u64 dpCommands;      // statistics: RDP commands executed
+    H64Jit *jit;         // dynamic recompiler (NULL: interpreter)
     struct H64RdpState *rdpState;   // software renderer (allocated on first use)
     u8 *rdramHidden;     // RDRAM's 9th bits: 2 per 16-bit halfword, one byte each (coverage, dz)
 
@@ -90,6 +92,16 @@ void h64_system_free(H64System *sys);
 void h64_system_reset(H64System *sys);
 // Runs until `cycles` more CPU cycles have elapsed or stop is set.
 void h64_system_run_cycles(H64System *sys, u64 cycles);
+// Due events, then one interpreter step (the reference side of the lockstep check).
+void h64_system_step(H64System *sys);
+
+// Every writer of RDRAM tells the recompiler, which drops the blocks of the pages written.
+static inline void h64_jit_notify_write(H64System *sys, u32 paddr, u32 len)
+{
+    if (sys->jit && paddr < H64_RDRAM_SIZE && len &&
+        (sys->jit->pageHead[paddr >> 12] || sys->jit->pageHead[((paddr + len - 1) & (H64_RDRAM_SIZE - 1)) >> 12] || len > 4096))
+        h64_jit_invalidate(sys, paddr, len);
+}
 
 // Interrupt lines.
 void h64_mi_raise(H64System *sys, u32 bits);
