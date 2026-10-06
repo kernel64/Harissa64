@@ -127,7 +127,11 @@ void h64_jit_run_one(H64System *sys)
     b = lookup(j, pc32, paddr, h64_jit_kernel_mode(cpu));
     if (!b)
     {
-        b = h64_jit_compile(sys, pc32, paddr);
+        {
+            u64 t0 = h64_prof_now(sys);
+            b = h64_jit_compile(sys, pc32, paddr);
+            sys->prof[H64_PROF_JIT_COMPILE] += h64_prof_now(sys) - t0;
+        }
         if (!b)
         {
             h64_cpu_step(sys);

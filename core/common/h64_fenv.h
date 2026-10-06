@@ -26,5 +26,7 @@ u32 h64_fenv_flags(void);
 // 0 when the host flags failed the self-test of h64_fenv_init (Xenia):
 // h64_fenv_flags() then always returns 0.
 int h64_fenv_reliable(void);
+// Never touch the host flags (Xenia, where reading FPSCR stops the title).
+void h64_fenv_disable_host_flags(void);
 
 #endif

@@ -69,7 +69,7 @@ struct Xenos
     IDirect3DSurface9 *backBuffer, *n64Color, *n64Depth;
     IDirect3DVertexDeclaration9 *decl;
     IDirect3DVertexShader9 *vs;
-    IDirect3DPixelShader9 *psCopy, *psFill;
+    IDirect3DPixelShader9 *psCopy, *psFill, *psFallback;
     IDirect3DTexture9 *dummy;
     IDirect3DTexture9 *cpuFb[2];
     int cpuFbNext;
@@ -101,9 +101,24 @@ static IDirect3DPixelShader9 *compile_ps(IDirect3DDevice9 *dev, const char *src)
 {
     LPD3DXBUFFER code = NULL, err = NULL;
     IDirect3DPixelShader9 *ps = NULL;
-    if (FAILED(D3DXCompileShader(src, (UINT)strlen(src), NULL, NULL, "main", "ps_3_0", 0, &code, &err, NULL)))
+    HRESULT hr = D3DXCompileShader(src, (UINT)strlen(src), NULL, NULL, "main", "ps_3_0", 0, &code, &err, NULL);
+    if (FAILED(hr))
     {
-        H64_ERROR("[xenos] pixel shader compile failed: %s", err ? (const char *)err->GetBufferPointer() : "?");
+        // The error and the source, line by line (the log sink takes one line at a time).
+        char line[256];
+        const char *p = src;
+        H64_ERROR("[xenos] pixel shader compile failed (hr %08X): %s", (u32)hr,
+                  err ? (const char *)err->GetBufferPointer() : "no message");
+        while (*p)
+        {
+            size_t n = strcspn(p, "\n");
+            if (n > sizeof(line) - 1) n = sizeof(line) - 1;
+            memcpy(line, p, n);
+            line[n] = 0;
+            H64_ERROR("[xenos]   | %s", line);
+            p += n;
+            if (*p == '\n') p++;
+        }
         if (err) err->Release();
         return NULL;
     }
@@ -142,6 +157,11 @@ static const char s_vsSource[] =
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
     "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0) : COLOR { return tex2D(t0, tc.xy); }\n";
+
+// Used when a combiner shader does not compile: texture times shade.
+static const char s_psFallbackSource[] =
+    "sampler t0 : register(s0);\n"
+    "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0) : COLOR { return tex2D(t0, tc.xy) * col; }\n";
 
 static const char s_psFillSource[] =
     "float4 fill : register(c0);\n"
@@ -657,7 +677,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     if (two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     if (!two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     ps = combiner_shader(x, flags);
-    x->dev->SetPixelShader(ps ? ps : x->psFill);
+    x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);
     set_color_const(x, 1, st->envColor);
     set_color_const(x, 2, st->fogColor);
@@ -1012,6 +1032,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->vs = compile_vs(dev, s_vsSource);
     x->psCopy = compile_ps(dev, s_psCopySource);
     x->psFill = compile_ps(dev, s_psFillSource);
+    x->psFallback = compile_ps(dev, s_psFallbackSource);
     x->dummy = make_dummy(dev);
     for (i = 0; i < 2; i++)
         if (FAILED(dev->CreateTexture(RT_WIDTH, RT_HEIGHT, 1, 0, D3DFMT_LIN_A8R8G8B8, D3DPOOL_DEFAULT, &x->cpuFb[i], NULL)))
@@ -1021,7 +1042,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     for (i = 0; i < FB_SLOTS; i++)
         if (FAILED(dev->CreateTexture(RT_WIDTH, RT_HEIGHT, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &x->fb[i].tex, NULL)))
             x->fb[i].tex = NULL;
-    if (!x->n64Color || !x->n64Depth || !x->decl || !x->vs || !x->psCopy || !x->psFill || !x->dummy)
+    if (!x->n64Color || !x->n64Depth || !x->decl || !x->vs || !x->psCopy || !x->psFill || !x->psFallback || !x->dummy)
     {
         H64_ERROR("[xenos] initialisation failed (target %p depth %p decl %p vs %p ps %p/%p)", (void *)x->n64Color,
                   (void *)x->n64Depth, (void *)x->decl, (void *)x->vs, (void *)x->psCopy, (void *)x->psFill);
@@ -1056,6 +1077,7 @@ void h64_xenos_free(H64Renderer *r)
     if (x->dummy) x->dummy->Release();
     if (x->psCopy) x->psCopy->Release();
     if (x->psFill) x->psFill->Release();
+    if (x->psFallback) x->psFallback->Release();
     if (x->vs) x->vs->Release();
     if (x->decl) x->decl->Release();
     if (x->n64Color) x->n64Color->Release();

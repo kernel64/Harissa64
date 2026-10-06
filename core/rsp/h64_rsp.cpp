@@ -348,11 +348,15 @@ void h64_rsp_sync(H64System *sys)
     rsp->syncedCycles = now;
     if (rsp->status & ST_HALT) return;
     rsp->inSync = 1;
-    while (delta && !(rsp->status & ST_HALT))
     {
-        u32 c = delta > 0x10000000u ? 0x10000000u : (u32)delta;
-        h64_rsp_advance(sys, c);
-        delta -= c;
+        u64 t0 = h64_prof_now(sys);
+        while (delta && !(rsp->status & ST_HALT))
+        {
+            u32 c = delta > 0x10000000u ? 0x10000000u : (u32)delta;
+            h64_rsp_advance(sys, c);
+            delta -= c;
+        }
+        sys->prof[H64_PROF_RSP_LLE] += h64_prof_now(sys) - t0;
     }
     rsp->inSync = 0;
 }

@@ -18,17 +18,56 @@ void h64_fenv_set_round(int rm)
     _controlfp(modes[rm & 3], _MCW_RC);
 }
 
-void h64_fenv_clear(void) { _clearfp(); }
+#if defined(_XBOX)
+// The XDK CRT's _clearfp does not return the FPSCR flags (it returned 0x1F
+// for every operation on the console): read and write FPSCR directly. No
+// intrinsic exists, so the instructions are emitted in non-inlined functions
+// whose pointer argument arrives in r3 (as FlushLine in tools/execmem).
+#include <ppcintrinsics.h>
+
+__declspec(noinline) static void fpscr_read(double *out)
+{
+    __emit(0xFC00048E);   // mffs  f0
+    __emit(0xD8030000);   // stfd  f0, 0(r3)
+}
+
+__declspec(noinline) static void fpscr_write(const double *in)
+{
+    __emit(0xC8030000);   // lfd   f0, 0(r3)
+    __emit(0xFDFE058E);   // mtfsf 0xFF, f0
+}
+
+static u32 fpscr_get(void)
+{
+    union { double d; u64 u; } v;
+    fpscr_read(&v.d);
+    return (u32)v.u;
+}
+
+static void clear_flags(void)
+{
+    union { double d; u64 u; } v;
+    fpscr_read(&v.d);
+    v.u &= ~(u64)0xFFFFFF00u;   // keep the enables, NI and the rounding mode; clear every status bit
+    fpscr_write(&v.d);
+}
 
 static u32 read_flags(void)
 {
-#if defined(_XBOX)
-    // The XDK CRT declares _statusfp but does not provide it; _clearfp returns
-    // the status word before clearing it, which is fine for a single read.
-    unsigned int s = _clearfp();
+    u32 s = fpscr_get(), f = 0;
+    if (s & 0x02000000u) f |= H64_FE_INEXACT;     // XX
+    if (s & 0x08000000u) f |= H64_FE_UNDERFLOW;   // UX
+    if (s & 0x10000000u) f |= H64_FE_OVERFLOW;    // OX
+    if (s & 0x04000000u) f |= H64_FE_DIVZERO;     // ZX
+    if (s & 0x20000000u) f |= H64_FE_INVALID;     // VX
+    return f;
+}
 #else
+static void clear_flags(void) { _clearfp(); }
+
+static u32 read_flags(void)
+{
     unsigned int s = _statusfp();
-#endif
     u32 f = 0;
     if (s & _SW_INEXACT) f |= H64_FE_INEXACT;
     if (s & _SW_UNDERFLOW) f |= H64_FE_UNDERFLOW;
@@ -37,6 +76,7 @@ static u32 read_flags(void)
     if (s & _SW_INVALID) f |= H64_FE_INVALID;
     return f;
 }
+#endif
 
 #else
 #include <fenv.h>
@@ -53,7 +93,7 @@ void h64_fenv_set_round(int rm)
     fesetround(modes[rm & 3]);
 }
 
-void h64_fenv_clear(void) { feclearexcept(FE_ALL_EXCEPT); }
+static void clear_flags(void) { feclearexcept(FE_ALL_EXCEPT); }
 
 static u32 read_flags(void)
 {
@@ -68,12 +108,23 @@ static u32 read_flags(void)
 }
 #endif
 
-// Self-test: Xenia does not emulate the PowerPC FPSCR exception flags (they
-// read back all set), which would make every guest FPU operation raise an
-// exception. When the host flags do not behave, report none instead.
+// Self-test of the host flags: when they do not behave, the FPU reports
+// none. Xenia must not even read them: it does not implement mffs/mtfsf and
+// stops (the Xbox front end calls h64_fenv_disable_host_flags with xenia=1).
 #include "h64_log.h"
 
 static int s_checked, s_reliable = 1;
+
+void h64_fenv_disable_host_flags(void)
+{
+    s_checked = 1;
+    s_reliable = 0;
+}
+
+void h64_fenv_clear(void)
+{
+    if (s_reliable) clear_flags();
+}
 
 void h64_fenv_init(void)
 {

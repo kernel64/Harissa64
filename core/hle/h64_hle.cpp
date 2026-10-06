@@ -320,7 +320,10 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
         if (!sys->options.hleGfx)
             return 0;
         if (!hle->gfx) hle->gfx = h64_gfx_create(sys);
-        if (!h64_gfx_run_task(sys, hle->gfx, &fullSync))
+        u64 t0 = h64_prof_now(sys);
+        int ran = h64_gfx_run_task(sys, hle->gfx, &fullSync);
+        sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+        if (!ran)
             return 0;
         *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
         *busyCycles = H64_HLE_GFX_CYCLES;
@@ -378,7 +381,11 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
         }
         return 0;
     }
-    info->uc_pfunc(hle);
+    {
+        u64 t0 = h64_prof_now(sys);
+        info->uc_pfunc(hle);
+        sys->prof[H64_PROF_AUDIO_HLE] += h64_prof_now(sys) - t0;
+    }
     if (hle->forwarded)
         return 0;
 

@@ -33,6 +33,17 @@ struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; };   // latch: last CPU 
 struct H64Ri { u32 regs[8]; };
 struct H64Si { u32 dramAddr, pifAddrRd, pifAddrWr, status; };
 
+// Profiling (host time spent per subsystem), when the platform sets profClock.
+enum
+{
+    H64_PROF_GFX_HLE = 0,    // graphics tasks run by the HLE, rendering included
+    H64_PROF_AUDIO_HLE,      // audio tasks run by the HLE
+    H64_PROF_RENDER,         // RDP commands and triangles sent to the renderer (HLE and LLE)
+    H64_PROF_RSP_LLE,        // the LLE RSP interpreter
+    H64_PROF_JIT_COMPILE,    // recompiler: block compilation
+    H64_PROF_COUNT
+};
+
 // Options that change emulated timing: named and documented (CLAUDE.md).
 struct H64Options
 {
@@ -74,6 +85,8 @@ struct H64System
     H64Jit *jit;         // dynamic recompiler (NULL: interpreter)
     struct hle_t *hle;   // RSP task HLE state (allocated at creation)
     struct H64Renderer *renderer;   // NULL: the software RDP draws everything
+    u64 (*profClock)(void);         // optional: host clock for the profile below
+    u64 prof[H64_PROF_COUNT];       // accumulated profClock ticks per H64_PROF_*
     struct H64RdpState *rdpState;   // software renderer (allocated on first use)
     u8 *rdramHidden;     // RDRAM's 9th bits: 2 per 16-bit halfword, one byte each (coverage, dz)
 
@@ -116,6 +129,8 @@ static inline void h64_jit_notify_write(H64System *sys, u32 paddr, u32 len)
         (sys->jit->pageHead[paddr >> 12] || sys->jit->pageHead[((paddr + len - 1) & (H64_RDRAM_SIZE - 1)) >> 12] || len > 4096))
         h64_jit_invalidate(sys, paddr, len);
 }
+
+static inline u64 h64_prof_now(const H64System *sys) { return sys->profClock ? sys->profClock() : 0; }
 
 // Interrupt lines.
 void h64_mi_raise(H64System *sys, u32 bits);

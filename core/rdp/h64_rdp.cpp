@@ -57,8 +57,10 @@ static void run_commands(H64System *sys)
         if (sys->dpPendingWords >= command_words((u32)(sys->dpCommand[0] >> 56) & 0x3F))
         {
             u32 opcode = (u32)(sys->dpCommand[0] >> 56) & 0x3F;
+            u64 t0 = h64_prof_now(sys);
             if (sys->renderer) sys->renderer->rdp(sys->renderer->user, sys->dpCommand, sys->dpPendingWords);
             else h64_rdp_command(sys, sys->dpCommand, sys->dpPendingWords);
+            sys->prof[H64_PROF_RENDER] += h64_prof_now(sys) - t0;
             sys->dpPendingWords = 0;
             sys->dpCommands++;
             if (opcode == 0x29)   // SYNC_FULL: the RDP is idle, interrupt the CPU

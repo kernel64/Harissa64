@@ -77,7 +77,8 @@ struct Config
     u32 shots[16];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)
     int shotCount;
     u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
-    u32 trace, traceStep;   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
+    u32 trace, traceStep;
+    int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
 
 static void trim(char *s)
@@ -100,6 +101,7 @@ static void LoadConfig(Config *c)
     c->pauseAt = 0;
     memset(&c->input, 0, sizeof(c->input));
     c->trace = c->traceStep = 0;
+    c->xenia = 0;
     c->exitAfter = 0;
     if (!f) return;
     while (fgets(line, sizeof(line), f))
@@ -115,6 +117,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "exitafter")) c->exitAfter = (u32)atoi(eq + 1);
         else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");
         else if (!strcmp(line, "trace")) c->trace = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
@@ -353,6 +356,13 @@ static void PadHook(H64System *sys)
     sys->pad[0].y = StickAxis(g->sThumbLY);
 }
 
+static u64 ProfClock(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (u64)t.QuadPart;
+}
+
 static int s_crashed;
 static char s_crashText[256];
 
@@ -386,6 +396,9 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     LARGE_INTEGER freq, now, frameStart;
     DWORD perfStart = GetTickCount();
     u32 framesSincePerf = 0, presented = 0;
+    LARGE_INTEGER t0, t1, t2;
+    LONGLONG profRun = 0, profPresent = 0, profWait = 0;
+    u64 jitBlocks = 0, jitInval = 0, jitFlush = 0;
     u64 instrAtPerf = 0;
 
     if (!FindRom(c, rom, sizeof(rom)))
@@ -401,6 +414,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     sys->options.hleGfx = c->hle;
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
+    sys->profClock = ProfClock;
     s_script = c->input.count ? &c->input : NULL;
     if (xb_audio_init() == 0)
     {
@@ -459,8 +473,13 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         else s_padValid = 0;
         if (s_padValid && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK) && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_START))
             break;
+        QueryPerformanceCounter(&t0);
         if (RunFrame(sys)) break;
+        QueryPerformanceCounter(&t1);
         h64_xenos_present(renderer);
+        QueryPerformanceCounter(&t2);
+        profRun += t1.QuadPart - t0.QuadPart;
+        profPresent += t2.QuadPart - t1.QuadPart;
         framesSincePerf++;
         presented++;
         {
@@ -488,6 +507,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         }
 
         // Pacing: on the audio queue, or on the clock when no sound plays.
+        QueryPerformanceCounter(&t0);
         queued = xb_audio_queued_ms();
         if (queued >= 0)
         {
@@ -512,6 +532,8 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
             if (now.QuadPart - frameStart.QuadPart > frameTicks * 4) frameStart = now;   // far behind: do not catch up
         }
 
+        QueryPerformanceCounter(&t1);
+        profWait += t1.QuadPart - t0.QuadPart;
         if (GetTickCount() - perfStart >= 2000)
         {
             DWORD ms = GetTickCount() - perfStart;
@@ -526,6 +548,25 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                      (u32)sys->cpu.pc, sys->vi.frames, sys->rsp.tasks, sys->rsp.hleTasks, sys->miRaised[0],
                      sys->miRaised[1], sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5],
                      sys->mi.intr, sys->mi.mask, sys->vi.regs[1] & 0xFFFFFF);
+            if (framesSincePerf)
+            {
+                // Milliseconds per frame. cpu = the frame run minus the subsystems below it
+                // (render is part of gfx for HLE tasks, of rsp for LLE ones).
+                double k = 1000.0 / (double)freq.QuadPart / framesSincePerf;
+                u64 *pr = sys->prof;
+                double run = profRun * k, gfx = pr[H64_PROF_GFX_HLE] * k, aud = pr[H64_PROF_AUDIO_HLE] * k;
+                double rsp = pr[H64_PROF_RSP_LLE] * k, jitc = pr[H64_PROF_JIT_COMPILE] * k;
+                const H64JitStats *js = sys->jit ? &sys->jit->stats : NULL;
+                H64_INFO("[prof] ms/frame: run %.1f (cpu %.1f, gfx hle %.1f incl. render %.1f, audio hle %.1f, rsp lle %.1f, "
+                         "jit compile %.1f) present %.1f wait %.1f | jit +%llu blocks, +%llu invalidations, +%llu flushes",
+                         run, run - gfx - aud - rsp - jitc, gfx, pr[H64_PROF_RENDER] * k, aud, rsp, jitc, profPresent * k,
+                         profWait * k, js ? (unsigned long long)(js->blocksCompiled - jitBlocks) : 0ull,
+                         js ? (unsigned long long)(js->invalidations - jitInval) : 0ull,
+                         js ? (unsigned long long)(js->flushes - jitFlush) : 0ull);
+                if (js) { jitBlocks = js->blocksCompiled; jitInval = js->invalidations; jitFlush = js->flushes; }
+            }
+            memset(sys->prof, 0, sizeof(sys->prof));
+            profRun = profPresent = profWait = 0;
             perfStart = GetTickCount();
             framesSincePerf = 0;
             instrAtPerf = sys->cpu.instructions;
@@ -558,6 +599,7 @@ int __cdecl main()
     H64_INFO("[main] Harissa64 V2 %s (Xbox 360), %s-endian, %d-bit pointers", H64_VERSION_STRING,
              H64_HOST_BIG_ENDIAN ? "big" : "little", (int)(sizeof(void *) * 8));
     LoadConfig(&cfg);
+    if (cfg.xenia) h64_fenv_disable_host_flags();
     H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)");
 
     failures = h64_run_all_unit_tests(&tests, &checks);
@@ -603,9 +645,9 @@ int __cdecl main()
     if (s_log)
         fclose(s_log);
     // Back to the dashboard (Aurora on the console). Xenia has none: it looks
-    // for game:\default.xex and shows "Title Launch Failed", so under Xenia
-    // (detected by its FPU flags, see h64_fenv) the title just ends.
-    if (h64_fenv_reliable())
+    // for game:\default.xex and shows "Title Launch Failed", so with xenia=1
+    // the title just ends.
+    if (!cfg.xenia)
         XLaunchNewImage(XLAUNCH_KEYWORD_DEFAULT_APP, 0);
     return 0;
 }

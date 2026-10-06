@@ -1065,6 +1065,7 @@ void h64_gfx_free(H64Gfx *g)
 static void flush_output(H64Gfx *g)
 {
     H64System *sys = g->sys;
+    u64 t0 = h64_prof_now(sys);
     H64Renderer *r = sys->renderer;
     size_t i;
     for (i = 0; i < g->ops.size(); i++)
@@ -1089,6 +1090,7 @@ static void flush_output(H64Gfx *g)
             sys->dpCommands++;
         }
     }
+    sys->prof[H64_PROF_RENDER] += h64_prof_now(sys) - t0;
 }
 
 int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
