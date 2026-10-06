@@ -171,14 +171,108 @@ static void print_state(H64System *sys)
     printf("\n");
 }
 
+// ---- Input script: "BUTTON@first[-last],..." in VI frames, e.g. "START@300-305,A@600".
+// Buttons: A B Z START L R DU DD DL DR CU CD CL CR, or X=n / Y=n for the stick.
+struct InputEvent { u32 first, last; u16 buttons; int axis; int value; };
+static InputEvent s_input[64];
+static int s_inputCount;
+
+static int parse_input(const char *script)
+{
+    static const struct { const char *name; u16 bit; } names[] = {
+        { "A", 0x8000 }, { "B", 0x4000 }, { "Z", 0x2000 }, { "START", 0x1000 }, { "DU", 0x0800 }, { "DD", 0x0400 },
+        { "DL", 0x0200 }, { "DR", 0x0100 }, { "L", 0x0020 }, { "R", 0x0010 }, { "CU", 0x0008 }, { "CD", 0x0004 },
+        { "CL", 0x0002 }, { "CR", 0x0001 } };
+    const char *p = script;
+    while (*p && s_inputCount < 64)
+    {
+        InputEvent *e = &s_input[s_inputCount];
+        char name[16];
+        int n = 0;
+        unsigned i;
+        memset(e, 0, sizeof(*e));
+        while (*p && *p != '@' && *p != '=' && n < 15) name[n++] = *p++;
+        name[n] = 0;
+        if (*p == '=') { e->axis = name[0] == 'X' ? 1 : 2; e->value = (int)strtol(p + 1, (char **)&p, 10); }
+        else
+            for (i = 0; i < sizeof(names) / sizeof(names[0]); i++)
+                if (!strcmp(name, names[i].name)) e->buttons = names[i].bit;
+        if (!e->buttons && !e->axis) { fprintf(stderr, "bad input event \"%s\"\n", name); return -1; }
+        if (*p != '@') { fprintf(stderr, "input event \"%s\" needs @frame\n", name); return -1; }
+        e->first = e->last = (u32)strtoul(p + 1, (char **)&p, 10);
+        if (*p == '-') e->last = (u32)strtoul(p + 1, (char **)&p, 10);
+        if (*p == ',') p++;
+        s_inputCount++;
+    }
+    return 0;
+}
+
+static void apply_input(H64System *sys)
+{
+    int i;
+    sys->pad[0].buttons = 0;
+    sys->pad[0].x = sys->pad[0].y = 0;
+    for (i = 0; i < s_inputCount; i++)
+        if (sys->vi.frames >= s_input[i].first && sys->vi.frames <= s_input[i].last)
+        {
+            sys->pad[0].buttons |= s_input[i].buttons;
+            if (s_input[i].axis == 1) sys->pad[0].x = (s8)s_input[i].value;
+            if (s_input[i].axis == 2) sys->pad[0].y = (s8)s_input[i].value;
+        }
+}
+
+// ---- Audio capture to WAV ----
+struct WavCapture { u8 *data; u32 size, cap, rate; };
+
+static void wav_sink(void *user, const u8 *samples, u32 len, u32 rate)
+{
+    WavCapture *w = (WavCapture *)user;
+    u32 i;
+    if (!w->rate) w->rate = rate;
+    if (w->size + len > w->cap)
+    {
+        u32 cap = w->cap ? w->cap * 2 : 1 << 20;
+        while (cap < w->size + len) cap *= 2;
+        w->data = (u8 *)realloc(w->data, cap);
+        w->cap = cap;
+    }
+    for (i = 0; i + 1 < len; i += 2)   // big-endian -> little-endian samples
+    {
+        w->data[w->size + i] = samples[i + 1];
+        w->data[w->size + i + 1] = samples[i];
+    }
+    w->size += len & ~1u;
+}
+
+static void put_le32(u8 *p, u32 v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); p[2] = (u8)(v >> 16); p[3] = (u8)(v >> 24); }
+
+static int wav_write(const char *path, const WavCapture *w)
+{
+    u8 h[44];
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    memcpy(h, "RIFF", 4); put_le32(h + 4, 36 + w->size); memcpy(h + 8, "WAVEfmt ", 8);
+    put_le32(h + 16, 16); h[20] = 1; h[21] = 0; h[22] = 2; h[23] = 0;   // PCM, stereo
+    put_le32(h + 24, w->rate); put_le32(h + 28, w->rate * 4); h[32] = 4; h[33] = 0; h[34] = 16; h[35] = 0;
+    memcpy(h + 36, "data", 4); put_le32(h + 40, w->size);
+    fwrite(h, 1, 44, f);
+    if (w->size) fwrite(w->data, 1, w->size, f);
+    fclose(f);
+    return 0;
+}
+
 static int run_rom(const char *path, int argc, char **argv, int first)
 {
+    static WavCapture wav;
+    static struct { u32 frame; const char *path; int done; } shots[32];
+    int shotCount = 0;
+    const char *wavPath = 0;
     H64System *sys;
     u8 *file;
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
     int stopOnNops = 0;
-    const char *fbPng = 0;
+    const char *fbPng = 0, *rawPng = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
     u64 limit;
@@ -196,6 +290,18 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--jump-limit") && i + 1 < argc) jumpLimit = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--stop-on-nops")) stopOnNops = 1;
         else if (!strcmp(argv[i], "--fb-png") && i + 1 < argc) fbPng = argv[++i];
+        else if (!strcmp(argv[i], "--raw-png") && i + 1 < argc) rawPng = argv[++i];
+        else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) { if (parse_input(argv[++i])) return 2; }
+        else if (!strcmp(argv[i], "--shot") && i + 1 < argc && shotCount < 32)
+        {
+            char *colon;
+            shots[shotCount].frame = (u32)strtoul(argv[++i], &colon, 10);
+            shots[shotCount].path = *colon == ':' ? colon + 1 : 0;
+            shots[shotCount].done = 0;
+            if (!shots[shotCount].path) { fprintf(stderr, "--shot takes FRAME:file.png\n"); return 2; }
+            shotCount++;
+        }
         else if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
@@ -214,10 +320,24 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (jumpLimit) { sys->cpu.jumpLimit = jumpLimit; sys->cpu.jumpHook = jump_hook; }
     s_sysForStop = sys;
     if (stopOnNops) sys->cpu.nopHook = nop_hook;
+    if (wavPath) { sys->aiSink = wav_sink; sys->aiUser = &wav; }
 
     limit = seconds > 0 ? (u64)(seconds * 93750000.0) : (u64)frames * sys->vi.frameCycles;
     while (sys->cpu.cycles < limit && !s_untilHit && !sys->exitRequested && !s_jumpStop)
     {
+        apply_input(sys);
+        {
+            int k;
+            for (k = 0; k < shotCount; k++)
+                if (!shots[k].done && sys->vi.frames >= shots[k].frame)
+                {
+                    static u8 img[1024 * 1024 * 3];
+                    int sw, sh;
+                    shots[k].done = 1;
+                    if (h64_vi_render(sys, img, 1024, 1024, &sw, &sh) == 0 && h64_png_write_rgb(shots[k].path, img, sw, sh) == 0)
+                        printf("[shot] frame %u: %s\n", sys->vi.frames, shots[k].path);
+                }
+        }
         h64_system_run_cycles(sys, dillon ? 10000 : 1000000);
         if (dillon && sys->cpu.gpr[30] != 0)
             break;
@@ -238,14 +358,28 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
            sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
     if (state) print_state(sys);
-    if (fbPng)
+    if (fbPng || rawPng)
     {
         static u8 rgb[1024 * 1024 * 3];
-        int w = 0, h = 0;
-        if (h64_vi_capture(sys, rgb, 1024, 1024, &w, &h) == 0 && h64_png_write_rgb(fbPng, rgb, w, h) == 0)
-            printf("[run] framebuffer %dx%d written to %s\n", w, h, fbPng);
-        else
-            printf("[run] no framebuffer (VI blank)\n");
+        int w = 0, h = 0, k;
+        for (k = 0; k < 2; k++)
+        {
+            const char *out = k == 0 ? fbPng : rawPng;
+            int ok;
+            if (!out) continue;
+            ok = k == 0 ? h64_vi_render(sys, rgb, 1024, 1024, &w, &h) : h64_vi_capture(sys, rgb, 1024, 1024, &w, &h);
+            if (ok == 0 && h64_png_write_rgb(out, rgb, w, h) == 0)
+                printf("[run] %s %dx%d written to %s\n", k == 0 ? "VI output" : "framebuffer", w, h, out);
+            else
+                printf("[run] no %s (VI blank)\n", k == 0 ? "VI output" : "framebuffer");
+        }
+    }
+    if (wavPath)
+    {
+        if (wav_write(wavPath, &wav) == 0)
+            printf("[run] audio: %u samples at %u Hz written to %s\n", wav.size / 4, wav.rate, wavPath);
+        free(wav.data);
+        memset(&wav, 0, sizeof(wav));
     }
     h64_system_free(sys);
     free(sys);

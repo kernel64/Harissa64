@@ -7,6 +7,13 @@ void test_host_byte_order(H64TestContext *ctx);
 void test_bswap(H64TestContext *ctx);
 void test_endian_loads(H64TestContext *ctx);
 void test_endian_stores(H64TestContext *ctx);
+void test_rdp_tmem_rgba16(H64TestContext *ctx);
+void test_rdp_tmem_rgba32(H64TestContext *ctx);
+void test_rdp_tmem_ia_i(H64TestContext *ctx);
+void test_rdp_tmem_tlut(H64TestContext *ctx);
+void test_rdp_tmem_block(H64TestContext *ctx);
+void test_rdp_tmem_wrap(H64TestContext *ctx);
+void test_rdp_tmem_yuv(H64TestContext *ctx);
 
 static const H64TestCase s_tests[] = {
     { "types", test_types },
@@ -14,6 +21,13 @@ static const H64TestCase s_tests[] = {
     { "bswap", test_bswap },
     { "endian_loads", test_endian_loads },
     { "endian_stores", test_endian_stores },
+    { "rdp_tmem_rgba16", test_rdp_tmem_rgba16 },
+    { "rdp_tmem_rgba32", test_rdp_tmem_rgba32 },
+    { "rdp_tmem_ia_i", test_rdp_tmem_ia_i },
+    { "rdp_tmem_tlut", test_rdp_tmem_tlut },
+    { "rdp_tmem_block", test_rdp_tmem_block },
+    { "rdp_tmem_wrap", test_rdp_tmem_wrap },
+    { "rdp_tmem_yuv", test_rdp_tmem_yuv },
 };
 
 int h64_run_all_unit_tests(int *testsOut, int *checksOut)

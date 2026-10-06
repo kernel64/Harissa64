@@ -1,14 +1,14 @@
 # Compatibility matrix
 
-One row per game. V2 columns are filled from M2 on; the V1 column records what V1 (master, 7eeedf6) does, from the user's console tests and Xenia, for comparison.
+One row per game. Until the console path exists (M4), the V2 column records the reference path in h64test (interpreter, RSP LLE, software RDP, M2); the V1 column records what V1 (master, 7eeedf6) does, from the user's console tests and Xenia, for comparison.
 
 Columns (V2): boot, menu, gameplay, audio, textures, framebuffer effects, saves, save states, FPS, pause, reset, 10-minute stability, notes.
 
 | Game | V1 (console unless noted) | V2 |
 |---|---|---|
-| Super Mario 64 | Plays | — |
-| Mario Kart 64 | Plays, full speed (PAL) since 0.1.6 | — |
-| The Legend of Zelda: Ocarina of Time | Plays; pause map: long GPU stalls, freeze when closing it (open issue) | — |
+| Super Mario 64 | Plays | M2: title, file select, intro, gameplay in the castle grounds; sound OK (WAV) |
+| Mario Kart 64 | Plays, full speed (PAL) since 0.1.6 | M2: menus and a race (Luigi Raceway) |
+| The Legend of Zelda: Ocarina of Time | Plays; pause map: long GPU stalls, freeze when closing it (open issue) | M2 (Master Quest): title, file creation, intro cutscene; stops on a cutscene text box (open issue) |
 | The Legend of Zelda: Majora's Mask | Plays, some graphic noise | — |
 | Star Fox 64 | Boots and renders (Xenia) | — |
 | Wave Race 64 | Boots and renders (Xenia) | — |

@@ -20,6 +20,11 @@
 #define MI_INTR_PI 0x10u
 #define MI_INTR_DP 0x20u
 
+// Controller state (N64 button bits: A 0x8000, B 0x4000, Z 0x2000,
+// START 0x1000, D-pad U/D/L/R 0x0800/0x0400/0x0200/0x0100, L 0x0020,
+// R 0x0010, C U/D/L/R 0x0008/0x0004/0x0002/0x0001; stick -128..127).
+struct H64Pad { u16 buttons; s8 x, y; };
+
 struct H64Mi { u32 mode, version, intr, mask; };
 struct H64Vi { u32 regs[14]; u32 vIntr; u64 frameStart; u64 frameCycles; u32 frames; };
 struct H64Ai { u32 dramAddr, len, control, status, dacrate, bitrate; u32 fifoLen[2]; u32 fifoCount; u64 bufferCycles; };
@@ -61,6 +66,7 @@ struct H64System
     u8 *rdramHidden;     // RDRAM's 9th bits: 2 per 16-bit halfword, one byte each (coverage, dz)
 
     int tvType;          // 0 PAL, 1 NTSC, 2 MPAL
+    H64Pad pad[4];       // set by the platform before each frame
 
     // ISViewer debug output (cartridge 0x13FF0000).
     u8 isvBuffer[0x200];
@@ -68,6 +74,10 @@ struct H64System
     int isvLineLen;
     void (*isvSink)(void *user, const char *line);
     void *isvUser;
+    // Audio output: called with each AI buffer as the game queues it
+    // (16-bit big-endian stereo samples, `len` bytes, sample rate in Hz).
+    void (*aiSink)(void *user, const u8 *samples, u32 len, u32 rate);
+    void *aiUser;
 
     int stop;            // set to leave the run loop
     int exitRequested;   // the guest asked to end the run (EMUX XIOCTL exit)
@@ -106,6 +116,7 @@ void h64_device_event(H64System *sys, int ev);
 // PIF (h64_pif.cpp).
 void h64_pif_reset(H64System *sys);
 void h64_pif_run_commands(H64System *sys);
+void h64_pif_read_hook(H64System *sys);   // SI read (PIF -> RDRAM): controllers polled again
 void h64_pif_write_byte_hook(H64System *sys, u32 offset);
 void h64_hle_boot(H64System *sys);
 

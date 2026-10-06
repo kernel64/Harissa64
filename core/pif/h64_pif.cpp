@@ -77,35 +77,44 @@ static void pif_challenge(H64System *sys)
 }
 
 // ---- JoyBus devices ----
-// M1: a standard controller with nothing plugged in on port 1, nothing on
-// ports 2-4 and no EEPROM. Absent devices answer with the "no response" bit.
+// A standard controller with nothing plugged in on port 1 (state in
+// sys->pad[0]), nothing on ports 2-4 and no EEPROM yet (M5). Absent devices
+// answer with the "no response" bit.
 static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen, u8 *rx, int rxLen, u8 *rxLenByte)
 {
-    (void)sys;
     if (channel == 0 && txLen >= 1)
     {
         switch (tx[0])
         {
         case 0x00:   // info
         case 0xFF:   // reset + info
-            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = 0x02; }   // controller, no pak
+            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = 0x00; }   // controller; status 0: no pak (0x02 would mean "pak removed")
             return;
         case 0x01:   // buttons and stick
-            if (rxLen >= 4) memset(rx, 0, 4);
+            if (rxLen >= 4)
+            {
+                rx[0] = (u8)(sys->pad[0].buttons >> 8);
+                rx[1] = (u8)sys->pad[0].buttons;
+                rx[2] = (u8)sys->pad[0].x;
+                rx[3] = (u8)sys->pad[0].y;
+                if (sys->pad[0].buttons)
+                    H64_DEBUG("[pif] f%u controller 1 read: buttons %04X", sys->vi.frames, sys->pad[0].buttons);
+            }
             return;
         }
     }
     *rxLenByte |= 0x80;   // no response
 }
 
-void h64_pif_run_commands(H64System *sys)
+// Runs the JoyBus command block in PIF RAM. On an SI write (RDRAM -> PIF)
+// it runs when the control byte asks for it; on an SI read (PIF -> RDRAM)
+// the controller commands run again, because libultra writes the block once
+// and then only reads (osContStartReadData), as mupen64plus does it
+// (update_pif_read).
+static void run_block(H64System *sys, int controllersOnly)
 {
     u8 *ram = sys->pifRam;
     int i = 0, channel = 0;
-    u8 control = ram[0x3F];
-
-    if (control & 0x02) { pif_challenge(sys); return; }
-    if (!(control & 0x01)) return;
 
     while (i < 0x3F)
     {
@@ -123,12 +132,27 @@ void h64_pif_run_commands(H64System *sys)
             txData = rxPos + 1;
             rxData = txData + txLen;
             if (rxData + rxLen > 0x3F) break;
-            joybus_command(sys, channel, ram + txData, txLen, ram + rxData, rxLen, ram + rxPos);
+            if (!controllersOnly || channel < 4)
+                joybus_command(sys, channel, ram + txData, txLen, ram + rxData, rxLen, ram + rxPos);
             i = rxData + rxLen;
             channel++;
         }
     }
-    ram[0x3F] &= ~0x01u;
+}
+
+void h64_pif_run_commands(H64System *sys)
+{
+    u8 control = sys->pifRam[0x3F];
+    if (control & 0x02) { pif_challenge(sys); return; }
+    if (!(control & 0x01)) return;
+    run_block(sys, 0);
+    sys->pifRam[0x3F] &= ~0x01u;
+}
+
+void h64_pif_read_hook(H64System *sys)
+{
+    if (sys->pifRam[0x3F] & 0x02) return;   // challenge pending/in progress
+    run_block(sys, 1);
 }
 
 // CPU writes to PIF RAM: the control byte (0x3F) acts immediately.

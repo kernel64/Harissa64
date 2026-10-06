@@ -99,14 +99,14 @@ def png_read(path):
 
 
 def image_match(ours, ref):
-    """Share of reference pixels matched by our capture, ours scaled 2x on an
+    """Share of reference pixels matched by our raw framebuffer capture (the
+    references are framebuffer dumps, not VI output), ours scaled 2x on an
     axis where it is half size. Channels are compared on their top 5 bits
-    (5551 pixels have no more). The references are captures of the real
-    video output, which the VI stretches vertically (e.g. 474 framebuffer
-    lines shown as 480 by some ROMs, not by others; no VI emulation yet), so
-    each reference line is compared with the best of our lines between the
-    unscaled and the stretched position, give or take 3, shifted by up to
-    one pixel horizontally."""
+    (5551 pixels have no more). The dumps are stretched vertically for some
+    ROMs (e.g. 474 framebuffer lines shown as 480) and drift by a pixel
+    horizontally, so each reference line is compared with the best of our
+    lines between the unscaled and the stretched position, give or take 3,
+    shifted by up to one pixel horizontally."""
     ow, oh, orows = ours
     rw, rh, rrows = ref
     sx = 2 if ow * 2 == rw else 1
@@ -150,7 +150,7 @@ def suite_peterlemon(runner, sub):
             rel = os.path.relpath(os.path.join(d, name), base).replace(os.sep, "/")
             if os.path.exists(out_png):
                 os.remove(out_png)
-            code, out = run(runner, ["--rom", os.path.join(d, name), "--seconds", "3", "--fb-png", out_png], timeout=300)
+            code, out = run(runner, ["--rom", os.path.join(d, name), "--seconds", "3", "--raw-png", out_png], timeout=300)
             if not os.path.exists(out_png):
                 results.append((rel, False, "no picture"))
                 continue

@@ -1,6 +1,40 @@
 # Progress
 
-## Current milestone: M1 — CPU, memory, boot (complete, waiting for the go for M2)
+## Current milestone: M2 — RSP LLE, software RDP, VI → first images
+
+| Part | Status |
+|---|---|
+| RSP interpreter (scalar + vector unit), SP registers, timed SP DMA | Done (`core/rsp`, port of ares) |
+| RDP command interface (DPC registers, XBUS, SYNC_FULL interrupt) | Done (`core/rdp/h64_rdp.cpp`) |
+| Software RDP: rasteriser, TMEM, textures (all formats, TLUT, YUV, LOD), combiner, blender, depth, dither, coverage, framebuffer formats | Done (`core/rdp`, port of ParaLLEl-RDP's shaders; TMEM loads written from the hardware description) |
+| TMEM unit tests (RGBA16/32, IA/I 4/8, CI4/CI8 + TLUT RGBA16/IA16, LoadBlock with dxt, wrap/mirror/clamp/shift, YUV, odd-line swap) | Done (`tests/unit/test_rdp_tmem.cpp`, 7 tests) |
+| VI stage (AA, dither filter, divot, scaling, gamma) | Done (`core/vi`, port of ParaLLEl-RDP's VI); per-scanline register changes and the fetch bug are not emulated |
+| AI → WAV, controller input script, timed screenshots | Done (h64test `--wav`, `--input`, `--shot`) |
+| Game scenarios with expected hashes | Done (`tests/scripts/run_games.py`, `tests/expected/games.txt`) |
+
+### Test ROM scores (2026-10-06)
+
+| Suite | M1 | M2 |
+|---|---|---|
+| n64-systemtest (base) | 3407 / 3721 | **3706 / 3721** — every RSP and RDP test passes; left: 9 caches (not emulated), 6 reverse-endian user mode (unused by games) |
+| Dillonb n64-tests | 26 / 26 | 26 / 26 |
+| PeterLemon CPUTest | 93 / 94 | 93 / 94 |
+| PeterLemon RSPTest | — | 50 / 56 (6 reserved opcodes: undocumented accumulator results, ares has the same) |
+| PeterLemon RDPTest | — | 2 / 2 |
+
+The SM64 title frame is bit-identical on MSVC, gcc (little-endian) and ppc64 big-endian under QEMU.
+
+### Games (h64test, reference path: RSP LLE + software RDP + VI)
+
+| Game | Result |
+|---|---|
+| Super Mario 64 | Intro, title (animated head), file select, Peach's letter, Lakitu's fly-over, **Mario out of the pipe, controllable** in the castle grounds (HUD, dialogue). Sound: music and voices in the WAV. |
+| Mario Kart 64 | Nintendo logo, title, game/player/map select, **race on Luigi Raceway** (Mario accelerating, 1st place, timer). |
+| Ocarina of Time (Master Quest) | Intro on Hyrule field, title, file select, name entry, file created and opened, **in-engine intro cutscene** (the Deku Tree, Ganondorf's nightmare, Navi). **Open issue**: the cutscene stops on the box "It seems the time has come for the boy without a fairy to begin his journey..." although the A presses reach the game (controller reads logged) and audio and DMAs keep running; the CPU sits in the idle thread. To investigate with better tools (savestates, M5). |
+
+The six scenarios give the same image and sound hashes on MSVC and gcc; the two title scenarios were also run on ppc64 big-endian under QEMU, with the same hashes. Speed on the host (reference path, MSVC Release, i7-11800H): about 0.4× real time. Scenarios and their hashes: `tests/scripts/run_games.py`, `tests/expected/games.txt` (hashes only: game images and sound are copyrighted).
+
+## M1 — CPU, memory, boot (complete)
 
 | Part | Status |
 |---|---|
@@ -35,8 +69,8 @@ Commercial ROMs (HLE boot, 5 emulated seconds, RSP stubbed): Super Mario 64 398 
 
 ## To test on the console
 
-Optional: `platform\xbox360\Release\harissa64v2.xex` still only runs the unit tests (the core is compiled in but not run yet). It should show 5 tests / 97 checks, 0 failures, as for M0.
+Optional: `platform\xbox360\Release\harissa64v2.xex` still only runs the unit tests at start-up (the emulator itself does not run on the console before M4). It should now show 12 tests / 557 checks, 0 failures: the new TMEM tests then also run on the console's big-endian CPU.
 
 ## Next
 
-M2 — RSP and RDP (after the user confirms M1).
+M3 — Dynarec (after the user confirms M2).

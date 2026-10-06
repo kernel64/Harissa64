@@ -155,7 +155,7 @@ static void pi_dma(H64System *sys, int toRdram, u32 value)
 {
     u32 len = (value & 0x00FFFFFF) + 1;
     u64 cycles = pi_dma_cycles(sys, ((len - 1) | 1) + 1);   // ares: (length | 1) + 1 bytes
-    H64_DEBUG("[pi] DMA %s cart %08X dram %08X len %X", toRdram ? "cart->rdram" : "rdram->cart",
+    H64_DEBUG("[pi] f%u DMA %s cart %08X dram %08X len %X", sys->vi.frames, toRdram ? "cart->rdram" : "rdram->cart",
               sys->pi.regs[1], sys->pi.regs[0], len);
     if (toRdram)
     {
@@ -219,6 +219,7 @@ static void si_dma(H64System *sys, int toPif)
     }
     else
     {
+        h64_pif_read_hook(sys);
         for (i = 0; i < 64; i++)
             if (dram + i < H64_RDRAM_SIZE)
                 sys->rdram[dram + i] = sys->pifRam[i];
@@ -341,6 +342,14 @@ void h64_mmio_write(H64System *sys, u32 paddr, u32 value, u32 mask)
         {
             u32 len = value & 0x3FFF8;
             if (len == 0 || sys->ai.fifoCount >= 2) return;
+            if (sys->aiSink && (sys->ai.control & 1))
+            {
+                // Audio output: the buffer as queued (16-bit big-endian stereo samples in RDRAM).
+                u32 clock = sys->tvType == 0 ? VI_CLOCK_PAL : sys->tvType == 2 ? VI_CLOCK_MPAL : VI_CLOCK_NTSC;
+                u32 addr = sys->ai.dramAddr & (H64_RDRAM_SIZE - 1);
+                u32 n = addr + len <= H64_RDRAM_SIZE ? len : H64_RDRAM_SIZE - addr;
+                sys->aiSink(sys->aiUser, sys->rdram + addr, n, clock / ((sys->ai.dacrate & 0x3FFF) + 1));
+            }
             sys->ai.fifoLen[sys->ai.fifoCount++] = len;
             if (sys->ai.fifoCount == 1) ai_start_next(sys);
             return;
