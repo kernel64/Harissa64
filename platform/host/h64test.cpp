@@ -24,6 +24,7 @@
 #include "../../core/vi/h64_vi.h"
 #include "../../core/rdp/h64_rdp.h"
 #include "../../core/pif/h64_input_script.h"
+#include "../../core/common/h64_fenv.h"
 #include "../../render/api.h"
 #include "png_write.h"
 #include "../../tests/unit/unit_tests.h"
@@ -325,6 +326,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--hle-audio-check")) hleAudio = 2;
         else if (!strcmp(argv[i], "--hle-gfx")) hleGfx = 1;
         else if (!strcmp(argv[i], "--null-renderer")) nullRenderer = 1;
+        else if (!strcmp(argv[i], "--no-fpu-flags")) h64_fenv_disable_host_flags();
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hle")) { hleGfx = 1; hleAudio = 1; }

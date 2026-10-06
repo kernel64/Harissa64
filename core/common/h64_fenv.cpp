@@ -37,19 +37,28 @@ __declspec(noinline) static void fpscr_write(const double *in)
     __emit(0xFDFE058E);   // mtfsf 0xFF, f0
 }
 
+// Called through volatile function pointers: with whole-program optimisation
+// (LTCG) a direct call to a static function may not pass the pointer in r3
+// (the first version crashed the console at start-up). An indirect call
+// always uses the standard convention.
+static void (*volatile s_fpscrRead)(double *) = fpscr_read;
+static void (*volatile s_fpscrWrite)(const double *) = fpscr_write;
+
 static u32 fpscr_get(void)
 {
     union { double d; u64 u; } v;
-    fpscr_read(&v.d);
+    v.u = 0;
+    s_fpscrRead(&v.d);
     return (u32)v.u;
 }
 
 static void clear_flags(void)
 {
     union { double d; u64 u; } v;
-    fpscr_read(&v.d);
+    v.u = 0;
+    s_fpscrRead(&v.d);
     v.u &= ~(u64)0xFFFFFF00u;   // keep the enables, NI and the rounding mode; clear every status bit
-    fpscr_write(&v.d);
+    s_fpscrWrite(&v.d);
 }
 
 static u32 read_flags(void)

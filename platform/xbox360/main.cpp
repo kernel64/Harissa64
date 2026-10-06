@@ -78,6 +78,7 @@ struct Config
     int shotCount;
     u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
     u32 trace, traceStep;
+    int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
 
@@ -102,6 +103,7 @@ static void LoadConfig(Config *c)
     memset(&c->input, 0, sizeof(c->input));
     c->trace = c->traceStep = 0;
     c->xenia = 0;
+    c->fpuFlags = 1;
     c->exitAfter = 0;
     if (!f) return;
     while (fgets(line, sizeof(line), f))
@@ -118,6 +120,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");
         else if (!strcmp(line, "trace")) c->trace = (u32)atoi(eq + 1);
         else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
+        else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
@@ -599,7 +602,7 @@ int __cdecl main()
     H64_INFO("[main] Harissa64 V2 %s (Xbox 360), %s-endian, %d-bit pointers", H64_VERSION_STRING,
              H64_HOST_BIG_ENDIAN ? "big" : "little", (int)(sizeof(void *) * 8));
     LoadConfig(&cfg);
-    if (cfg.xenia) h64_fenv_disable_host_flags();
+    if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
     H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)");
 
     failures = h64_run_all_unit_tests(&tests, &checks);
