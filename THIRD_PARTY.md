@@ -6,6 +6,7 @@ Harissa64 V2 is licensed under the GPL v2. Code or data not written for this pro
 |---|---|---|---|
 | 8x8 bitmap font (`font8x8_basic`, U+0000–U+007F) | `platform/xbox360/font8x8_basic.h` | Daniel Hepper, https://github.com/dhepper/font8x8, based on Marcel Sondaar's font8x8 and IBM's public-domain VGA fonts | Public domain |
 | CIC-NUS-6105 challenge/response algorithm | `core/pif/h64_pif.cpp` (`cic_6105_response`) | X-Scale (2011), as distributed with mupen64plus (`n64_cic_nus_6105.c`) and Harissa64 V1; rewritten in the V2 style, same algorithm and tables | BSD 2-clause (notice kept in the source) |
+| RSP interpreter: scalar unit, vector unit (scalar "SISD" paths), reciprocal tables, SP DMA and registers | `core/rsp/` | ares, `ares/n64/rsp/` (`interpreter*.cpp`, `dma.cpp`, `io.cpp`, `rsp.cpp`) at commit `a776c509`, ported to the V2 C++ subset; no pipeline/dual-issue timing | ISC (below) |
 | PI DMA block model and duration formula | `core/system/h64_devices.cpp` (`pi_dma`, `pi_dma_cycles`), PI bus address after CPU accesses in `core/memory/h64_bus.cpp` | ares, `ares/n64/pi/dma.cpp`, `io.cpp`, `bus.hpp` (https://github.com/ares-emulator/ares, master, October 2026), followed closely | ISC (below) |
 
 Behaviour learned from test ROMs is credited in comments but no code is taken from them: n64-systemtest (Lemmy, MIT; studied, never copied), Dillonb/n64-tests (no licence stated) and PeterLemon/N64 (Unlicense). The ROMs themselves are downloaded by `tests/scripts/fetch_test_roms.py` and never committed.

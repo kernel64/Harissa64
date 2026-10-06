@@ -1,0 +1,71 @@
+// Harissa64 V2 - RSP (Reality Signal Processor), low-level emulation.
+//
+// Reference interpreter: scalar unit (a 32-bit MIPS subset), vector unit
+// (32 registers of 8 x 16-bit elements, 48-bit accumulators, flags,
+// reciprocal unit), SP registers and SP DMA. Ported from ares (ISC licence,
+// ares/n64/rsp, commit a776c509, see THIRD_PARTY.md), scalar paths only.
+//
+// Timing: one instruction per RCP cycle (62.5 MHz, 2 RCP cycles every 3
+// CPU cycles), without the pipeline stall and dual-issue model of ares.
+#ifndef H64_RSP_H
+#define H64_RSP_H
+
+#include "../common/h64_types.h"
+
+struct H64System;
+
+struct H64SpDma
+{
+    u32 memAddr;     // bit 12: IMEM; bits 3..11: address
+    u32 dramAddr;    // bits 3..23
+    u32 length;      // bits 3..11 (length - 1, rounded to 8 bytes)
+    u32 count;
+    u32 skip;
+    int toRdram;
+};
+
+struct H64Rsp
+{
+    // Scalar unit
+    u32 r[32];
+    u32 pc, nextPc;            // 12-bit IMEM addresses
+    // Vector unit (element 0 is the first in memory order)
+    u16 vr[32][8];
+    u16 acch[8], accm[8], accl[8];
+    u16 vcoh[8], vcol[8], vcch[8], vccl[8], vce[8];   // 0 or 0xFFFF per element
+    s16 divin, divout;
+    int divdp;
+    u16 reciprocals[512];
+    u16 inverseSquareRoots[512];
+
+    // SP registers
+    u32 status;                // SP_STATUS bits (halt, broke, sstep, intr break, signals)
+    u32 semaphore;
+    H64SpDma pending, current;
+    int dmaFull, dmaBusy;
+
+    u32 cycleFrac;             // CPU cycles not yet turned into RCP cycles (x2)
+    u64 instructions;
+    u32 tasks;                 // tasks started (logged)
+};
+
+void h64_rsp_reset(H64System *sys);
+// Runs the RSP for the RCP cycles matching `cpuCycles` CPU cycles (no-op while halted).
+void h64_rsp_advance(H64System *sys, u32 cpuCycles);
+// One instruction (for tests).
+void h64_rsp_step(H64System *sys);
+
+// SP registers at 0x04040000 (reg 0..7) and SP_PC at 0x04080000.
+u32 h64_sp_read(H64System *sys, u32 reg);
+void h64_sp_write(H64System *sys, u32 reg, u32 value);
+u32 h64_sp_pc_read(H64System *sys);
+void h64_sp_pc_write(H64System *sys, u32 value);
+void h64_sp_dma_event(H64System *sys);   // scheduler: the current DMA block is done
+
+// Vector unit (h64_rsp_vu.cpp).
+void h64_rsp_vu_init_tables(H64Rsp *rsp);
+void h64_rsp_cop2(H64System *sys, u32 op);
+void h64_rsp_lwc2(H64System *sys, u32 op);
+void h64_rsp_swc2(H64System *sys, u32 op);
+
+#endif

@@ -232,8 +232,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     }
     if (s_untilText && !s_untilHit) { printf("UNTIL not reached: \"%s\"\n", s_untilText); result = 1; }
     if (sys->exitRequested) printf("[run] the ROM requested exit (EMUX)\n");
-    printf("[run] %u frames, %.2f emulated s, %llu instructions, %u RSP tasks\n", sys->vi.frames,
-           (double)sys->cpu.cycles / 93750000.0, (unsigned long long)sys->cpu.instructions, sys->sp.tasks);
+    printf("[run] %u frames, %.2f emulated s, %llu instructions, %u RSP tasks, %llu RSP instructions, %llu RDP commands\n",
+           sys->vi.frames, (double)sys->cpu.cycles / 93750000.0, (unsigned long long)sys->cpu.instructions,
+           sys->rsp.tasks, (unsigned long long)sys->rsp.instructions, (unsigned long long)sys->dpCommands);
     printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
            sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
     if (state) print_state(sys);

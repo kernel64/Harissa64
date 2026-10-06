@@ -53,6 +53,9 @@ def suite_systemtest(runner):
     return [("n64-systemtest", False, "did not finish")], lines
 
 
+PETERLEMON_SUITES = {"peterlemon": "CPUTest", "peterlemon-rsp": "RSPTest", "peterlemon-rdp": "RDPTest"}
+
+
 def png_read(path):
     """Decodes an 8-bit RGB/RGBA/grey PNG (no interlace). Returns (w, h, rows of RGB tuples)."""
     with open(path, "rb") as f:
@@ -102,7 +105,8 @@ def image_match(ours, ref):
     video output, which the VI stretches vertically (e.g. 474 framebuffer
     lines shown as 480 by some ROMs, not by others; no VI emulation yet), so
     each reference line is compared with the best of our lines between the
-    unscaled and the stretched position, give or take 3."""
+    unscaled and the stretched position, give or take 3, shifted by up to
+    one pixel horizontally."""
     ow, oh, orows = ours
     rw, rh, rrows = ref
     sx = 2 if ow * 2 == rw else 1
@@ -117,17 +121,22 @@ def image_match(ours, ref):
         best = 0
         for oy in range(lo - 3, hi + 4):
             o = our_q[oy] if 0 <= oy < oh else black
-            n = rw if r == o else sum(1 for a, b in zip(r, o) if a == b)
-            best = max(best, n)
+            if r == o:
+                best = rw
+                break
+            for dx in (0, -1, 1):   # the capture also drifts by a pixel horizontally
+                shifted = o if dx == 0 else o[dx:] + o[:dx]
+                n = sum(1 for a, b in zip(r, shifted) if a == b)
+                best = max(best, n)
             if best == rw:
                 break
         same += best
     return same / float(rw * rh)
 
 
-def suite_peterlemon(runner):
+def suite_peterlemon(runner, sub):
     results = []
-    base = os.path.join(ROMS, "peterlemon", "CPUTest")
+    base = os.path.join(ROMS, "peterlemon", sub)
     tmp = os.path.join(ROOT, "build-suites")
     os.makedirs(tmp, exist_ok=True)
     out_png = os.path.join(tmp, "peterlemon.png")
@@ -167,7 +176,7 @@ def main():
             print(__doc__); return 2
     if runner is None:
         runner = [os.path.join(ROOT, "build-msvc", "h64test.exe")] if os.name == "nt" else [os.path.join(ROOT, "build-gcc", "h64test")]
-    suites = suites or ["dillonb", "n64-systemtest", "peterlemon"]
+    suites = suites or ["dillonb", "n64-systemtest", "peterlemon", "peterlemon-rsp", "peterlemon-rdp"]
 
     out_lines = []
     total_pass = total = 0
@@ -177,8 +186,8 @@ def main():
             extra = []
         elif s == "n64-systemtest":
             res, extra = suite_systemtest(runner)
-        elif s == "peterlemon":
-            res = suite_peterlemon(runner)
+        elif s in PETERLEMON_SUITES:
+            res = suite_peterlemon(runner, PETERLEMON_SUITES[s])
             extra = []
         else:
             print("unknown suite", s); return 2

@@ -1,11 +1,9 @@
 // Harissa64 V2 - RCP registers (SP, DP, MI, VI, AI, PI, RI, SI) and their
 // timed side effects. Register layouts from n64brew.
 //
-// M1 scope: registers, DMAs and interrupts are modelled; the RSP and RDP do
-// not run yet. An RSP task (SP_STATUS halt cleared) is logged from its OSTask
-// header and completed after a fixed delay ("M1 RSP stub"); graphics tasks
-// also raise the DP interrupt. Timings marked "model" are approximations to
-// be replaced by measured values.
+// The SP registers and DMA live with the RSP (core/rsp), the DPC registers
+// with the RDP (core/rdp). Timings marked "model" are approximations to be
+// replaced by measured values.
 #include "h64_system.h"
 
 #include <string.h>
@@ -16,8 +14,6 @@
 // ---- Timing models (CPU cycles at 93.75 MHz) ----
 #define CPU_HZ 93750000u
 #define SI_DMA_CYCLES 4500u         // model: PIF command round trip
-#define SP_TASK_CYCLES 20000u       // M1 RSP stub: delay before a task "finishes"
-#define DP_AFTER_SP_CYCLES 2000u    // M1 RSP stub: RDP done after the graphics task
 
 static const u32 VI_CLOCK_NTSC = 48681812u;
 static const u32 VI_CLOCK_PAL = 49656530u;
@@ -105,84 +101,6 @@ static void ai_start_next(H64System *sys)
         sys->ai.bufferCycles = ai_buffer_cycles(sys, sys->ai.fifoLen[0]);
         h64_sched_set(&sys->sched, H64_EV_AI, now(sys) + sys->ai.bufferCycles);
     }
-}
-
-// ---- SP DMA ----
-static void sp_dma(H64System *sys, int toRdram, u32 value)
-{
-    u32 len = ((value & 0xFFF) | 7) + 1;
-    u32 count = ((value >> 12) & 0xFF) + 1;
-    u32 skip = (value >> 20) & 0xFF8;
-    u32 mem = sys->sp.regs[0] & 0x1FF8;
-    u32 dram = sys->sp.regs[1] & 0xFFFFF8;
-    u32 i, j;
-    for (j = 0; j < count; j++)
-    {
-        for (i = 0; i < len; i++)
-        {
-            u32 m = (mem & 0x1000) | ((mem + i) & 0xFFF);
-            u32 d = dram + i;
-            if (d >= H64_RDRAM_SIZE) continue;
-            if (toRdram) sys->rdram[d] = sys->spMem[m];
-            else sys->spMem[m] = sys->rdram[d];
-        }
-        mem = (mem & 0x1000) | ((mem + len) & 0xFFF);
-        dram += len + skip;
-    }
-    sys->sp.regs[0] = mem;
-    sys->sp.regs[1] = dram & 0xFFFFFF;
-    sys->sp.regs[toRdram ? 3 : 2] = 0xFF8;   // length reads back as 0xFF8 after a DMA
-}
-
-static const char *task_type_name(u32 type)
-{
-    switch (type)
-    {
-    case 1: return "graphics";
-    case 2: return "audio";
-    case 4: return "jpeg";
-    }
-    return "other";
-}
-
-static void sp_start_task(H64System *sys)
-{
-    const u8 *t = sys->spMem + 0xFC0;   // OSTask, as libultra places it in DMEM
-    u32 type = h64_load_be32(t + 0x00);
-    sys->sp.tasks++;
-    if (sys->sp.tasks <= 64 || (sys->sp.tasks & 1023) == 0)
-        H64_INFO("[rsp] task #%u: type %u (%s), ucode %08X size %u, data %08X size %u, flags %08X (M1 stub: not run)",
-                 sys->sp.tasks, type, task_type_name(type), h64_load_be32(t + 0x10), h64_load_be32(t + 0x14),
-                 h64_load_be32(t + 0x30), h64_load_be32(t + 0x34), h64_load_be32(t + 0x04));
-    h64_sched_set(&sys->sched, H64_EV_SP, now(sys) + SP_TASK_CYCLES);
-}
-
-static void sp_status_write(H64System *sys, u32 v)
-{
-    u32 s = sys->sp.regs[4];
-    int wasHalted = s & SP_STATUS_HALT;
-    int i;
-    // Each clear/set pair: setting both bits at once changes nothing.
-#define SP_PAIR(clr, set) ((v & (clr)) && !(v & (set)) ? -1 : (v & (set)) && !(v & (clr)) ? 1 : 0)
-    if (SP_PAIR(0x0001, 0x0002) < 0) s &= ~SP_STATUS_HALT;
-    if (SP_PAIR(0x0001, 0x0002) > 0) s |= SP_STATUS_HALT;
-    if (v & 0x0004) s &= ~SP_STATUS_BROKE;
-    if (SP_PAIR(0x0008, 0x0010) < 0) h64_mi_clear(sys, MI_INTR_SP);
-    if (SP_PAIR(0x0008, 0x0010) > 0) h64_mi_raise(sys, MI_INTR_SP);
-    if (SP_PAIR(0x0020, 0x0040) < 0) s &= ~0x0020u;
-    if (SP_PAIR(0x0020, 0x0040) > 0) s |= 0x0020u;
-    if (SP_PAIR(0x0080, 0x0100) < 0) s &= ~SP_STATUS_INTR_BREAK;
-    if (SP_PAIR(0x0080, 0x0100) > 0) s |= SP_STATUS_INTR_BREAK;
-    for (i = 0; i < 8; i++)
-    {
-        int p = SP_PAIR(0x0200u << (2 * i), 0x0400u << (2 * i));
-        if (p < 0) s &= ~(0x0080u << i);
-        if (p > 0) s |= (0x0080u << i);
-    }
-#undef SP_PAIR
-    sys->sp.regs[4] = s;
-    if (wasHalted && !(s & SP_STATUS_HALT))
-        sp_start_task(sys);
 }
 
 // ---- PI DMA ----
@@ -317,17 +235,10 @@ u32 h64_mmio_read(H64System *sys, u32 paddr)
     {
     case 0x03F: return 0;                                    // RDRAM registers: not modelled (HLE boot)
     case 0x040:
-        if (paddr == 0x04080000u) return sys->sp.pc & 0xFFC;
-        if (paddr >= 0x04040000u && paddr < 0x04040020u)
-        {
-            u32 r = (paddr >> 2) & 7;
-            if (r == 4) return sys->sp.regs[4];
-            if (r == 5 || r == 6) return 0;                  // DMA full / busy: DMAs are instant
-            if (r == 7) { u32 v = sys->sp.semaphore; sys->sp.semaphore = 1; return v; }
-            return sys->sp.regs[r];
-        }
+        if (paddr == 0x04080000u) return h64_sp_pc_read(sys);
+        if (paddr >= 0x04040000u && paddr < 0x04040020u) return h64_sp_read(sys, (paddr >> 2) & 7);
         return 0;
-    case 0x041: return sys->dp.regs[reg & 7];
+    case 0x041: return h64_dp_read(sys, reg & 7);
     case 0x043:
         switch (reg & 3)
         {
@@ -381,40 +292,10 @@ void h64_mmio_write(H64System *sys, u32 paddr, u32 value, u32 mask)
     {
     case 0x03F: return;
     case 0x040:
-        if (paddr == 0x04080000u) { sys->sp.pc = value & 0xFFC; return; }
-        if (paddr >= 0x04040000u && paddr < 0x04040020u)
-        {
-            u32 r = (paddr >> 2) & 7;
-            switch (r)
-            {
-            case 0: sys->sp.regs[0] = value & 0x1FF8; return;
-            case 1: sys->sp.regs[1] = value & 0xFFFFF8; return;
-            case 2: sys->sp.regs[2] = value; sp_dma(sys, 0, value); return;
-            case 3: sys->sp.regs[3] = value; sp_dma(sys, 1, value); return;
-            case 4: sp_status_write(sys, value); return;
-            case 7: sys->sp.semaphore = 0; return;
-            }
-        }
+        if (paddr == 0x04080000u) { h64_sp_pc_write(sys, value); return; }
+        if (paddr >= 0x04040000u && paddr < 0x04040020u) h64_sp_write(sys, (paddr >> 2) & 7, value);
         return;
-    case 0x041:
-        switch (reg & 7)
-        {
-        case 0: sys->dp.regs[0] = value & 0xFFFFF8; sys->dp.regs[2] = sys->dp.regs[0]; return;
-        case 1: sys->dp.regs[1] = value & 0xFFFFF8; sys->dp.regs[2] = sys->dp.regs[1]; return;   // RDP: M2
-        case 3:
-        {
-            u32 s = sys->dp.regs[3];
-            if (value & 0x01) s &= ~1u;
-            if (value & 0x02) s |= 1u;
-            if (value & 0x04) s &= ~2u;
-            if (value & 0x08) s |= 2u;
-            if (value & 0x10) s &= ~4u;
-            if (value & 0x20) s |= 4u;
-            sys->dp.regs[3] = s;
-            return;
-        }
-        }
-        return;
+    case 0x041: h64_dp_write(sys, reg & 7, value); return;
     case 0x043:
         switch (reg & 3)
         {
@@ -535,16 +416,8 @@ void h64_device_event(H64System *sys, int ev)
         h64_mi_raise(sys, MI_INTR_SI);
         break;
     case H64_EV_SP:
-    {
-        u32 type = h64_load_be32(sys->spMem + 0xFC0);
-        // A finished task leaves SIG2 ("task done") set, then halts on BREAK.
-        sys->sp.regs[4] |= SP_STATUS_HALT | SP_STATUS_BROKE | 0x0200u;
-        if (sys->sp.regs[4] & SP_STATUS_INTR_BREAK)
-            h64_mi_raise(sys, MI_INTR_SP);
-        if (type == 1)
-            h64_sched_set(&sys->sched, H64_EV_DP, now(sys) + DP_AFTER_SP_CYCLES);
+        h64_sp_dma_event(sys);
         break;
-    }
     case H64_EV_DP:
         h64_mi_raise(sys, MI_INTR_DP);
         break;
@@ -563,11 +436,7 @@ void h64_devices_reset(H64System *sys)
     memset(&sys->pi, 0, sizeof(sys->pi));
     memset(&sys->ri, 0, sizeof(sys->ri));
     memset(&sys->si, 0, sizeof(sys->si));
-    memset(&sys->sp, 0, sizeof(sys->sp));
-    memset(&sys->dp, 0, sizeof(sys->dp));
     sys->mi.version = 0x02020102u;
-    sys->sp.regs[4] = SP_STATUS_HALT;
-    sys->dp.regs[3] = 0x80;          // DPC_STATUS: CBUF ready
     sys->vi.regs[VI_V_SYNC] = sys->tvType == 0 ? 625 : 525;
     sys->vi.regs[VI_V_INTR] = 0x3FF;
     sys->vi.frameCycles = sys->tvType == 0 ? CPU_HZ / 50 : CPU_HZ / 60;

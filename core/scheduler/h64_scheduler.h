@@ -17,8 +17,8 @@ enum H64Event
     H64_EV_AI,            // AI DMA buffer finished
     H64_EV_PI,            // PI DMA finished
     H64_EV_SI,            // SI DMA finished
-    H64_EV_SP,            // RSP task finished (M1 stub)
-    H64_EV_DP,            // RDP finished (M1 stub)
+    H64_EV_SP,            // SP DMA block finished
+    H64_EV_DP,            // RDP finished processing (interrupt after a full sync)
     H64_EV_COUNT
 };
 

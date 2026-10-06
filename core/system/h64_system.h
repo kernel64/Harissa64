@@ -6,6 +6,8 @@
 #include "../common/h64_types.h"
 #include "../cart/h64_rom.h"
 #include "../r4300/h64_cpu.h"
+#include "../rdp/h64_rdp.h"
+#include "../rsp/h64_rsp.h"
 #include "../scheduler/h64_scheduler.h"
 
 #define H64_RDRAM_SIZE 0x800000u   // 8 MB (with the Expansion Pak)
@@ -18,20 +20,12 @@
 #define MI_INTR_PI 0x10u
 #define MI_INTR_DP 0x20u
 
-// SP_STATUS bits.
-#define SP_STATUS_HALT   0x0001u
-#define SP_STATUS_BROKE  0x0002u
-#define SP_STATUS_DMABUSY 0x0004u
-#define SP_STATUS_INTR_BREAK 0x0040u
-
 struct H64Mi { u32 mode, version, intr, mask; };
 struct H64Vi { u32 regs[14]; u32 vIntr; u64 frameStart; u64 frameCycles; u32 frames; };
 struct H64Ai { u32 dramAddr, len, control, status, dacrate, bitrate; u32 fifoLen[2]; u32 fifoCount; u64 bufferCycles; };
 struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; };   // latch: last CPU write to the cartridge bus
 struct H64Ri { u32 regs[8]; };
 struct H64Si { u32 dramAddr, pifAddrRd, pifAddrWr, status; };
-struct H64Sp { u32 regs[8]; u32 pc; u32 semaphore; u32 tasks; };
-struct H64Dp { u32 regs[8]; };
 
 // Options that change emulated timing: named and documented (CLAUDE.md).
 struct H64Options
@@ -58,8 +52,11 @@ struct H64System
     H64Pi pi;
     H64Ri ri;
     H64Si si;
-    H64Sp sp;
-    H64Dp dp;
+    H64Rsp rsp;
+    H64RdpRegs dp;
+    u64 dpCommand[22];   // RDP command being assembled
+    u32 dpPendingWords;
+    u64 dpCommands;      // statistics: RDP commands executed
 
     int tvType;          // 0 PAL, 1 NTSC, 2 MPAL
 

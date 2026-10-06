@@ -41,6 +41,8 @@ void h64_system_reset(H64System *sys)
     h64_cpu_reset(&sys->cpu);
     h64_pif_reset(sys);
     h64_devices_reset(sys);
+    h64_rsp_reset(sys);
+    h64_rdp_reset(sys);
     h64_cpu_reschedule_compare(sys);
     if (sys->options.hleBoot)
         h64_hle_boot(sys);
@@ -60,6 +62,10 @@ void h64_system_run_cycles(H64System *sys, u64 cycles)
             if (ev < 0) break;
             h64_device_event(sys, ev);
         }
-        h64_cpu_step(sys);
+        {
+            u64 before = sys->cpu.cycles;
+            h64_cpu_step(sys);
+            h64_rsp_advance(sys, (u32)(sys->cpu.cycles - before));
+        }
     }
 }
