@@ -11,7 +11,18 @@
 | LLE graphics through Xenos (raw RDP triangles rebuilt by `h64_rdp_decode_triangle`) | Done: SM64 logo with `hle=0` in Xenia |
 | Framebuffer emulation: copy back to RDRAM before the RDP reads a frame as a texture; new colour images start from RDRAM | Done (not yet seen exercised by the three games) |
 | Xbox front end: ROM, recompiler/interpreter, HLE, XAudio2, XInput, ini, scripted input, screenshots, crash handler | Done |
-| S2DEX HLE, VI filters on Xenos | To do (S2DEX runs through LLE) |
+| S2DEX2 HLE | G_BG_COPY (OoT's prerendered rooms): done; BG_1CYC and the object commands still go to LLE |
+| VI filters on Xenos | To do |
+
+### Console speed (RGH, PAL, 50 VI/s target), 2026-10-07
+
+Measured with the `[prof]`/`[jit]`/`[xprof]` lines. The steps that mattered:
+- Native FPU arithmetic (MK64 race CPU 110 -> 55 ms/frame with `jitfpu=0` as the reference).
+- Texture windows for OoT's backgrounds (10.5M -> ~5k texels decoded a frame: 890 ms -> 2 ms).
+- Block linking and a dispatcher without the H64Cpu copy: ~23k -> ~2.7k dispatches a frame on MK64.
+- BC1, DIV, MFC0, odd-register COP1 moves native; 64-byte code map (interpreted instructions per frame: MK64 ~2000 -> ~350, OoT ~13000 -> ~1000).
+
+Result before S2DEX2 HLE: MK64 menus and most of the race at 49–52 VI/s (race CPU ~12 ms, rendering 4–7 ms); OoT at full speed in many places, 35–45 VI/s outdoors (CPU 13–17 ms, graphics HLE 5–10 ms), 26 VI/s in prerendered rooms (S2DEX task in LLE: ~30 ms).
 
 ### Checks in Xenia (interpreter, RSP HLE, Xenos), 2026-10-06
 

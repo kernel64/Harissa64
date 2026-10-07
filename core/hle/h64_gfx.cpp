@@ -18,7 +18,7 @@
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 
-enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2 };
+enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2 };
 
 // Geometry mode bits, as decoded (the microcodes place them differently).
 enum
@@ -231,9 +231,16 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             else if (j > 31 && str[31] == '2')
                 u->type = UC_F3DEX2;
         }
+        else if (!strncmp(str + 4, "Gfx", 3) && j > 19 && !strncmp(str + 14, "S2DEX", 5))
+        {
+            // S2DEX2 (the F3DEX2-era 2D microcode, OoT's backgrounds): version 2.xx.
+            const char *v = strstr(str, "fifo ");
+            if (!v) v = strstr(str, "xbus ");
+            if (v && v[5] == '2') u->type = UC_S2DEX2;
+        }
         H64_INFO("[gfx] microcode \"%s\" at %06X: %s", str, u->start,
                  u->type == UC_F3D ? "F3D" : u->type == UC_F3DEX ? "F3DEX" :
-                 u->type == UC_F3DEX2 ? (u->zex ? "F3DZEX" : "F3DEX2") : "not handled (LLE)");
+                 u->type == UC_F3DEX2 ? (u->zex ? "F3DZEX" : "F3DEX2") : u->type == UC_S2DEX2 ? "S2DEX2" : "not handled (LLE)");
         return;
     }
     H64_INFO("[gfx] microcode at %06X: no name string, not handled (LLE)", u->start);
@@ -784,7 +791,7 @@ static void rdp_passthrough(H64Gfx *g, u32 w0, u32 w1)
 
 static int load_ucode(H64Gfx *g, u32 start, u32 dstart, u32 dsize)
 {
-    const GfxUcode *u = find_ucode(g, start, dstart, dsize);
+    const GfxUcode *u = find_ucode(g, start & 0x7FFFFF, dstart & 0x7FFFFF, dsize);   // KSEG0 or physical
     if (u->type == UC_NONE) return 0;
     g->uc = u;
     return 1;
@@ -1017,6 +1024,111 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
     }
 }
 
+// ---- S2DEX2 (subset): the commands OoT's prerendered backgrounds use. Any
+// other S2DEX command leaves the task to the LLE RSP.
+//
+// G_BG_COPY draws a picture from RDRAM 1:1 in copy mode. The microcode does
+// it with LoadTile/TEXRECT strips (gs2dex.h, uObjBg); the same RDP commands
+// are emitted here: for each band of lines that fits in TMEM, the texels go
+// to TMEM through tile 7 and a copy-mode rectangle draws them with tile 0.
+// The picture wraps at imageW/imageH; a frame starting above or left of the
+// screen is clipped there (the scissor clips the rest).
+static void bg_copy(H64Gfx *g, u32 addr)
+{
+    u32 a = seg_to_phys(g, addr);
+    s32 imageX = (u16)rd16(g, a + 0) >> 5, imageW = (u16)rd16(g, a + 2) >> 2;
+    s32 frameX = rd16(g, a + 4) >> 2, frameW = (u16)rd16(g, a + 6) >> 2;
+    s32 imageY = (u16)rd16(g, a + 8) >> 5, imageH = (u16)rd16(g, a + 10) >> 2;
+    s32 frameY = rd16(g, a + 12) >> 2, frameH = (u16)rd16(g, a + 14) >> 2;
+    u32 ptr = seg_to_phys(g, rd32(g, a + 16));
+    u32 fmt = rd8(g, a + 22), siz = rd8(g, a + 23), pal = (u16)rd16(g, a + 24), flip = (u16)rd16(g, a + 26);
+    u32 bpp = 4u << siz, tmemBytes = fmt == 2 ? 2048 : 4096;
+    s32 y, rows;
+    if (flip || (siz != 1 && siz != 2) || ((g->omH >> 20) & 3) != 2 || imageW <= 0 || imageH <= 0)
+    {
+        g->abort = 1;   // not handled here: the LLE RSP draws it
+        return;
+    }
+    if (frameX < 0) { imageX += -frameX; frameW += frameX; frameX = 0; }
+    if (frameY < 0) { imageY += -frameY; frameH += frameY; frameY = 0; }
+    if (frameW <= 0 || frameH <= 0) return;
+    imageX %= imageW;
+    imageY %= imageH;
+    for (y = 0; y < frameH; y += rows)
+    {
+        s32 sy = (imageY + y) % imageH, x, span;
+        rows = frameH - y;
+        if (rows > imageH - sy) rows = imageH - sy;   // the picture wraps vertically
+        for (x = 0; x < frameW; x += span)
+        {
+            s32 sx = (imageX + x) % imageW, r, band;
+            u32 lineBytes;
+            span = frameW - x;
+            if (span > imageW - sx) span = imageW - sx;   // and horizontally
+            lineBytes = ((u32)span * bpp + 63) / 64 * 8;
+            band = (s32)(tmemBytes / lineBytes);
+            if (band < 1) { g->abort = 1; return; }
+            for (r = 0; r < rows; r += band)
+            {
+                s32 n = rows - r < band ? rows - r : band, ty = sy + r, dx = frameX + x, dy = frameY + y + r;
+                u64 w[2];
+                u32 line = lineBytes / 8;
+                out_rdp1(g, 0xFD000000u | (fmt << 21) | (siz << 19) | (u32)(imageW - 1), ptr);           // SETTIMG
+                out_rdp1(g, 0xF5000000u | (fmt << 21) | (siz << 19) | (line << 9), 0x07000000u);        // SETTILE 7
+                out_rdp1(g, 0xE6000000u, 0);                                                            // LOADSYNC
+                out_rdp1(g, 0xF4000000u | ((u32)sx << 14) | ((u32)ty << 2),
+                         0x07000000u | ((u32)(sx + span - 1) << 14) | ((u32)(ty + n - 1) << 2));        // LOADTILE
+                out_rdp1(g, 0xE7000000u, 0);                                                            // PIPESYNC
+                out_rdp1(g, 0xF5000000u | (fmt << 21) | (siz << 19) | (line << 9), (pal & 15) << 20);  // SETTILE 0
+                out_rdp1(g, 0xF2000000u | ((u32)sx << 14) | ((u32)ty << 2),
+                         ((u32)(sx + span - 1) << 14) | ((u32)(ty + n - 1) << 2));                      // SETTILESIZE 0
+                // TEXRECT in copy mode: inclusive lower-right corner, dsdx = 4.0.
+                w[0] = ((u64)(0xE4000000u | ((u32)(dx + span - 1) << 14) | ((u32)(dy + n - 1) << 2)) << 32) |
+                       (((u32)dx << 14) | ((u32)dy << 2));
+                w[1] = ((u64)(((u32)sx << 21) | ((u32)ty << 5)) << 32) | 0x10000400u;
+                out_rdp(g, w, 2);
+            }
+        }
+    }
+}
+
+static void run_s2dex2(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 cmd = w0 >> 24;
+    switch (cmd)
+    {
+    case 0x00: case 0xE0: break;                                   // G_NOOP, G_SPNOOP
+    case 0x0A: bg_copy(g, w1); break;                              // G_BG_COPY
+    case 0x0B: break;                                              // G_OBJ_RENDERMODE (copy mode ignores it)
+    case 0xDB:          // G_MOVEWORD
+        if (((w0 >> 16) & 0xFF) == 0x06) g->segments[((w0 & 0xFFFF) >> 2) & 0xF] = w1 & 0x00FFFFFF;
+        break;
+    case 0xDD:          // G_LOAD_UCODE
+        if (!load_ucode(g, w1, g->half1, (w0 & 0xFFFF) + 1)) g->abort = 1;
+        break;
+    case 0xDE: call_dl(g, w1, ((w0 >> 16) & 0xFF) == 0); break;   // G_DL
+    case 0xDF: end_dl(g); break;                                   // G_ENDDL
+    case 0xE1: g->half1 = w1; break;                               // G_RDPHALF_1
+    case 0xE2: case 0xE3:   // G_SETOTHERMODE_L / _H
+    {
+        u32 len = (w0 & 0xFF) + 1;
+        s32 shift = 32 - (s32)((w0 >> 8) & 0xFF) - (s32)len;
+        if (shift < 0) shift = 0;
+        set_othermode(g, cmd == 0xE3, (u32)shift, len, w1);
+        break;
+    }
+    case 0xF1: break;   // G_RDPHALF_2
+    default:
+        if (cmd >= 0xC0 && cmd != 0xDA && cmd != 0xDC) rdp_passthrough(g, w0, w1);
+        else
+        {
+            if (!(g->warned & 8)) { H64_INFO("[gfx] S2DEX2 command %02X not handled: task left to the LLE RSP", cmd); g->warned |= 8; }
+            g->abort = 1;
+        }
+        break;
+    }
+}
+
 // ---------------------------------------------------------------- task
 H64Gfx *h64_gfx_create(H64System *sys)
 {
@@ -1131,6 +1243,7 @@ int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
         u32 w0 = rd32(g, a), w1 = rd32(g, a + 4);
         g->pc[g->pci] = a + 8;
         if (g->uc->type == UC_F3DEX2) run_f3dex2(g, w0, w1);
+        else if (g->uc->type == UC_S2DEX2) run_s2dex2(g, w0, w1);
         else run_f3d(g, w0, w1);
         if (++g->commands > GFX_MAX_COMMANDS)
         {

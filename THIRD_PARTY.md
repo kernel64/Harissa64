@@ -59,3 +59,5 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
+
+The S2DEX2 background command (`bg_copy` in `core/hle/h64_gfx.cpp`) reads the `uObjBg` structure as laid out in the N64 SDK's `gs2dex.h` (field order and fixed-point formats only) and emits the RDP command sequence written for V2.
