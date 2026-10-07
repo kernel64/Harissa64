@@ -62,7 +62,7 @@ struct TexEntry
 struct TexBinding
 {
     u32 w, h;          // decoded size (texels)
-    u32 ox, oy;        // tile texel at the decoded texture's origin (a window of the tile)
+    s32 ox, oy;        // tile texel (before masking) at the decoded texture's origin (a window)
     int clampS, clampT, mirrorS, mirrorT, wrapS, wrapT;
 };
 
@@ -404,22 +404,23 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     tile_layout(t, b);
     if (x->win.active && x->win.tile == (tileIndex & 7))
     {
-        // Per axis: decode only the sampled texels when they lie in one period
-        // (wrap, mirror) or are clamped anyway, and are at most half the texture.
+        // Per axis, decode only the texels sampled, when that is at most half
+        // the texture. A clamped axis keeps the clamp (window inside [0, w)); a
+        // wrapped or mirrored one is decoded through its mask over any range
+        // (OoT's backgrounds: 1024x1024 mirrored tiles sampled by narrow strips)
+        // and the window is then clamped.
         s32 lo = x->win.s0, hi = x->win.s1;
-        // The texel of margin may fall outside a wrapped period: the N64 never
-        // samples it there (whole texels), so clamping to the period is right.
-        if (b->clampS || (lo + 1 >= 0 && hi - 1 <= (s32)b->w - 1)) { if (lo < 0) lo = 0; if (hi > (s32)b->w - 1) hi = (s32)b->w - 1; }
-        if (lo >= 0 && hi < (s32)b->w && lo <= hi && (u32)(hi - lo + 1) * 2 <= b->w)
+        if (b->clampS) { if (lo < 0) lo = 0; if (hi > (s32)b->w - 1) hi = (s32)b->w - 1; }
+        if (lo <= hi && (u32)(hi - lo + 1) * 2 <= b->w)
         {
-            b->ox = (u32)lo; b->w = (u32)(hi - lo + 1);
+            b->ox = lo; b->w = (u32)(hi - lo + 1);
             b->clampS = 1; b->mirrorS = b->wrapS = 0;
         }
         lo = x->win.t0; hi = x->win.t1;
-        if (b->clampT || (lo + 1 >= 0 && hi - 1 <= (s32)b->h - 1)) { if (lo < 0) lo = 0; if (hi > (s32)b->h - 1) hi = (s32)b->h - 1; }
-        if (lo >= 0 && hi < (s32)b->h && lo <= hi && (u32)(hi - lo + 1) * 2 <= b->h)
+        if (b->clampT) { if (lo < 0) lo = 0; if (hi > (s32)b->h - 1) hi = (s32)b->h - 1; }
+        if (lo <= hi && (u32)(hi - lo + 1) * 2 <= b->h)
         {
-            b->oy = (u32)lo; b->h = (u32)(hi - lo + 1);
+            b->oy = lo; b->h = (u32)(hi - lo + 1);
             b->clampT = 1; b->mirrorT = b->wrapT = 0;
         }
     }
@@ -432,7 +433,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     i = (u32)(tlut | tlutType << 1);
     key = fnv64(key, (const u8 *)&i, sizeof(i));
     rowBytes = t->stride ? t->stride : 8;
-    rows = b->oy + b->h + 1;
+    rows = (b->ox || b->oy) ? 4096 / rowBytes : b->h + 1;   // a window can reach any TMEM line
     if (rowBytes * rows > 4096) rows = 4096 / rowBytes;
     for (y = 0; y < rows; y++)
     {
@@ -473,11 +474,11 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         if (x->decodeBuf.size() < count) x->decodeBuf.resize(count);
         for (y = 0; y < b->h; y++)
         {
-            s32 ty = mask_coord(t->maskT, (t->flags & TILE_MIRROR_T) != 0, (s32)(y + b->oy));
+            s32 ty = mask_coord(t->maskT, (t->flags & TILE_MIRROR_T) != 0, (s32)y + b->oy);
             for (xx = 0; xx < b->w; xx++)
             {
                 H64RdpTexel tx;
-                s32 sx = mask_coord(t->maskS, (t->flags & TILE_MIRROR_S) != 0, (s32)(xx + b->ox));
+                s32 sx = mask_coord(t->maskS, (t->flags & TILE_MIRROR_S) != 0, (s32)xx + b->ox);
                 h64_rdp_fetch_texel(st, t, (u32)sx, (u32)ty, tlut, tlutType, &tx);
                 if (t->fmt == 2 && !tlut) tx.c[3] = tx.c[0];   // CI without TLUT: index as intensity
                 x->decodeBuf[y * b->w + xx] = ((u32)(tx.c[3] & 0xFF) << 24) | ((u32)(tx.c[0] & 0xFF) << 16) |
@@ -518,7 +519,7 @@ static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
 }
 
 // Texture coordinate (s10.5 units) to normalised coordinates of the decoded tile.
-static float tex_coord(float s, u32 shift, u32 lo, u32 size)
+static float tex_coord(float s, u32 shift, s32 lo, u32 size)
 {
     float v = s / 32.0f;
     if (shift > 10) v *= (float)(1 << (16 - shift));
@@ -1022,8 +1023,8 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         q[i].z = z;
         q[i].w = 1.0f;
         q[i].color = 0;
-        q[i].u0 = tex_coord(ss, t0->shiftS, t0->slo + 4 * tb0.ox, tb0.w);
-        q[i].v0 = tex_coord(tt, t0->shiftT, t0->tlo + 4 * tb0.oy, tb0.h);
+        q[i].u0 = tex_coord(ss, t0->shiftS, (s32)t0->slo + 4 * tb0.ox, tb0.w);
+        q[i].v0 = tex_coord(tt, t0->shiftT, (s32)t0->tlo + 4 * tb0.oy, tb0.h);
         q[i].u1 = tex_coord(ss, t1->shiftS, t1->slo, tb1.w);
         q[i].v1 = tex_coord(tt, t1->shiftT, t1->tlo, tb1.h);
     }

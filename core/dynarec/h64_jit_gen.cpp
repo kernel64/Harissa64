@@ -32,7 +32,7 @@
 #include "../system/h64_system.h"
 
 #define FRAME 192
-#define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 1024)
+#define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 2048)
 
 // Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r27 branch taken, r26 jump target.
 enum { R_COND = 27, R_TARGET = 26 };
@@ -154,6 +154,73 @@ static void sync_to(Gen *g, u32 pending, u32 next)
 }
 
 static void exit_block(Gen *g) { add_exit(g, ppc_b_fwd(&g->c)); }
+
+// ---- Block linking ----
+// An exit whose next pc is fixed (state already synced). If no event falls
+// within the next H64_JIT_MAX_INSNS instructions and h64_jit_run's end is not
+// reached, it goes on into the next block: at first through the dispatcher,
+// which then patches the branch below into a direct branch to that block's
+// body (all blocks share the same prologue, registers and frame). The
+// dispatcher's per-block state is kept conservative: blockEndCycles covers
+// any block, and any invalidation stops the running block.
+static void load_ptr(Gen *g, u32 rt, s32 off, u32 ra)
+{
+#if defined(H64_JIT_ABI_XBOX)
+    ppc_lwz(&g->c, rt, off, ra);
+#else
+    ppc_ld(&g->c, rt, off, ra);
+#endif
+}
+
+static void link_exit(Gen *g, u32 targetPc)
+{
+    H64PpcCode *c = &g->c;
+    u32 patchAt;
+    if (!g->native || g->sys->jit->noLink)
+    {
+        exit_block(g);
+        return;
+    }
+    ppc_ld(c, 3, OFF_CYCLES, JR_CPU);
+    ppc_addi(c, 3, 3, (s32)(H64_JIT_MAX_INSNS * g->cpi));
+    ppc_ld(c, 4, (s32)(offsetof(H64System, sched) + offsetof(H64Scheduler, next)), JR_SYS);
+    ppc_cmpld(c, 0, 3, 4);
+    add_exit(g, ppc_bc_fwd(c, 12, 0, PPC_GT));     // an event comes first
+    load_ptr(g, 5, (s32)offsetof(H64System, jit), JR_SYS);
+    ppc_ld(c, 4, (s32)offsetof(H64Jit, runEnd), 5);
+    ppc_cmpld(c, 0, 3, 4);
+    add_exit(g, ppc_bc_fwd(c, 12, 0, PPC_GT));     // the end of the run
+    ppc_std(c, 3, (s32)offsetof(H64Jit, blockEndCycles), 5);
+    patchAt = c->pos;
+    ppc_put(c, 0x48000004u);                        // b +4; linked: b <next block's body>
+    // Not linked yet: tell the dispatcher where this exit is and where it goes.
+#if defined(H64_JIT_ABI_XBOX)
+    ppc_li32u(c, 3, (u32)(uintptr_t)(c->buf + patchAt));
+    ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
+#else
+    ppc_li64(c, 3, (u64)(uintptr_t)(c->buf + patchAt));
+    ppc_std(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
+#endif
+    ppc_li32u(c, 3, targetPc);
+    ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExitTarget), 5);
+    exit_block(g);
+}
+
+// The exit after a native branch: linked per outcome when the target is fixed.
+static void branch_exit(Gen *g, int dynamicTarget, u64 target, u32 fallthrough)
+{
+    u32 notTaken;
+    if (dynamicTarget || !g->native)
+    {
+        exit_block(g);
+        return;
+    }
+    ppc_cmpdi(&g->c, 0, R_COND, 0);
+    notTaken = ppc_bc_fwd(&g->c, 12, 0, PPC_EQ);
+    link_exit(g, (u32)target);
+    ppc_patch_here(&g->c, notTaken);
+    link_exit(g, fallthrough);
+}
 
 // Calls the interpreter for the instruction at cpu->pc with the state as it is
 // (a delay slot), ignoring its answer: the block ends right after.
@@ -987,7 +1054,7 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
         ppc_cmpdi(c, 0, R_COND, 0);
         takenAt = ppc_bc_fwd(c, 4, 0, PPC_EQ);   // taken: go on with the slot
         sync_to(g, g->pending, pc + 8);
-        exit_block(g);
+        link_exit(g, pc + 8);
         ppc_patch_here(c, takenAt);
     }
     // The delay slot.
@@ -999,7 +1066,7 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
         ppc_li(c, 3, 0);
         ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
         g->pending = 0;
-        exit_block(g);
+        branch_exit(g, dynamicTarget, target, dsPc + 4);
         return;
     }
     // A load or store in the slot: native fast path; its slow path is the
@@ -1015,7 +1082,7 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
             store_branch_pc(g, dynamicTarget, target, dsPc + 4);
             ppc_li(c, 3, 0);
             ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
-            exit_block(g);
+            branch_exit(g, dynamicTarget, target, dsPc + 4);
             for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
             g->pending = pend;
         }
@@ -1077,7 +1144,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     H64Jit *j = sys->jit;
     H64JitBlock *b;
     Gen g;
-    u32 ops[H64_JIT_MAX_INSNS], n = 0, i;
+    u32 ops[H64_JIT_MAX_INSNS], n = 0, i, bodyAt;
     u32 pageEnd = (paddr | 0xFFF) + 1;
     int endsWithBranch = 0;
     u8 *start;
@@ -1125,6 +1192,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     sys->cpu.jitFpMin[1] = ldexp(1.0, -1022);
 
     emit_prologue(&g);
+    bodyAt = g.c.pos;
     for (i = 0; i < n; i++)
     {
         u32 ipc = pc + i * 4, op = ops[i];
@@ -1157,7 +1225,8 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     if (!endsWithBranch)
     {
         sync_to(&g, g.pending, pc + n * 4);
-        exit_block(&g);
+        if (ends_block(ops[n - 1])) exit_block(&g);   // COP0: the mode may have changed
+        else link_exit(&g, pc + n * 4);
     }
     for (i = 0; i < g.nExits; i++) ppc_patch_here(&g.c, g.exits[i]);
     emit_epilogue(&g);
@@ -1173,6 +1242,8 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     b->paddr = paddr;
     b->insns = n;
     b->kernel = g.native;
+    b->body = (u32 *)start + bodyAt;
+    b->linkHead = -1;
     b->valid = 1;
     if (g.native) classify_idle(b, ops, n);
 #if defined(H64_JIT_ABI_ELFV1)

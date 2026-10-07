@@ -47,8 +47,24 @@ struct H64JitStats
     u64 helperCalls;                // instructions run through the interpreter helper (incl. slow paths)
 };
 
+// A patched block exit: a direct branch into another block's body.
+struct H64JitLink
+{
+    u32 *patch;                     // the branch word in the source block
+    u32 orig;                       // its unlinked value
+    int next;                       // next link into the same target (-1: none)
+};
+
 struct H64Jit
 {
+    // Read and written by generated code: kept first, at small offsets.
+    u64 blockEndCycles;             // the block being run: leave it if an event falls before this
+    u64 runEnd;                     // h64_jit_run's end: chained blocks stop there
+    u32 *lastExit;                  // the unlinked exit the last block left by (NULL: none)
+    u32 lastExitTarget;             // and the MIPS pc it goes to
+    u32 curPage;
+    int curInvalidated;
+
     u8 *mem;                        // executable code memory (from the platform)
     u32 memSize, memUsed;
     void (*flushIcache)(void *addr, u32 len);
@@ -58,10 +74,11 @@ struct H64Jit
     H64JitBlock *hash[8192];        // by (u32)pc
     H64JitBlock *pageHead[H64_JIT_PAGES];   // live blocks of each RDRAM page (NULL: no code)
 
-    // The block being run (for the early-exit checks).
-    u64 blockEndCycles;
-    u32 curPage;
-    int curInvalidated;
+    // Block linking: exits with a fixed target jump straight into the next
+    // block's body once it has been compiled (see h64_jit_gen.cpp).
+    H64JitLink *links;
+    u32 linkCount, linkCap;
+    int noLink;                     // debugging: every block returns to the dispatcher
 
     H64JitStats stats;
     u32 *opHist;          // optional (debug, 232 entries): instructions run through the interpreter helper,

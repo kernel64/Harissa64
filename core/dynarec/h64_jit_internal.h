@@ -21,6 +21,8 @@ struct H64JitBlock
     u32 pollBase, pollSize;
     s32 pollOff;
     H64JitFn fn;         // callable (an ELFv1 function descriptor on ppc64 Linux)
+    u32 *body;           // first instruction after the prologue (linked exits jump here)
+    int linkHead;        // first link into this block (-1: none)
     H64JitBlock *hashNext, *pageNext;
 };
 
