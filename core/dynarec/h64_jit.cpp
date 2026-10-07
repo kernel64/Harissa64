@@ -24,6 +24,7 @@ void h64_jit_reset(H64System *sys)
     j->linkCount = 0;
     j->lastExit = 0;
     j->memUsed = 0;
+    h64_jit_emit_runtime(sys);   // sets memUsed past the shared code
     j->curInvalidated = 1;
     j->stats.flushes++;
 }
@@ -240,7 +241,7 @@ void h64_jit_run_one(H64System *sys)
     j->curPage = b->paddr >> 12;
     j->curInvalidated = 0;
     j->stats.blocksRun++;
-    b->fn(sys);
+    j->enter(sys, b->body);
 
     // Idle loop: skip whole iterations up to the next event. Nothing can
     // change the loop's outcome before an event (interrupts, DMA, the RSP

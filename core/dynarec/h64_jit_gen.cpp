@@ -251,6 +251,29 @@ static void store_gpr(Gen *g, u32 reg, u32 mips)
     }
 }
 
+// Source operand: the cached host register itself (no copy), or tmp.
+static u32 src_gpr(Gen *g, u32 mips, u32 tmp)
+{
+    if (mips == 0) { ppc_li(&g->c, tmp, 0); return tmp; }
+    if (!g->cacheOn) { ppc_ld(&g->c, tmp, OFF_GPR(mips), JR_CPU); return tmp; }
+    return rc_slot(g, mips, 1);
+}
+
+// Destination: the host register the result goes to (the cached one, or tmp);
+// dst_done marks it written (or stores tmp when not caching).
+static u32 dst_gpr(Gen *g, u32 mips, u32 tmp)
+{
+    if (mips == 0 || !g->cacheOn) return tmp;
+    return rc_slot(g, mips, 0);
+}
+
+static void dst_done(Gen *g, u32 reg, u32 mips)
+{
+    if (mips == 0) return;
+    if (!g->cacheOn) ppc_std(&g->c, reg, OFF_GPR(mips), JR_CPU);
+    else g->rc.dirty |= 1u << mips;
+}
+
 static void add_to(Gen *g, s32 off, s32 n)
 {
     if (!n) return;
@@ -270,6 +293,12 @@ static void sync_to(Gen *g, u32 pending, u32 next)
     ppc_std(&g->c, 3, OFF_NEXTPC, JR_CPU);
     ppc_li(&g->c, 3, 0);
     ppc_stw(&g->c, 3, OFF_BRANCH, JR_CPU);
+}
+
+static void ppc_branch_to(H64PpcCode *c, const u32 *target, int link)
+{
+    s32 off = (s32)((const u8 *)target - (const u8 *)(c->buf + c->pos));
+    ppc_put(c, 0x48000000u | ((u32)off & 0x03FFFFFCu) | (link ? 1u : 0u));
 }
 
 static void exit_block(Gen *g)
@@ -295,6 +324,9 @@ static void load_ptr(Gen *g, u32 rt, s32 off, u32 ra)
 #endif
 }
 
+static struct { u32 patchAt, target; } s_linkTails[H64_JIT_MAX_INSNS * 2];
+static u32 s_nLinkTails;
+
 static void link_exit(Gen *g, u32 targetPc)
 {
     H64PpcCode *c = &g->c;
@@ -316,18 +348,39 @@ static void link_exit(Gen *g, u32 targetPc)
     add_exit(g, ppc_bc_fwd(c, 12, 0, PPC_GT));     // the end of the run
     ppc_std(c, 3, (s32)offsetof(H64Jit, blockEndCycles), 5);
     patchAt = c->pos;
-    ppc_put(c, 0x48000004u);                        // b +4; linked: b <next block's body>
-    // Not linked yet: tell the dispatcher where this exit is and where it goes.
+    ppc_put(c, 0x48000000u);   // to the cold part below (emit_cold_links); linked: b <next block's body>
+    if (s_nLinkTails < sizeof(s_linkTails) / sizeof(s_linkTails[0]))
+    {
+        s_linkTails[s_nLinkTails].patchAt = patchAt;
+        s_linkTails[s_nLinkTails].target = targetPc;
+        s_nLinkTails++;
+    }
+    else
+        c->overflow = 1;
+}
+
+// Not linked yet (cold, after the body): tell the dispatcher where the exit is
+// and where it goes (r5 = sys->jit), then leave.
+static void emit_cold_links(Gen *g)
+{
+    H64PpcCode *c = &g->c;
+    u32 k;
+    for (k = 0; k < s_nLinkTails; k++)
+    {
+        u32 patchAt = s_linkTails[k].patchAt;
+        ppc_patch_here(c, patchAt);
 #if defined(H64_JIT_ABI_XBOX)
-    ppc_li32u(c, 3, (u32)(uintptr_t)(c->buf + patchAt));
-    ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
+        ppc_li32u(c, 3, (u32)(uintptr_t)(c->buf + patchAt));
+        ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
 #else
-    ppc_li64(c, 3, (u64)(uintptr_t)(c->buf + patchAt));
-    ppc_std(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
+        ppc_li64(c, 3, (u64)(uintptr_t)(c->buf + patchAt));
+        ppc_std(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
 #endif
-    ppc_li32u(c, 3, targetPc);
-    ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExitTarget), 5);
-    add_exit(g, ppc_b_fwd(c));
+        ppc_li32u(c, 3, s_linkTails[k].target);
+        ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExitTarget), 5);
+        add_exit(g, ppc_b_fwd(c));
+    }
+    s_nLinkTails = 0;
 }
 
 // The exit after a native branch: linked per outcome when the target is fixed.
@@ -393,7 +446,7 @@ static void call_interp_nc(Gen *g, u32 pc)
     add_exit(g, ppc_bc_fwd(&g->c, 4, 0, PPC_EQ));   // bne exit
 }
 
-// ---- Prologue / epilogue ----
+// ---- Prologue / epilogue (shared, see h64_jit_emit_runtime) ----
 static void emit_prologue(Gen *g)
 {
     H64PpcCode *c = &g->c;
@@ -429,6 +482,79 @@ static void emit_epilogue(Gen *g)
     for (r = RC_FIRST; r < 32; r++) ppc_ld(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
     ppc_addi(c, 1, 1, FRAME);
     ppc_blr(c);
+}
+
+// Shared code at the start of the code memory, rewritten after each reset:
+//   enter(sys, body): the prologue, then a jump to the block's body;
+//   exit: the epilogue (every block exit branches here);
+//   check[store][size]: native load/store checks. r3 = the 64-bit address;
+//     returns r4 = the physical address and cr0.eq set when the access can
+//     take the fast path: a sign-extended 32-bit KSEG0/KSEG1 address inside
+//     the 8 MB of RDRAM ((addr & 0xDF800000) == 0x80000000), aligned, and for
+//     stores no block over the 64-byte chunk (codeMap) and no MI repeat mode.
+//     Clobbers r5, r6, cr0 and LR (r7 holds Status.FR for COP1 accesses).
+void h64_jit_emit_runtime(H64System *sys)
+{
+    H64Jit *j = sys->jit;
+    Gen g;
+    u8 *start = j->mem;
+    u32 st, sz;
+    memset(&g, 0, sizeof(g));
+    g.sys = sys;
+#if defined(H64_JIT_ABI_ELFV1)
+    start += 32;
+#endif
+    g.c.buf = (u32 *)start;
+    g.c.cap = 1024;
+    emit_prologue(&g);
+    ppc_mtctr(&g.c, 4);
+    ppc_put(&g.c, 0x4E800420u);   // bctr
+    j->rtExit = g.c.buf + g.c.pos;
+    emit_epilogue(&g);
+    for (st = 0; st < 2; st++)
+        for (sz = 0; sz < 4; sz++)
+        {
+            H64PpcCode *c = &g.c;
+            j->rtCheck[st][sz] = c->buf + c->pos;
+            ppc_extsw(c, 4, 3);
+            ppc_cmpd(c, 0, 4, 3);
+            ppc_put(c, 0x4C820020u);              // bnelr: not a sign-extended 32-bit address
+            ppc_andis_(c, 5, 3, 0xDF80);
+            ppc_xoris(c, 5, 5, 0x8000);
+            ppc_cmpwi(c, 0, 5, 0);
+            ppc_put(c, 0x4C820020u);              // bnelr: not KSEG0/1, or beyond 8 MB
+            if (sz)
+            {
+                ppc_andi_(c, 5, 3, (1u << sz) - 1);
+                ppc_put(c, 0x4C820020u);          // bnelr: unaligned
+            }
+            ppc_rlwinm(c, 4, 3, 0, 3, 31);        // physical address
+            if (st)
+            {
+                load_ptr(&g, 6, (s32)offsetof(H64System, jit), JR_SYS);
+                load_ptr(&g, 6, (s32)offsetof(H64Jit, codeMap), 6);
+                ppc_rlwinm(c, 5, 4, 32 - 5, 5, 30);   // (paddr >> 6) * 2
+                ppc_lhzx(c, 5, 6, 5);
+                ppc_cmpwi(c, 0, 5, 0);
+                ppc_put(c, 0x4C820020u);          // bnelr: code in this chunk
+                ppc_lwz(c, 5, (s32)(offsetof(H64System, mi) + offsetof(H64Mi, mode)), JR_SYS);
+                ppc_andi_(c, 5, 5, 0x80);         // eq unless MI repeat mode
+            }
+            ppc_blr(c);
+        }
+#if defined(H64_JIT_ABI_ELFV1)
+    {
+        u64 *desc = (u64 *)j->mem;
+        desc[0] = (u64)(uintptr_t)start;
+        desc[1] = 0;
+        desc[2] = 0;
+        j->enter = (void (*)(H64System *, u32 *))(void *)desc;
+    }
+#else
+    j->enter = (void (*)(H64System *, u32 *))(void *)start;
+#endif
+    j->memUsed = ((u32)(start - j->mem) + g.c.pos * 4 + 63) & ~63u;
+    if (j->flushIcache) j->flushIcache(j->mem, j->memUsed);
 }
 
 // ---- Instruction classes ----
@@ -472,14 +598,21 @@ static int emit_alu(Gen *g, u32 op)
         switch (op & 63)
         {
         case 0x00: case 0x02: case 0x03:   // SLL SRL SRA
+        {
+            u32 a, d;
             if (rd == 0) return 1;
-            load_gpr(g, 3, rt);
-            if ((op & 63) == 0x00) ppc_rlwinm(c, 3, 3, sa, 0, 31 - sa);
-            else if ((op & 63) == 0x02) { if (sa) ppc_rlwinm(c, 3, 3, 32 - sa, sa, 31); }
-            else ppc_sradi(c, 3, 3, sa);
-            ppc_extsw(c, 3, 3);
-            store_gpr(g, 3, rd);
+            a = src_gpr(g, rt, 3);
+            d = dst_gpr(g, rd, 3);
+            if ((op & 63) == 0x00) { ppc_rlwinm(c, d, a, sa, 0, 31 - sa); ppc_extsw(c, d, d); }
+            else if ((op & 63) == 0x02)
+            {
+                if (sa) { ppc_rlwinm(c, d, a, 32 - sa, sa, 31); ppc_extsw(c, d, d); }
+                else ppc_extsw(c, d, a);
+            }
+            else { ppc_sradi(c, d, a, sa); ppc_extsw(c, d, d); }
+            dst_done(g, d, rd);
             return 1;
+        }
         case 0x04: case 0x06: case 0x07:   // SLLV SRLV SRAV
             if (rd == 0) return 1;
             load_gpr(g, 3, rt);
@@ -599,24 +732,32 @@ static int emit_alu(Gen *g, u32 op)
             ppc_std(c, 6, OFF_HI, JR_CPU);
             return 1;
         case 0x21: case 0x23: case 0x2D: case 0x2F:   // ADDU SUBU DADDU DSUBU
+        {
+            u32 a, b, d;
             if (rd == 0) return 1;
-            load_gpr(g, 3, rs);
-            load_gpr(g, 4, rt);
-            if ((op & 63) == 0x21 || (op & 63) == 0x2D) ppc_add(c, 3, 3, 4);
-            else ppc_subf(c, 3, 4, 3);
-            if ((op & 63) <= 0x23) ppc_extsw(c, 3, 3);
-            store_gpr(g, 3, rd);
+            a = src_gpr(g, rs, 3);
+            b = src_gpr(g, rt, 4);
+            d = dst_gpr(g, rd, 3);
+            if ((op & 63) == 0x21 || (op & 63) == 0x2D) ppc_add(c, d, a, b);
+            else ppc_subf(c, d, b, a);
+            if ((op & 63) <= 0x23) ppc_extsw(c, d, d);
+            dst_done(g, d, rd);
             return 1;
+        }
         case 0x24: case 0x25: case 0x26: case 0x27:   // AND OR XOR NOR
+        {
+            u32 a, b, d;
             if (rd == 0) return 1;
-            load_gpr(g, 3, rs);
-            load_gpr(g, 4, rt);
-            if ((op & 63) == 0x24) ppc_and(c, 3, 3, 4);
-            else if ((op & 63) == 0x25) ppc_or(c, 3, 3, 4);
-            else if ((op & 63) == 0x26) ppc_xor(c, 3, 3, 4);
-            else ppc_nor(c, 3, 3, 4);
-            store_gpr(g, 3, rd);
+            a = src_gpr(g, rs, 3);
+            b = src_gpr(g, rt, 4);
+            d = dst_gpr(g, rd, 3);
+            if ((op & 63) == 0x24) ppc_and(c, d, a, b);
+            else if ((op & 63) == 0x25) ppc_or(c, d, a, b);
+            else if ((op & 63) == 0x26) ppc_xor(c, d, a, b);
+            else ppc_nor(c, d, a, b);
+            dst_done(g, d, rd);
             return 1;
+        }
         case 0x2A: case 0x2B:   // SLT SLTU
             if (rd == 0) return 1;
             load_gpr(g, 3, rs);
@@ -629,12 +770,16 @@ static int emit_alu(Gen *g, u32 op)
     switch (opc)
     {
     case 0x09: case 0x19:   // ADDIU DADDIU
+    {
+        u32 a, d;
         if (rt == 0) return 1;
-        load_gpr(g, 3, rs);
-        ppc_addi(c, 3, 3, simm);
-        if (opc == 0x09) ppc_extsw(c, 3, 3);
-        store_gpr(g, 3, rt);
+        a = src_gpr(g, rs, 3);   // never r0 (addi would read it as 0)
+        d = dst_gpr(g, rt, 3);
+        ppc_addi(c, d, a, simm);
+        if (opc == 0x09) ppc_extsw(c, d, d);
+        dst_done(g, d, rt);
         return 1;
+    }
     case 0x0A: case 0x0B:   // SLTI SLTIU (the immediate is sign-extended for both)
         if (rt == 0) return 1;
         load_gpr(g, 3, rs);
@@ -642,18 +787,26 @@ static int emit_alu(Gen *g, u32 op)
         slt_result(g, opc == 0x0B, rt);
         return 1;
     case 0x0C: case 0x0D: case 0x0E:   // ANDI ORI XORI
+    {
+        u32 a, d;
         if (rt == 0) return 1;
-        load_gpr(g, 3, rs);
-        if (opc == 0x0C) ppc_andi_(c, 3, 3, uimm);
-        else if (opc == 0x0D) ppc_ori(c, 3, 3, uimm);
-        else ppc_xori(c, 3, 3, uimm);
-        store_gpr(g, 3, rt);
+        a = src_gpr(g, rs, 3);
+        d = dst_gpr(g, rt, 3);
+        if (opc == 0x0C) ppc_andi_(c, d, a, uimm);
+        else if (opc == 0x0D) ppc_ori(c, d, a, uimm);
+        else ppc_xori(c, d, a, uimm);
+        dst_done(g, d, rt);
         return 1;
+    }
     case 0x0F:   // LUI
+    {
+        u32 d;
         if (rt == 0) return 1;
-        ppc_lis(c, 3, simm);
-        store_gpr(g, 3, rt);
+        d = dst_gpr(g, rt, 3);
+        ppc_lis(c, d, simm);
+        dst_done(g, d, rt);
         return 1;
+    }
     }
     return 0;
 }
@@ -730,36 +883,12 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
         ppc_andis_(c, 5, 5, 0x2000);     // CU1
         slow[nSlow++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // beq: CU1 clear
     }
-    load_gpr(g, 3, rs);
-    ppc_addi(c, 3, 3, simm);
-    ppc_extsw(c, 4, 3);                       // a sign-extended 32-bit address?
-    ppc_cmpd(c, 0, 4, 3);
-    slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
-    ppc_rlwinm(c, 4, 3, 2, 30, 31);           // bits 31..30 == 10: KSEG0 or KSEG1
-    ppc_cmplwi(c, 0, 4, 2);
-    slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
-    if (size > 1)
-    {
-        ppc_andi_(c, 4, 3, size - 1);
-        slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
-    }
-    ppc_rlwinm(c, 4, 3, 0, 3, 31);            // physical address (& 0x1FFFFFFF)
-    ppc_rlwinm(c, 5, 4, 9, 23, 31);           // >> 23: within the 8 MB of RDRAM?
-    ppc_cmplwi(c, 0, 5, 0);
+    ppc_addi(c, 3, src_gpr(g, rs, 3), simm);
+    // Shared check (h64_jit_emit_runtime): r4 = physical address, cr0.eq = fast path.
+    ppc_branch_to(c, g->sys->jit->rtCheck[store][size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3], 1);
     slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
     if (store)
     {
-        // No block over this 64-byte chunk (codeMap[paddr >> 6] == 0)...
-        load_ptr(g, 6, (s32)offsetof(H64System, jit), JR_SYS);
-        load_ptr(g, 6, (s32)offsetof(H64Jit, codeMap), 6);
-        ppc_rlwinm(c, 5, 4, 32 - 5, 5, 30);     // (paddr >> 6) * 2
-        ppc_lhzx(c, 5, 6, 5);
-        ppc_cmpdi(c, 0, 5, 0);
-        slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
-        // ...and no MI repeat mode.
-        ppc_lwz(c, 5, (s32)(offsetof(H64System, mi) + offsetof(H64Mi, mode)), JR_SYS);
-        ppc_andi_(c, 5, 5, 0x80);
-        slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
         if (fpu) fpu_access(g, rt, size, 1);   // the value to store, in r5
         else load_gpr(g, 5, rt);
         switch (size)
@@ -1485,12 +1614,8 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     if (j->blockCount >= j->blockCap || j->memUsed + MAX_BLOCK_BYTES + 64 > j->memSize)
         h64_jit_reset(sys);
 
-    // ELFv1: a 3-doubleword function descriptor precedes the code.
     j->memUsed = (j->memUsed + 15) & ~15u;
     start = j->mem + j->memUsed;
-#if defined(H64_JIT_ABI_ELFV1)
-    start += 32;
-#endif
     memset(&g, 0, sizeof(g));
     g.sys = sys;
     g.c.buf = (u32 *)start;
@@ -1507,8 +1632,8 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     sys->cpu.jitFpMin[1] = ldexp(1.0, -1022);
 
     s_nTails = 0;
-    emit_prologue(&g);
-    bodyAt = g.c.pos;
+    s_nLinkTails = 0;
+    bodyAt = 0;   // entered through j->enter (the shared prologue)
     for (i = 0; i < n; i++)
     {
         u32 ipc = pc + i * 4, op = ops[i];
@@ -1545,9 +1670,11 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         if (ends_block(ops[n - 1])) exit_block(&g);   // COP0: the mode may have changed
         else link_exit(&g, pc + n * 4);
     }
+    j->stats.hotBytes += g.c.pos * 4;
     emit_cold_tails(&g);
+    emit_cold_links(&g);
     for (i = 0; i < g.nExits; i++) ppc_patch_here(&g.c, g.exits[i]);
-    emit_epilogue(&g);
+    ppc_branch_to(&g.c, j->rtExit, 0);   // the shared epilogue
     if (g.c.overflow)
     {
         H64_ERROR("[jit] block at %08X too large", pc);
@@ -1564,17 +1691,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     b->linkHead = -1;
     b->valid = 1;
     if (g.native) classify_idle(b, ops, n);
-#if defined(H64_JIT_ABI_ELFV1)
-    {
-        u64 *desc = (u64 *)(start - 32);
-        desc[0] = (u64)(uintptr_t)start;
-        desc[1] = 0;
-        desc[2] = 0;
-        b->fn = (H64JitFn)(void *)desc;
-    }
-#else
-    b->fn = (H64JitFn)(void *)start;
-#endif
+    b->fn = 0;
     j->memUsed = (u32)((start - j->mem) + g.c.pos * 4);
     if (j->flushIcache) j->flushIcache(start, g.c.pos * 4);
 
@@ -1584,6 +1701,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     j->pageHead[paddr >> 12] = b;
     h64_jit_code_map(j, b, 1);
     j->stats.blocksCompiled++;
+    j->stats.codeBytes += g.c.pos * 4;
     H64_DEBUG("[jit] block %08X (phys %06X): %u instructions, %u bytes, first %08X", pc, paddr, n, g.c.pos * 4, ops[0]);
     return b;
 }

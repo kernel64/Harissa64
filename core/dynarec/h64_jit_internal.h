@@ -27,6 +27,8 @@ struct H64JitBlock
 };
 
 H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr);
+// Writes the shared entry/exit/check code at the start of the code memory (after a reset).
+void h64_jit_emit_runtime(H64System *sys);
 void h64_jit_code_map(H64Jit *j, const H64JitBlock *b, int delta);
 // Kernel mode (Status.KSU = 0, or EXL/ERL set): native code is allowed.
 int h64_jit_kernel_mode(const H64Cpu *cpu);

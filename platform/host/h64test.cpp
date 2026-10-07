@@ -471,7 +471,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                (unsigned long long)sys->jit->stats.idleSkipped, (unsigned long long)sys->jit->stats.blocksRun,
                (unsigned long long)sys->jit->stats.helperCalls);
     if (sys->jit)
-        printf("[jit] code: %u bytes in use for %u live blocks, %llu instructions compiled (%llu native), %llu flushes\n",
+        printf("[jit] code: %.1f bytes per instruction (%.1f before the slow paths), %u bytes in use for %u live blocks, %llu instructions compiled (%llu native), %llu flushes\n",
+               (double)sys->jit->stats.codeBytes / (double)(sys->jit->stats.nativeInsns + sys->jit->stats.helperInsns + 1),
+               (double)sys->jit->stats.hotBytes / (double)(sys->jit->stats.nativeInsns + sys->jit->stats.helperInsns + 1),
                sys->jit->memUsed, sys->jit->blockCount,
                (unsigned long long)(sys->jit->stats.nativeInsns + sys->jit->stats.helperInsns),
                (unsigned long long)sys->jit->stats.nativeInsns, (unsigned long long)sys->jit->stats.flushes);

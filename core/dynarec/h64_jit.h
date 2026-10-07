@@ -45,6 +45,7 @@ struct H64JitStats
     u64 blocksRun, blocksCompiled, interpSteps, invalidations, flushes, earlyExits, idleSkipped;
     u64 nativeInsns, helperInsns;   // compiled instructions, by kind
     u64 helperCalls;                // instructions run through the interpreter helper (incl. slow paths)
+    u64 codeBytes, hotBytes;        // generated code: all of it, and the part before the cold slow paths
 };
 
 // A patched block exit: a direct branch into another block's body.
@@ -74,6 +75,13 @@ struct H64Jit
     u32 blockCount, blockCap;
     H64JitBlock *hash[8192];        // by (u32)pc
     H64JitBlock *pageHead[H64_JIT_PAGES];   // live blocks of each RDRAM page (NULL: no code)
+
+    // Shared code at the start of the code memory (h64_jit_emit_runtime):
+    // the entry (prologue, then the block's body), the exit (epilogue) and the
+    // address checks of native loads and stores, so blocks stay small.
+    void (*enter)(H64System *sys, u32 *body);   // an ELFv1 descriptor on ppc64 Linux
+    u32 *rtExit;
+    u32 *rtCheck[2][4];             // [store][log2 size]: r3 = address -> r4 = physical, cr0.eq = fast path
 
     // Block linking: exits with a fixed target jump straight into the next
     // block's body once it has been compiled (see h64_jit_gen.cpp).
