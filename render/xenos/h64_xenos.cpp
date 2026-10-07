@@ -348,6 +348,33 @@ static u64 fnv64(u64 h, const u8 *p, u32 n)
     return h;
 }
 
+// Hash of TMEM bytes for the texture cache key: 8 bytes at a time in four
+// independent lanes (the multiplies overlap on the in-order Xenon), instead of
+// FNV byte by byte (up to 4 KB per lookup: 3-6 ms a frame in OoT).
+static u64 mem_hash(u64 h, const u8 *p, u32 n)
+{
+    u64 a = h ^ 0x9E3779B97F4A7C15ull, b = h + 0xC2B2AE3D27D4EB4Full, c = h ^ 0x165667B19E3779F9ull, d = h - 0x85EBCA77C2B2AE63ull;
+    u32 i = 0;
+    for (; i + 32 <= n; i += 32)
+    {
+        u64 w0, w1, w2, w3;
+        memcpy(&w0, p + i, 8); memcpy(&w1, p + i + 8, 8); memcpy(&w2, p + i + 16, 8); memcpy(&w3, p + i + 24, 8);
+        a = (a ^ w0) * 0x100000001B3ull; b = (b ^ w1) * 0x100000001B3ull;
+        c = (c ^ w2) * 0x100000001B3ull; d = (d ^ w3) * 0x100000001B3ull;
+    }
+    for (; i + 8 <= n; i += 8)
+    {
+        u64 w;
+        memcpy(&w, p + i, 8);
+        a = (a ^ w) * 0x100000001B3ull;
+    }
+    for (; i < n; i++) b = (b ^ p[i]) * 0x100000001B3ull;
+    h = a ^ (b << 1) ^ (c << 2) ^ (d << 3) ^ n;
+    h ^= h >> 31;
+    h *= 0x9E3779B97F4A7C15ull;
+    return h ^ (h >> 29);
+}
+
 static u32 tile_extent(u32 lo, u32 hi)
 {
     s32 n = (s32)((hi >> 2) - (lo >> 2)) + 1;
@@ -471,14 +498,30 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     rowBytes = t->stride ? t->stride : 8;
     rows = (b->ox || b->oy) ? 4096 / rowBytes : b->h + 1;   // a window can reach any TMEM line
     if (rowBytes * rows > 4096) rows = 4096 / rowBytes;
-    for (y = 0; y < rows; y++)
     {
-        u32 off = (t->offset + y * rowBytes) & 0xFFF, n = rowBytes;
-        if (off + n > 4096) n = 4096 - off;
-        key = fnv64(key, st->tmem + off, n);
-        if (t->size == 3 && t->fmt == 0) key = fnv64(key, st->tmem + ((off | 0x800) & 0xFFF), n);
+        // The rows are contiguous in TMEM (wrapping at 4 KB): one or two ranges.
+        u32 off = t->offset & 0xFFF, n = rows * rowBytes, first = n;
+        if (off + first > 4096) first = 4096 - off;
+        key = mem_hash(key, st->tmem + off, first);
+        if (first < n) key = mem_hash(key, st->tmem, n - first);
+        if (t->size == 3 && t->fmt == 0)
+        {
+            // 32-bit textures: the other half of each texel is 2 KB further.
+            for (y = 0; y < rows; y++)
+            {
+                u32 o = (t->offset + y * rowBytes) & 0xFFF, m = rowBytes;
+                if (o + m > 4096) m = 4096 - o;
+                key = mem_hash(key, st->tmem + ((o | 0x800) & 0xFFF), m);
+            }
+        }
     }
-    if (tlut) key = fnv64(key, st->tmem + 0x800, 0x800);
+    if (tlut)
+    {
+        // Only the palette the texture can use: 16 entries (4-bit, palette
+        // number from the tile) or 256; each entry is written 4 times (8 bytes).
+        if (t->size == 0) key = mem_hash(key, st->tmem + 0x800 + ((t->palette & 15) << 7), 128);
+        else key = mem_hash(key, st->tmem + 0x800, 0x800);
+    }
     it = x->textures.find(key);
     if (it != x->textures.end())
         return it->second.tex;
