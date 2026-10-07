@@ -87,6 +87,7 @@ struct H64Jit
                           // for the moves and branches, [216 + 0/1] CVT.S/CVT.D from W/L
     int noNative;                   // debugging: every instruction through the interpreter
     int noFpu;                      // debugging: COP1 arithmetic through the interpreter
+    int noRegCache;                 // debugging: no MIPS registers kept in host registers
 };
 
 // Takes executable memory (and its icache flush) from the platform.

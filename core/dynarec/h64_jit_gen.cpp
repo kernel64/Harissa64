@@ -31,7 +31,7 @@
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
 
-#define FRAME 192
+#define FRAME 304
 #define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 2048)
 
 // Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r27 branch taken, r26 jump target.
@@ -105,6 +105,22 @@ static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
 static u64 fn_addr(int (*f)(H64System *, u32, u32, u32)) { return (u64)(uintptr_t)f; }
 
 // ---- Code generation context ----
+// MIPS GPRs cached in host registers r14..r25 inside a block: loaded on first
+// use, written back (the dirty ones) before every helper call and every exit,
+// so H64Cpu is exact whenever C code or another block looks at it. No register
+// is evicted inside one MIPS instruction (begin_insn frees slots first): a slow
+// path writes back the dirty set of the instruction's start (pre) and, after
+// the call, reloads every register mapped at the instruction's end (rc).
+#define RC_SLOTS 12
+#define RC_FIRST 14
+struct RegCache
+{
+    s8 host[32];            // MIPS register -> slot, or -1
+    u8 mips[RC_SLOTS];      // slot -> MIPS register (0: free)
+    u32 age[RC_SLOTS];
+    u32 dirty;              // MIPS registers newer in the host register
+};
+
 struct Gen
 {
     H64System *sys;
@@ -119,19 +135,109 @@ struct Gen
     u32 cpi;          // cycles per instruction (sys->cpu.cpi)
     u32 bc1Slow;      // BC1 with COP1 unusable: the branch to the interpreted fallback
     int hasBc1Slow;
+    int cacheOn;      // GPR caching (native blocks)
+    RegCache rc, pre; // the current state; the state at the start of the current instruction
+    RegCache bc1Pre;  // the state at the branch (BC1 fallback)
+    u32 tick;
 };
 
 static void add_exit(Gen *g, u32 at) { if (g->nExits < H64_JIT_MAX_INSNS * 4) g->exits[g->nExits++] = at; }
 
+static void rc_reset(RegCache *r)
+{
+    memset(r->host, -1, sizeof(r->host));
+    memset(r->mips, 0, sizeof(r->mips));
+    memset(r->age, 0, sizeof(r->age));
+    r->dirty = 0;
+}
+
+// Stores the dirty registers of state r (code only; the generator state is unchanged).
+static void rc_writeback(Gen *g, const RegCache *r)
+{
+    u32 m;
+    for (m = 1; m < 32; m++)
+        if (r->host[m] >= 0 && (r->dirty & (1u << m)))
+            ppc_std(&g->c, RC_FIRST + (u32)r->host[m], OFF_GPR(m), JR_CPU);
+}
+
+// Loads every register mapped in state r from H64Cpu (after a helper call).
+static void rc_reload(Gen *g, const RegCache *r)
+{
+    u32 m;
+    for (m = 1; m < 32; m++)
+        if (r->host[m] >= 0) ppc_ld(&g->c, RC_FIRST + (u32)r->host[m], OFF_GPR(m), JR_CPU);
+}
+
+// Helper call on the main path: write back, then forget everything.
+static void rc_flush(Gen *g)
+{
+    if (!g->cacheOn) return;
+    rc_writeback(g, &g->rc);
+    rc_reset(&g->rc);
+}
+
+// At the start of each MIPS instruction: at least 4 free slots (an instruction
+// uses 3 registers at most, a branch-and-link 3), evicting the least recently used.
+static void begin_insn(Gen *g)
+{
+    if (g->cacheOn)
+    {
+        u32 i, free = 0;
+        for (i = 0; i < RC_SLOTS; i++) if (!g->rc.mips[i]) free++;
+        while (free < 4)
+        {
+            u32 best = 0, bestAge = 0xFFFFFFFFu, m;
+            for (i = 0; i < RC_SLOTS; i++)
+                if (g->rc.mips[i] && g->rc.age[i] < bestAge) { bestAge = g->rc.age[i]; best = i; }
+            m = g->rc.mips[best];
+            if (g->rc.dirty & (1u << m)) ppc_std(&g->c, RC_FIRST + best, OFF_GPR(m), JR_CPU);
+            g->rc.dirty &= ~(1u << m);
+            g->rc.host[m] = -1;
+            g->rc.mips[best] = 0;
+            free++;
+        }
+    }
+    g->pre = g->rc;
+}
+
+static u32 rc_slot(Gen *g, u32 mips, int load)
+{
+    RegCache *r = &g->rc;
+    u32 i;
+    if (r->host[mips] < 0)
+    {
+        for (i = 0; i < RC_SLOTS && r->mips[i]; i++) {}
+        if (i == RC_SLOTS) { g->c.overflow = 1; i = 0; }   // begin_insn guarantees a slot
+        r->mips[i] = (u8)mips;
+        r->host[mips] = (s8)i;
+        if (load) ppc_ld(&g->c, RC_FIRST + i, OFF_GPR(mips), JR_CPU);
+    }
+    i = (u32)r->host[mips];
+    r->age[i] = ++g->tick;
+    return RC_FIRST + i;
+}
+
 static void load_gpr(Gen *g, u32 reg, u32 mips)
 {
     if (mips == 0) ppc_li(&g->c, reg, 0);
-    else ppc_ld(&g->c, reg, OFF_GPR(mips), JR_CPU);
+    else if (!g->cacheOn) ppc_ld(&g->c, reg, OFF_GPR(mips), JR_CPU);
+    else
+    {
+        u32 h = rc_slot(g, mips, 1);
+        if (h != reg) ppc_mr(&g->c, reg, h);
+    }
 }
 
 static void store_gpr(Gen *g, u32 reg, u32 mips)
 {
-    if (mips != 0) ppc_std(&g->c, reg, OFF_GPR(mips), JR_CPU);
+    if (mips == 0) return;
+    if (!g->cacheOn) ppc_std(&g->c, reg, OFF_GPR(mips), JR_CPU);
+    else
+    {
+        u32 h = rc_slot(g, mips, 0);
+        if (h != reg) ppc_mr(&g->c, h, reg);
+        g->rc.dirty |= 1u << mips;
+    }
 }
 
 static void add_to(Gen *g, s32 off, s32 n)
@@ -155,7 +261,11 @@ static void sync_to(Gen *g, u32 pending, u32 next)
     ppc_stw(&g->c, 3, OFF_BRANCH, JR_CPU);
 }
 
-static void exit_block(Gen *g) { add_exit(g, ppc_b_fwd(&g->c)); }
+static void exit_block(Gen *g)
+{
+    if (g->cacheOn) rc_writeback(g, &g->rc);
+    add_exit(g, ppc_b_fwd(&g->c));
+}
 
 // ---- Block linking ----
 // An exit whose next pc is fixed (state already synced). If no event falls
@@ -183,6 +293,7 @@ static void link_exit(Gen *g, u32 targetPc)
         exit_block(g);
         return;
     }
+    if (g->cacheOn) rc_writeback(g, &g->rc);   // the next block (or the dispatcher) reads H64Cpu
     ppc_ld(c, 3, OFF_CYCLES, JR_CPU);
     ppc_addi(c, 3, 3, (s32)(H64_JIT_MAX_INSNS * g->cpi));
     ppc_ld(c, 4, (s32)(offsetof(H64System, sched) + offsetof(H64Scheduler, next)), JR_SYS);
@@ -205,7 +316,7 @@ static void link_exit(Gen *g, u32 targetPc)
 #endif
     ppc_li32u(c, 3, targetPc);
     ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExitTarget), 5);
-    exit_block(g);
+    add_exit(g, ppc_b_fwd(c));
 }
 
 // The exit after a native branch: linked per outcome when the target is fixed.
@@ -228,6 +339,7 @@ static void branch_exit(Gen *g, int dynamicTarget, u64 target, u32 fallthrough)
 // (a delay slot), ignoring its answer: the block ends right after.
 static void call_interp_raw(Gen *g)
 {
+    rc_flush(g);
     ppc_mr(&g->c, 3, JR_SYS);
     ppc_li(&g->c, 4, 0);
     ppc_li(&g->c, 6, 0);   // the interpreter fetches the instruction
@@ -242,7 +354,14 @@ static void call_interp_raw(Gen *g)
 }
 
 // The interpreter runs instruction `pc` (state synced); stop on its request.
+static void call_interp_nc(Gen *g, u32 pc);
 static void call_interp(Gen *g, u32 pc)
+{
+    rc_flush(g);
+    call_interp_nc(g, pc);
+}
+
+static void call_interp_nc(Gen *g, u32 pc)
 {
     u32 op = h64_load_be32(g->sys->rdram + g->paddr0 + (pc - g->pc0));
     sync_to(g, g->pending, pc);
@@ -275,7 +394,7 @@ static void emit_prologue(Gen *g)
 #endif
     ppc_mflr(c, 0);
     ppc_std(c, 0, FRAME - 8, 1);
-    for (r = 24; r < 32; r++) ppc_std(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
+    for (r = RC_FIRST; r < 32; r++) ppc_std(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
     ppc_mr(c, JR_SYS, 3);
     ppc_addi(c, JR_CPU, JR_SYS, (s32)offsetof(H64System, cpu));
 #if defined(H64_JIT_ABI_XBOX)
@@ -296,7 +415,7 @@ static void emit_epilogue(Gen *g)
     u32 r;
     ppc_ld(c, 0, FRAME - 8, 1);
     ppc_mtlr(c, 0);
-    for (r = 24; r < 32; r++) ppc_ld(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
+    for (r = RC_FIRST; r < 32; r++) ppc_ld(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
     ppc_addi(c, 1, 1, FRAME);
     ppc_blr(c);
 }
@@ -677,7 +796,9 @@ static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow, u32 done)
     for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
     {
         u32 pend = g->pending;
-        call_interp(g, pc);
+        if (g->cacheOn) rc_writeback(g, &g->pre);
+        call_interp_nc(g, pc);
+        if (g->cacheOn) rc_reload(g, &g->rc);
         add_to(g, OFF_CYCLES, -(s32)((pend + 1) * g->cpi));
         add_to(g, OFF_INSNS, -(s32)(pend + 1));
         g->pending = pend;
@@ -828,6 +949,9 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
         u32 pass, n = ((fs & 1) && fmt != 2 && fmt != 6) ? 2 : 1, alt = 0, done = 0;
         if (fmt == 0 || fmt == 1 || fmt == 4 || fmt == 5)
         {
+            // The GPR is read once, before the FR split: a register cached on
+            // one side only would hold garbage on the other.
+            if (fmt == 4 || fmt == 5) load_gpr(g, 3, ft);
             for (pass = 0; pass < n; pass++)
             {
                 s32 off32 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs) + 4, off64 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs);
@@ -841,8 +965,8 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
                 {
                 case 0: ppc_lwa(c, 3, off32, JR_CPU); store_gpr(g, 3, ft); break;    // MFC1
                 case 1: ppc_ld(c, 3, off64, JR_CPU); store_gpr(g, 3, ft); break;     // DMFC1
-                case 4: load_gpr(g, 3, ft); ppc_stw(c, 3, off32, JR_CPU); break;     // MTC1
-                default: load_gpr(g, 3, ft); ppc_std(c, 3, off64, JR_CPU); break;    // DMTC1
+                case 4: ppc_stw(c, 3, off32, JR_CPU); break;     // MTC1
+                default: ppc_std(c, 3, off64, JR_CPU); break;    // DMTC1
                 }
                 if (pass == 0 && n == 2) done = ppc_b_fwd(c);
             }
@@ -1173,10 +1297,13 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
 {
     u32 pend0 = g->pending;
     g->hasBc1Slow = 0;
+    begin_insn(g);
+    g->bc1Pre = g->rc;
     emit_branch_body(g, op, pc, ds);
     if (g->hasBc1Slow)
     {
         ppc_patch_here(&g->c, g->bc1Slow);
+        g->rc = g->bc1Pre;
         g->pending = pend0;
         call_interp(g, pc);
         call_interp_raw(g);
@@ -1190,6 +1317,7 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
     int likely, dynamicTarget;
     u64 target;
     u32 dsPc = pc + 4;
+    RegCache slotPre;
     emit_branch_head(g, op, pc, &likely, &dynamicTarget, &target);
     g->pending++;   // the branch itself
     if (likely)
@@ -1203,6 +1331,8 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
         ppc_patch_here(c, takenAt);
     }
     // The delay slot.
+    begin_insn(g);
+    slotPre = g->rc;
     if (g->native && !is_branch(ds) && !ends_block(ds) && (emit_alu(g, ds) ? (g->pending++, 1) : 0))
     {
         add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
@@ -1230,6 +1360,7 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
             branch_exit(g, dynamicTarget, target, dsPc + 4);
             for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
             g->pending = pend;
+            g->rc = slotPre;   // the slow paths left before the slot changed anything
         }
     }
     // Otherwise the interpreter runs the slot, as it would after the branch:
@@ -1333,6 +1464,9 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     g.cpi = sys->cpu.cpi ? sys->cpu.cpi : 1;
     g.native = h64_jit_kernel_mode(&sys->cpu) && !j->noNative;
     g.fpu = g.native && !j->noFpu && h64_fenv_reliable();
+    g.cacheOn = g.native && !j->noRegCache;
+    rc_reset(&g.rc);
+    g.pre = g.rc;
     sys->cpu.jitFpMin[0] = ldexp(1.0, -126);
     sys->cpu.jitFpMin[1] = ldexp(1.0, -1022);
 
@@ -1341,6 +1475,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     for (i = 0; i < n; i++)
     {
         u32 ipc = pc + i * 4, op = ops[i];
+        if (!(endsWithBranch && i == n - 2)) begin_insn(&g);
         if (endsWithBranch && i == n - 2)
         {
             if (g.native && ((op >> 26) != 0x11 || ((op >> 21) & 31) == 0x08))
