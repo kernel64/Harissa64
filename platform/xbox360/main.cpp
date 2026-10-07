@@ -11,7 +11,7 @@
 //   hle=1          (default) or hle=0 for the LLE RSP (slow; no video yet:
 //                  the Xenos renderer only draws HLE triangles).
 // The log goes to game:\harissa64v2.log, or cache:\ when game:\ is
-// read-only (Xenia). BACK + START returns to the dashboard.
+// read-only (Xenia). Holding BACK for 2 s returns to the dashboard.
 #include <xtl.h>
 #include <stdio.h>
 #include <string.h>
@@ -872,13 +872,20 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         if (sys->jit) h64_jit_reset(sys);
     }
     PcSamplerStart(sys);
+    DWORD backSince = 0;
     for (;;)
     {
         int queued;
         if (XInputGetState(0, &s_pad) == ERROR_SUCCESS) s_padValid = 1;
         else s_padValid = 0;
-        if (s_padValid && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK) && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_START))
-            break;
+        // BACK held for 2 s returns to the dashboard (BACK + START is the dashboard's screenshot).
+        if (s_padValid && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK))
+        {
+            if (!backSince) backSince = GetTickCount() | 1;
+            else if (GetTickCount() - backSince >= 2000) break;
+        }
+        else
+            backSince = 0;
         QueryPerformanceCounter(&t0);
         if (RunFrame(sys)) break;
         QueryPerformanceCounter(&t1);
