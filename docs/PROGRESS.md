@@ -1,6 +1,6 @@
 # Progress
 
-## Current milestone: M4 — HLE and the Xenos renderer (Xenia checks done, console test pending)
+## Current milestone: M4 — HLE and the Xenos renderer (all parts done; final console test pending)
 
 | Part | Status |
 |---|---|
@@ -12,7 +12,8 @@
 | Framebuffer emulation: copy back to RDRAM before the RDP reads a frame as a texture; new colour images start from RDRAM | Done (not yet seen exercised by the three games) |
 | Xbox front end: ROM, recompiler/interpreter, HLE, XAudio2, XInput, ini, scripted input, screenshots, crash handler | Done |
 | S2DEX2 HLE | G_BG_COPY (OoT's prerendered rooms): done; BG_1CYC and the object commands still go to LLE |
-| VI filters on Xenos | To do |
+| VI filters on Xenos | The three games use VI control 0x3016 (AA + resample, divot, gamma dither, no gamma): edge smoothing (FXAA) when the frame is shown stands for the coverage AA Xenos cannot do (ini `smooth=0` to compare) |
+| Xbox audio | Rate control (0.90–1.02) toward a 100 ms queue and re-buffering after an underrun, as V1 |
 
 ### Console speed (RGH, PAL, 50 VI/s target), 2026-10-07
 
@@ -23,6 +24,14 @@ Measured with the `[prof]`/`[jit]`/`[xprof]` lines. The steps that mattered:
 - BC1, DIV, MFC0, odd-register COP1 moves native; 64-byte code map (interpreted instructions per frame: MK64 ~2000 -> ~350, OoT ~13000 -> ~1000).
 
 Result before S2DEX2 HLE: MK64 menus and most of the race at 49–52 VI/s (race CPU ~12 ms, rendering 4–7 ms); OoT at full speed in many places, 35–45 VI/s outdoors (CPU 13–17 ms, graphics HLE 5–10 ms), 26 VI/s in prerendered rooms (S2DEX task in LLE: ~30 ms).
+
+Then:
+- S2DEX2 G_BG_COPY in HLE: OoT's prerendered rooms at full speed (RSP LLE 0 ms).
+- The console measured ~700 cycles for a jump to far code (`[jit] code locality`): generated code was made compact (shared entry/exit, load/store and FPU checks as shared routines, slow paths in a separate cold region through a shared call, direct use of cached registers): 148 -> 97 bytes per MIPS instruction, 66 -> 50 in the hot part. OoT outdoors CPU 13–16 -> ~12 ms.
+- GPR caching in host registers: correct (lockstep) but no measurable gain on its own.
+- `[cprof]`: the interpreter helper (~0.7 ms) and scheduler events (~0.1 ms) are small; the rest of `cpu` is generated code.
+
+Known issues: OoT's Kokiri paths flicker on Xenos (parked until save states make the scene reachable here); Paper Mario hangs after a while, Mario Party 3 at boot (EEPROM: M5).
 
 ### Checks in Xenia (interpreter, RSP HLE, Xenos), 2026-10-06
 
