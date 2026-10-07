@@ -27,6 +27,7 @@ struct H64JitBlock
 };
 
 H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr);
+void h64_jit_code_map(H64Jit *j, const H64JitBlock *b, int delta);
 // Kernel mode (Status.KSU = 0, or EXL/ERL set): native code is allowed.
 int h64_jit_kernel_mode(const H64Cpu *cpu);
 // After a helper: leave the block? (invalidated page, event due inside the block, interrupt, stop)

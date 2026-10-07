@@ -80,7 +80,7 @@ static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
                 if ((u64)(s64)(s32)a != a || ((u32)a >> 30) != 2) sys->jit->opHist[192]++;
                 else if (a & (size - 1)) sys->jit->opHist[193]++;
                 else if ((paddr0 = (u32)a & 0x1FFFFFFF) >= H64_RDRAM_SIZE) sys->jit->opHist[194]++;
-                else if (opc >= 0x28 && sys->jit->pageHead[paddr0 >> 12]) sys->jit->opHist[195]++;
+                else if (opc >= 0x28 && sys->jit->codeMap[paddr0 >> 6]) sys->jit->opHist[195]++;
                 else sys->jit->opHist[196]++;
             }
         }
@@ -117,6 +117,8 @@ struct Gen
     int native;       // native code allowed (kernel-mode block)
     int fpu;          // native FPU arithmetic allowed (host FPU flags readable)
     u32 cpi;          // cycles per instruction (sys->cpu.cpi)
+    u32 bc1Slow;      // BC1 with COP1 unusable: the branch to the interpreted fallback
+    int hasBc1Slow;
 };
 
 static void add_exit(Gen *g, u32 at) { if (g->nExits < H64_JIT_MAX_INSNS * 4) g->exits[g->nExits++] = at; }
@@ -311,7 +313,8 @@ static int is_branch(u32 op)
     return 0;
 }
 
-static int ends_block(u32 op) { return (op >> 26) == 0x10; }   // COP0 (MTC0, ERET, TLB...)
+// COP0 (MTC0, ERET, TLB...), except MFC0/DMFC0, which change nothing.
+static int ends_block(u32 op) { return (op >> 26) == 0x10 && ((op >> 21) & 31) != 0 && ((op >> 21) & 31) != 1; }
 
 // ---- Native ALU ----
 static void slt_result(Gen *g, int unsignedCmp, u32 rd)
@@ -404,6 +407,58 @@ static int emit_alu(Gen *g, u32 op)
             ppc_extsw(c, 3, 3);
             ppc_std(c, 3, OFF_HI, JR_CPU);
             return 1;
+        case 0x1A: case 0x1B:   // DIV DIVU, with the interpreter's results for /0 and INT_MIN/-1
+        {
+            u32 zero, ovf = 0, done1, done2, done3 = 0, normal = 0;
+            int sgn = (op & 63) == 0x1A;
+            load_gpr(g, 3, rs);
+            load_gpr(g, 4, rt);
+            if (sgn) { ppc_extsw(c, 3, 3); ppc_extsw(c, 4, 4); }
+            else { ppc_clrldi(c, 3, 3, 32); ppc_clrldi(c, 4, 4, 32); }
+            ppc_cmpdi(c, 0, 4, 0);
+            zero = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+            if (sgn)
+            {
+                ppc_cmpdi(c, 1, 4, -1);
+                normal = ppc_bc_fwd(c, 4, 1, PPC_EQ);
+                ppc_lis(c, 5, -32768);              // 0xFFFFFFFF80000000
+                ppc_cmpd(c, 0, 3, 5);
+                ovf = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+                ppc_patch_here(c, normal);
+            }
+            if (sgn) ppc_divw(c, 5, 3, 4);
+            else ppc_divwu(c, 5, 3, 4);
+            ppc_mullw(c, 6, 5, 4);
+            ppc_subf(c, 6, 6, 3);
+            ppc_extsw(c, 5, 5);
+            ppc_extsw(c, 6, 6);
+            done1 = ppc_b_fwd(c);
+            ppc_patch_here(c, zero);                // lo = a < 0 ? 1 : -1 (DIVU: -1), hi = a
+            ppc_li(c, 5, -1);
+            if (sgn)
+            {
+                u32 pos;
+                ppc_cmpdi(c, 0, 3, 0);
+                pos = ppc_bc_fwd(c, 4, 0, PPC_LT);
+                ppc_li(c, 5, 1);
+                ppc_patch_here(c, pos);
+            }
+            ppc_extsw(c, 6, 3);
+            done2 = ppc_b_fwd(c);
+            if (sgn)
+            {
+                ppc_patch_here(c, ovf);             // INT_MIN / -1: lo = a, hi = 0
+                ppc_mr(c, 5, 3);
+                ppc_li(c, 6, 0);
+                done3 = ppc_b_fwd(c);
+            }
+            ppc_patch_here(c, done1);
+            ppc_patch_here(c, done2);
+            if (sgn) ppc_patch_here(c, done3);
+            ppc_std(c, 5, OFF_LO, JR_CPU);
+            ppc_std(c, 6, OFF_HI, JR_CPU);
+            return 1;
+        }
         case 0x1C: case 0x1D:   // DMULT DMULTU: 64x64 -> 128
             load_gpr(g, 3, rs);
             load_gpr(g, 4, rt);
@@ -565,16 +620,10 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
     if (store)
     {
         H64Jit *j = g->sys->jit;
-        // No block on this page (pageHead[page] == NULL)...
-        ppc_li64(c, 6, (u64)(uintptr_t)j->pageHead);
-        ppc_rlwinm(c, 5, 4, 32 - 12, 12, 31);   // page = paddr >> 12
-#if defined(H64_JIT_ABI_XBOX)
-        ppc_rlwinm(c, 5, 5, 2, 0, 29);
-        ppc_lwzx(c, 5, 6, 5);
-#else
-        ppc_sldi(c, 5, 5, 3);
-        ppc_ldx(c, 5, 6, 5);
-#endif
+        // No block over this 64-byte chunk (codeMap[paddr >> 6] == 0)...
+        ppc_li64(c, 6, (u64)(uintptr_t)j->codeMap);
+        ppc_rlwinm(c, 5, 4, 32 - 5, 5, 30);     // (paddr >> 6) * 2
+        ppc_lhzx(c, 5, 6, 5);
         ppc_cmpdi(c, 0, 5, 0);
         slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
         // ...and no MI repeat mode.
@@ -760,26 +809,48 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     if (!move)
     {
         if (!g->fpu || (fmt != 0x10 && fmt != 0x11 && !fromW)) return 0;
-        if (!arith && !cmp && funct != 0x06 && !cvtd && !cvts && !toint && !fromW) return 0;
+        if (!arith && !cmp && funct != 0x06 && funct != 0x05 && funct != 0x07 && !cvtd && !cvts && !toint && !fromW) return 0;
     }
 
     // COP1 usable; an odd fs register needs FR = 1 (FR = 0 would use fs - 1).
     ppc_ld(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
     ppc_andis_(c, 6, 5, 0x2000);
     slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
-    if ((fs & 1) && fmt != 2 && fmt != 6)
+    if ((fs & 1) && fmt != 2 && fmt != 6 && !move)
     {
         ppc_andis_(c, 6, 5, 0x0400);
         slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
     }
     if (move)
     {
+        // With FR = 0 an odd register is the high word of the even one (32-bit
+        // moves) or the even register itself (64-bit moves).
+        u32 pass, n = ((fs & 1) && fmt != 2 && fmt != 6) ? 2 : 1, alt = 0, done = 0;
+        if (fmt == 0 || fmt == 1 || fmt == 4 || fmt == 5)
+        {
+            for (pass = 0; pass < n; pass++)
+            {
+                s32 off32 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs) + 4, off64 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs);
+                if (pass == 0 && n == 2)
+                {
+                    ppc_andis_(c, 6, 5, 0x0400);   // FR
+                    alt = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+                }
+                if (pass == 1) ppc_patch_here(c, alt);
+                switch (fmt)
+                {
+                case 0: ppc_lwa(c, 3, off32, JR_CPU); store_gpr(g, 3, ft); break;    // MFC1
+                case 1: ppc_ld(c, 3, off64, JR_CPU); store_gpr(g, 3, ft); break;     // DMFC1
+                case 4: load_gpr(g, 3, ft); ppc_stw(c, 3, off32, JR_CPU); break;     // MTC1
+                default: load_gpr(g, 3, ft); ppc_std(c, 3, off64, JR_CPU); break;    // DMTC1
+                }
+                if (pass == 0 && n == 2) done = ppc_b_fwd(c);
+            }
+            if (n == 2) ppc_patch_here(c, done);
+            return 1;
+        }
         switch (fmt)
         {
-        case 0: ppc_lwa(c, 5, OFF_FGR(fs) + 4, JR_CPU); store_gpr(g, 5, ft); break;    // MFC1
-        case 1: ppc_ld(c, 5, OFF_FGR(fs), JR_CPU); store_gpr(g, 5, ft); break;         // DMFC1
-        case 4: load_gpr(g, 5, ft); ppc_stw(c, 5, OFF_FGR(fs) + 4, JR_CPU); break;     // MTC1: the low word
-        case 5: load_gpr(g, 5, ft); ppc_std(c, 5, OFF_FGR(fs), JR_CPU); break;         // DMTC1
         case 2:                                                                        // CFC1
             if (fs == 31) ppc_lwa(c, 5, OFF_FCR31, JR_CPU);
             else ppc_li(c, 5, fs == 0 ? 0x0A00 : 0);
@@ -879,6 +950,21 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     ppc_lfd(c, 4, OFF_FPMIN(dbl), JR_CPU);
     ppc_fsub(c, 5, 4, 4);
     fp_check(g, 1, slow, nSlow);
+    if (funct == 0x05 || funct == 0x07)
+    {
+        // ABS, NEG: no exception for these operands; the cause is cleared.
+        if (funct == 0x05) ppc_fabs(c, 1, 1);
+        else ppc_fneg(c, 1, 1);
+        ppc_rlwinm(c, 5, 5, 0, 20, 13);
+        ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+        if (dbl) ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
+        else
+        {
+            fp_store32_zext(g, fd);
+            ppc_stfs(c, 1, OFF_FGR(fd) + 4, JR_CPU);
+        }
+        return 1;
+    }
     if (cvtd)
     {
         // Exact: a normal single is a normal double, no flag.
@@ -998,6 +1084,17 @@ static int emit_branch_head(Gen *g, u32 op, u32 pc, int *likely, int *dynamicTar
         ppc_li(c, R_COND, 0);
         ppc_patch_here(c, at);
         return 1;
+    case 0x11:   // BC1F BC1T BC1FL BC1TL: COP1 must be usable, else the interpreter (bc1Slow)
+        if (rs != 0x08) return 0;
+        ppc_ld(c, 3, OFF_COP0(CP0_STATUS), JR_CPU);
+        ppc_andis_(c, 3, 3, 0x2000);
+        g->bc1Slow = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+        g->hasBc1Slow = 1;
+        *likely = (rt & 2) != 0;
+        ppc_lwz(c, 3, OFF_FCR31, JR_CPU);
+        ppc_rlwinm(c, R_COND, 3, 9, 31, 31);        // C
+        if (!(rt & 1)) ppc_xori(c, R_COND, R_COND, 1);
+        return 1;
     case 0x06: case 0x07: case 0x16: case 0x17:   // BLEZ BGTZ BLEZL BGTZL
         *likely = opc >= 0x16;
         load_gpr(g, 3, rs);
@@ -1029,9 +1126,38 @@ static void store_branch_pc(Gen *g, int dynamicTarget, u64 target, u32 fallthrou
     ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
 }
 
+// MFC0, DMFC0 (cop0_read in h64_cpu.cpp), except Random. Count is computed
+// from the cycles at this instruction (synced cycles + pending ones).
+static int emit_mfc0(Gen *g, u32 op)
+{
+    H64PpcCode *c = &g->c;
+    u32 rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31;
+    if ((op >> 26) != 0x10 || (rs != 0 && rs != 1) || rd == CP0_RANDOM) return 0;
+    if (rt == 0) return 1;
+    if (rd == CP0_COUNT)
+    {
+        ppc_ld(c, 3, OFF_CYCLES, JR_CPU);
+        ppc_addi(c, 3, 3, (s32)(g->pending * g->cpi));
+        ppc_srdi(c, 3, 3, 1);
+        ppc_lwz(c, 4, (s32)offsetof(H64Cpu, countOffset), JR_CPU);
+        ppc_add(c, 3, 3, 4);
+        if (rs == 0) ppc_extsw(c, 3, 3);
+        else ppc_clrldi(c, 3, 3, 32);
+    }
+    else
+    {
+        int latch = rd == 7 || (rd >= 21 && rd <= 25) || rd == 31;
+        ppc_ld(c, 3, latch ? (s32)offsetof(H64Cpu, cop0Latch) : OFF_COP0(rd), JR_CPU);
+        if (rs == 0) ppc_extsw(c, 3, 3);
+    }
+    store_gpr(g, 3, rt);
+    return 1;
+}
+
 static int emit_native(Gen *g, u32 op, u32 pc)
 {
     if (emit_alu(g, op)) { g->pending++; return 1; }
+    if (emit_mfc0(g, op)) { g->pending++; return 1; }
     if ((op >> 26) == 0x2F) { g->pending++; return 1; }   // CACHE: caches are not emulated
     if (emit_ovf(g, op, pc)) return 1;
     if (emit_fpu(g, op, pc)) return 1;
@@ -1039,7 +1165,26 @@ static int emit_native(Gen *g, u32 op, u32 pc)
 }
 
 // A native branch and its delay slot; the block ends after them.
+static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds);
+
+// A native branch and its delay slot. BC1 with COP1 unusable falls back to the
+// interpreter for the branch and the slot (it raises the exception).
 static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
+{
+    u32 pend0 = g->pending;
+    g->hasBc1Slow = 0;
+    emit_branch_body(g, op, pc, ds);
+    if (g->hasBc1Slow)
+    {
+        ppc_patch_here(&g->c, g->bc1Slow);
+        g->pending = pend0;
+        call_interp(g, pc);
+        call_interp_raw(g);
+        exit_block(g);
+    }
+}
+
+static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
 {
     H64PpcCode *c = &g->c;
     int likely, dynamicTarget;
@@ -1198,7 +1343,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         u32 ipc = pc + i * 4, op = ops[i];
         if (endsWithBranch && i == n - 2)
         {
-            if (g.native && (op >> 26) != 0x11)
+            if (g.native && ((op >> 26) != 0x11 || ((op >> 21) & 31) == 0x08))
             {
                 emit_branch(&g, op, ipc, ops[i + 1]);
                 j->stats.nativeInsns++;
@@ -1264,6 +1409,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     j->hash[(pc >> 2) & 8191] = b;
     b->pageNext = j->pageHead[paddr >> 12];
     j->pageHead[paddr >> 12] = b;
+    h64_jit_code_map(j, b, 1);
     j->stats.blocksCompiled++;
     H64_DEBUG("[jit] block %08X (phys %06X): %u instructions, %u bytes, first %08X", pc, paddr, n, g.c.pos * 4, ops[0]);
     return b;

@@ -207,6 +207,8 @@ void test_ppc_emit(H64TestContext *ctx)
     H64_CHECK_EQ(ctx, buf[0], 0xFC20101Eu);   // fctiwz 1,2
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fcfid(&c, 1, 2);
     H64_CHECK_EQ(ctx, buf[0], 0xFC20169Cu);   // fcfid 1,2
+    c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fneg(&c, 1, 2);
+    H64_CHECK_EQ(ctx, buf[0], 0xFC201050u);   // fneg 1,2
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fabs(&c, 1, 2);
     H64_CHECK_EQ(ctx, buf[0], 0xFC201210u);   // fabs 1,2
     c.buf = buf; c.pos = 0; c.cap = 4; c.overflow = 0; ppc_fmr(&c, 1, 2);

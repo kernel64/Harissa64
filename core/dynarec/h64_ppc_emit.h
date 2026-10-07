@@ -146,6 +146,7 @@ static inline void ppc_frsp(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, ppc_a(63, 
 static inline void ppc_fctiw(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, ppc_a(63, t, 0, b, 0, 14)); }
 static inline void ppc_fctiwz(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, ppc_a(63, t, 0, b, 0, 15)); }
 static inline void ppc_fcfid(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, (63u << 26) | (t << 21) | (b << 11) | (846u << 1)); }
+static inline void ppc_fneg(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, (63u << 26) | (t << 21) | (b << 11) | (40u << 1)); }
 static inline void ppc_fabs(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, (63u << 26) | (t << 21) | (b << 11) | (264u << 1)); }
 static inline void ppc_fmr(H64PpcCode *c, u32 t, u32 b) { ppc_put(c, (63u << 26) | (t << 21) | (b << 11) | (72u << 1)); }
 static inline void ppc_fcmpu(H64PpcCode *c, u32 cr, u32 a, u32 b) { ppc_put(c, (63u << 26) | (cr << 23) | (a << 16) | (b << 11)); }

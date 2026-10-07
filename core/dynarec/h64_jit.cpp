@@ -19,6 +19,7 @@ void h64_jit_reset(H64System *sys)
     if (!j) return;
     memset(j->hash, 0, sizeof(j->hash));
     memset(j->pageHead, 0, sizeof(j->pageHead));
+    memset(j->codeMap, 0, (H64_RDRAM_SIZE >> 6) * sizeof(u16));
     j->blockCount = 0;
     j->linkCount = 0;
     j->lastExit = 0;
@@ -40,7 +41,8 @@ int h64_jit_init(H64System *sys, void *execMem, u32 size, void (*flushIcache)(vo
     j->blocks = (H64JitBlock *)calloc(j->blockCap, sizeof(H64JitBlock));
     j->linkCap = 65536;
     j->links = (H64JitLink *)calloc(j->linkCap, sizeof(H64JitLink));
-    if (!j->blocks || !j->links) { free(j->blocks); free(j->links); free(j); return -1; }
+    j->codeMap = (u16 *)calloc(H64_RDRAM_SIZE >> 6, sizeof(u16));
+    if (!j->blocks || !j->links || !j->codeMap) { free(j->blocks); free(j->links); free(j->codeMap); free(j); return -1; }
     j->runEnd = ~0ull;
     // Linked exits read sys->sched.next and sys->jit with 16-bit displacements.
     if (offsetof(H64System, sched) + offsetof(H64Scheduler, next) > 32760 || offsetof(H64System, jit) > 32760)
@@ -59,8 +61,16 @@ void h64_jit_free(H64System *sys)
     if (!sys->jit) return;
     free(sys->jit->blocks);
     free(sys->jit->links);
+    free(sys->jit->codeMap);
     free(sys->jit);
     sys->jit = 0;
+}
+
+// Counts b in (+1) or out (-1) of the 64-byte chunks it covers.
+void h64_jit_code_map(H64Jit *j, const H64JitBlock *b, int delta)
+{
+    u32 a = b->paddr >> 6, e = (b->paddr + b->insns * 4 - 1) >> 6;
+    for (; a <= e && a < (H64_RDRAM_SIZE >> 6); a++) j->codeMap[a] = (u16)(j->codeMap[a] + delta);
 }
 
 // Puts back the exits linked into b (it is being invalidated).
@@ -97,6 +107,7 @@ void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
             {
                 b->valid = 0;
                 unlink_block(j, b);
+                h64_jit_code_map(j, b, -1);
                 *link = b->pageNext;
                 hit = 1;
             }

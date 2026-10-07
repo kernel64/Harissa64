@@ -73,6 +73,7 @@ struct H64Jit
     u32 blockCount, blockCap;
     H64JitBlock *hash[8192];        // by (u32)pc
     H64JitBlock *pageHead[H64_JIT_PAGES];   // live blocks of each RDRAM page (NULL: no code)
+    u16 *codeMap;                   // live blocks over each 64-byte RDRAM chunk (stores there take the slow path)
 
     // Block linking: exits with a fixed target jump straight into the next
     // block's body once it has been compiled (see h64_jit_gen.cpp).

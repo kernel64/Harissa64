@@ -113,6 +113,7 @@ CASES = [
     ("fctiw 1,2", "ppc_fctiw(&c, 1, 2)"),
     ("fctiwz 1,2", "ppc_fctiwz(&c, 1, 2)"),
     ("fcfid 1,2", "ppc_fcfid(&c, 1, 2)"),
+    ("fneg 1,2", "ppc_fneg(&c, 1, 2)"),
     ("fabs 1,2", "ppc_fabs(&c, 1, 2)"),
     ("fmr 1,2", "ppc_fmr(&c, 1, 2)"),
     ("fcmpu 1,2,3", "ppc_fcmpu(&c, 1, 2, 3)"),
