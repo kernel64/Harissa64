@@ -79,6 +79,7 @@ struct Config
     u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
     u32 trace, traceStep;
     int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
+    int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
 
@@ -104,6 +105,7 @@ static void LoadConfig(Config *c)
     c->trace = c->traceStep = 0;
     c->xenia = 0;
     c->fpuFlags = 1;
+    c->jitFpu = 1;
     c->exitAfter = 0;
     if (!f) return;
     while (fgets(line, sizeof(line), f))
@@ -121,6 +123,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "trace")) c->trace = (u32)atoi(eq + 1);
         else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
         else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
+        else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
@@ -238,6 +241,8 @@ static int FindRom(const Config *c, char *path, size_t len)
     return 0;
 }
 
+static int s_jitNoFpu;   // jitfpu=0
+
 static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
 {
     H64System *sys = (H64System *)malloc(sizeof(H64System));
@@ -249,6 +254,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
         free(sys);
         return NULL;
     }
+    if (sys->jit) sys->jit->noFpu = s_jitNoFpu;
     return sys;
 }
 
@@ -401,7 +407,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     u32 framesSincePerf = 0, presented = 0;
     LARGE_INTEGER t0, t1, t2;
     LONGLONG profRun = 0, profPresent = 0, profWait = 0;
-    u64 jitBlocks = 0, jitInval = 0, jitFlush = 0;
+    u64 jitBlocks = 0, jitInval = 0, jitFlush = 0, jitHelper = 0;
     u64 instrAtPerf = 0;
 
     if (!FindRom(c, rom, sizeof(rom)))
@@ -566,12 +572,13 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                 double rsp = pr[H64_PROF_RSP_LLE] * k, jitc = pr[H64_PROF_JIT_COMPILE] * k;
                 const H64JitStats *js = sys->jit ? &sys->jit->stats : NULL;
                 H64_INFO("[prof] ms/frame: run %.1f (cpu %.1f, gfx hle %.1f incl. render %.1f, audio hle %.1f, rsp lle %.1f, "
-                         "jit compile %.1f) present %.1f wait %.1f | jit +%llu blocks, +%llu invalidations, +%llu flushes",
+                         "jit compile %.1f) present %.1f wait %.1f | jit +%llu blocks, +%llu invalidations, +%llu flushes, %llu interpreted/frame",
                          run, run - gfx - aud - rsp - jitc, gfx, pr[H64_PROF_RENDER] * k, aud, rsp, jitc, profPresent * k,
                          profWait * k, js ? (unsigned long long)(js->blocksCompiled - jitBlocks) : 0ull,
                          js ? (unsigned long long)(js->invalidations - jitInval) : 0ull,
-                         js ? (unsigned long long)(js->flushes - jitFlush) : 0ull);
-                if (js) { jitBlocks = js->blocksCompiled; jitInval = js->invalidations; jitFlush = js->flushes; }
+                         js ? (unsigned long long)(js->flushes - jitFlush) : 0ull,
+                         js ? (unsigned long long)((js->helperCalls - jitHelper) / framesSincePerf) : 0ull);
+                if (js) { jitBlocks = js->blocksCompiled; jitInval = js->invalidations; jitFlush = js->flushes; jitHelper = js->helperCalls; }
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f, %u texels/frame) draw calls %.1f",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.texelsDecoded / framesSincePerf, xs.tDraw * k);
             }
@@ -610,6 +617,7 @@ int __cdecl main()
              H64_HOST_BIG_ENDIAN ? "big" : "little", (int)(sizeof(void *) * 8));
     LoadConfig(&cfg);
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
+    s_jitNoFpu = !cfg.jitFpu;
     H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)");
 
     failures = h64_run_all_unit_tests(&tests, &checks);

@@ -62,6 +62,7 @@ static u64 sext32(u32 v) { return (u64)(s64)(s32)v; }
 static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
 {
     H64Cpu *cpu = &sys->cpu;
+    sys->jit->stats.helperCalls++;
     if (sys->jit->opHist)
     {
         // Why a load or store left the fast path: 192 not KSEG0/1, 193 unaligned,

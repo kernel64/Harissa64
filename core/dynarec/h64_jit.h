@@ -44,6 +44,7 @@ struct H64JitStats
 {
     u64 blocksRun, blocksCompiled, interpSteps, invalidations, flushes, earlyExits, idleSkipped;
     u64 nativeInsns, helperInsns;   // compiled instructions, by kind
+    u64 helperCalls;                // instructions run through the interpreter helper (incl. slow paths)
 };
 
 struct H64Jit

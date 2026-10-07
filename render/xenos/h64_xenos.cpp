@@ -8,6 +8,7 @@
 
 #include <xtl.h>
 #include <xgraphics.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,6 +62,7 @@ struct TexEntry
 struct TexBinding
 {
     u32 w, h;          // decoded size (texels)
+    u32 ox, oy;        // tile texel at the decoded texture's origin (a window of the tile)
     int clampS, clampT, mirrorS, mirrorT, wrapS, wrapT;
 };
 
@@ -111,6 +113,10 @@ struct Xenos
     int targetBound;    // the N64 target is bound (not the back buffer)
 
     std::vector<u32> decodeBuf;
+    // Texels a rectangle samples on its tile (tile-relative, inclusive), so that
+    // only that window is decoded: OoT's backgrounds (S2DEX, LLE) sample a strip
+    // of tiles declared up to 1024x1024 (10 million texels decoded a frame).
+    struct { int active; u32 tile; s32 s0, s1, t0, t1; } win;
     H64XenosStats stats;
 };
 
@@ -317,6 +323,7 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b)
 {
     u32 tw = tile_extent(t->slo, t->shi), th = tile_extent(t->tlo, t->thi);
     u32 ms = t->maskS ? 1u << (t->maskS > 10 ? 10 : t->maskS) : 0, mt = t->maskT ? 1u << (t->maskT > 10 ? 10 : t->maskT) : 0;
+    b->ox = b->oy = 0;
     b->clampS = (t->flags & TILE_CLAMP_S) || !ms;
     b->clampT = (t->flags & TILE_CLAMP_T) || !mt;
     b->mirrorS = !b->clampS && (t->flags & TILE_MIRROR_S);
@@ -358,6 +365,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
     u32 t = tileIndex & 7, rf = x->st->rasterFlags & (RS_TLUT | RS_TLUT_TYPE);
+    if (x->win.active && x->win.tile == t) return lookup_texture(x, t, b);
     if (x->memo[t].gen == x->tmemGen && x->memo[t].rasterFlags == rf && x->memo[t].tex)
     {
         *b = x->memo[t].b;
@@ -381,14 +389,37 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     TexEntry e;
     D3DLOCKED_RECT lr;
     tile_layout(t, b);
+    if (x->win.active && x->win.tile == (tileIndex & 7))
+    {
+        // Per axis: decode only the sampled texels when they lie in one period
+        // (wrap, mirror) or are clamped anyway, and are at most half the texture.
+        s32 lo = x->win.s0, hi = x->win.s1;
+        // The texel of margin may fall outside a wrapped period: the N64 never
+        // samples it there (whole texels), so clamping to the period is right.
+        if (b->clampS || (lo + 1 >= 0 && hi - 1 <= (s32)b->w - 1)) { if (lo < 0) lo = 0; if (hi > (s32)b->w - 1) hi = (s32)b->w - 1; }
+        if (lo >= 0 && hi < (s32)b->w && lo <= hi && (u32)(hi - lo + 1) * 2 <= b->w)
+        {
+            b->ox = (u32)lo; b->w = (u32)(hi - lo + 1);
+            b->clampS = 1; b->mirrorS = b->wrapS = 0;
+        }
+        lo = x->win.t0; hi = x->win.t1;
+        if (b->clampT || (lo + 1 >= 0 && hi - 1 <= (s32)b->h - 1)) { if (lo < 0) lo = 0; if (hi > (s32)b->h - 1) hi = (s32)b->h - 1; }
+        if (lo >= 0 && hi < (s32)b->h && lo <= hi && (u32)(hi - lo + 1) * 2 <= b->h)
+        {
+            b->oy = (u32)lo; b->h = (u32)(hi - lo + 1);
+            b->clampT = 1; b->mirrorT = b->wrapT = 0;
+        }
+    }
     // Key: tile parameters, the TMEM rows it covers and the palette.
     key = fnv64(key, (const u8 *)t, sizeof(*t));
     key = fnv64(key, (const u8 *)&b->w, sizeof(b->w));
     key = fnv64(key, (const u8 *)&b->h, sizeof(b->h));
+    key = fnv64(key, (const u8 *)&b->ox, sizeof(b->ox));
+    key = fnv64(key, (const u8 *)&b->oy, sizeof(b->oy));
     i = (u32)(tlut | tlutType << 1);
     key = fnv64(key, (const u8 *)&i, sizeof(i));
     rowBytes = t->stride ? t->stride : 8;
-    rows = b->h + 1;
+    rows = b->oy + b->h + 1;
     if (rowBytes * rows > 4096) rows = 4096 / rowBytes;
     for (y = 0; y < rows; y++)
     {
@@ -429,11 +460,11 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         if (x->decodeBuf.size() < count) x->decodeBuf.resize(count);
         for (y = 0; y < b->h; y++)
         {
-            s32 ty = mask_coord(t->maskT, (t->flags & TILE_MIRROR_T) != 0, (s32)y);
+            s32 ty = mask_coord(t->maskT, (t->flags & TILE_MIRROR_T) != 0, (s32)(y + b->oy));
             for (xx = 0; xx < b->w; xx++)
             {
                 H64RdpTexel tx;
-                s32 sx = mask_coord(t->maskS, (t->flags & TILE_MIRROR_S) != 0, (s32)xx);
+                s32 sx = mask_coord(t->maskS, (t->flags & TILE_MIRROR_S) != 0, (s32)(xx + b->ox));
                 h64_rdp_fetch_texel(st, t, (u32)sx, (u32)ty, tlut, tlutType, &tx);
                 if (t->fmt == 2 && !tlut) tx.c[3] = tx.c[0];   // CI without TLUT: index as intensity
                 x->decodeBuf[y * b->w + xx] = ((u32)(tx.c[3] & 0xFF) << 24) | ((u32)(tx.c[0] & 0xFF) << 16) |
@@ -900,6 +931,22 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     }
     if (xh <= xl || yh <= yl) return;
     select_framebuffer(x);
+    x->win.active = 0;
+    if (!t0->shiftS && !t0->shiftT)
+    {
+        // The texels sampled, tile-relative, with a texel of margin (bilinear).
+        float spanS = flip ? yh - yl : xh - xl, spanT = flip ? xh - xl : yh - yl;
+        float sa = s / 32.0f - 0.5f * dsdx, sb = s / 32.0f + (spanS - 0.5f) * dsdx;
+        float ta = t / 32.0f - 0.5f * dtdy, tb = t / 32.0f + (spanT - 0.5f) * dtdy;
+        if (sa > sb) { float k = sa; sa = sb; sb = k; }
+        if (ta > tb) { float k = ta; ta = tb; tb = k; }
+        x->win.s0 = (s32)floorf(sa - t0->slo / 4.0f) - 1;
+        x->win.s1 = (s32)floorf(sb - t0->slo / 4.0f) + 1;
+        x->win.t0 = (s32)floorf(ta - t0->tlo / 4.0f) - 1;
+        x->win.t1 = (s32)floorf(tb - t0->tlo / 4.0f) + 1;
+        x->win.tile = tile;
+        x->win.active = 1;
+    }
     if (copy)
     {
         float c[4];
@@ -954,11 +1001,12 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         q[i].z = z;
         q[i].w = 1.0f;
         q[i].color = 0;
-        q[i].u0 = tex_coord(ss, t0->shiftS, t0->slo, tb0.w);
-        q[i].v0 = tex_coord(tt, t0->shiftT, t0->tlo, tb0.h);
+        q[i].u0 = tex_coord(ss, t0->shiftS, t0->slo + 4 * tb0.ox, tb0.w);
+        q[i].v0 = tex_coord(tt, t0->shiftT, t0->tlo + 4 * tb0.oy, tb0.h);
         q[i].u1 = tex_coord(ss, t1->shiftS, t1->slo, tb1.w);
         q[i].v1 = tex_coord(tt, t1->shiftT, t1->tlo, tb1.h);
     }
+    x->win.active = 0;
     x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
     x->stats.rects++;
     x->stats.draws++;
