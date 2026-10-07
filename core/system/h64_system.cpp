@@ -15,11 +15,19 @@ int h64_system_init(H64System *sys, const u8 *romFile, u32 romSize, const H64Opt
     sys->rdram = (u8 *)malloc(H64_RDRAM_SIZE);
     if (!sys->rdram)
         return -1;
-    if (h64_rom_load(&sys->rom, romFile, romSize))
+    sys->save = (H64SaveMem *)malloc(sizeof(H64SaveMem));
+    if (!sys->save || h64_rom_load(&sys->rom, romFile, romSize))
     {
+        free(sys->save);
         free(sys->rdram);
+        sys->save = 0;
         sys->rdram = 0;
         return -1;
+    }
+    {
+        int pak, type = h64_save_type_for_rom(&sys->rom, &pak);
+        h64_save_init(sys->save, type, pak);
+        H64_INFO("[save] save type: %s%s", h64_save_type_name(type), pak ? ", Controller Pak" : "");
     }
     h64_fenv_init();
     h64_system_reset(sys);
@@ -35,6 +43,8 @@ void h64_system_free(H64System *sys)
     sys->hle = 0;
     free(sys->rdram);
     sys->rdram = 0;
+    free(sys->save);
+    sys->save = 0;
 }
 
 void h64_system_reset(H64System *sys)

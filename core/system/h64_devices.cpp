@@ -157,7 +157,22 @@ static void pi_dma(H64System *sys, int toRdram, u32 value)
     u64 cycles = pi_dma_cycles(sys, ((len - 1) | 1) + 1);   // ares: (length | 1) + 1 bytes
     H64_DEBUG("[pi] f%u DMA %s cart %08X dram %08X len %X", sys->vi.frames, toRdram ? "cart->rdram" : "rdram->cart",
               sys->pi.regs[1], sys->pi.regs[0], len);
-    if (toRdram)
+    if (sys->pi.regs[1] >= 0x08000000u && sys->pi.regs[1] < 0x10000000u)
+    {
+        // SRAM/FlashRAM: plain copies (the games' transfers are aligned).
+        u32 dram = sys->pi.regs[0] & 0x00FFFFFEu, cart = sys->pi.regs[1];
+        u32 n = dram + len <= H64_RDRAM_SIZE ? len : (dram < H64_RDRAM_SIZE ? H64_RDRAM_SIZE - dram : 0);
+        if (toRdram)
+        {
+            if (h64_save_dma_to_rdram(sys->save, cart, sys->rdram + dram, n)) h64_jit_notify_write(sys, dram, n);
+        }
+        else
+            h64_save_dma_from_rdram(sys->save, cart, sys->rdram + dram, n);
+        sys->pi.regs[0] = (dram + len) & 0x00FFFFFF;
+        sys->pi.regs[1] = cart + len;
+        if (!toRdram) sys->pi.regs[2] = ((value & 0x00FFFFFF) | 1) + 1;
+    }
+    else if (toRdram)
     {
         u8 mem[128];
         s32 left = (s32)len, maxBlock = 128;
@@ -199,8 +214,8 @@ static void pi_dma(H64System *sys, int toRdram, u32 value)
     }
     else
     {
-        // RDRAM -> cartridge: only SRAM/FlashRAM would take it (M5). The
-        // length register reads back rounded up to a whole halfword pair.
+        // RDRAM -> ROM: nothing takes it. The length register reads back
+        // rounded up to a whole halfword pair.
         sys->pi.regs[2] = ((value & 0x00FFFFFF) | 1) + 1;
     }
     sys->pi.regs[4] |= 1;   // DMA busy

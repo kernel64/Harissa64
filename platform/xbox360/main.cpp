@@ -743,6 +743,39 @@ static int RunFrame(H64System *sys)
     return 0;
 }
 
+// ---- Game saves ----
+// One folder per game: <drive>:\saves\<name> <game code>\ with eeprom.bin,
+// sram.bin, flash.bin and pak1.bin (the drive of the log: game:, or cache:
+// in Xenia). Written 2 s after the game first changes them, and on leaving.
+static char s_saveDir[128];
+static u32 s_saveDirtyAt;
+
+static void SavesOpen(H64System *sys)
+{
+    char folder[64];
+    h64_save_folder_name(&sys->rom, folder, sizeof(folder));
+    _snprintf(s_saveDir, sizeof(s_saveDir), "%s:\\saves", s_logDrive);
+    s_saveDir[sizeof(s_saveDir) - 1] = 0;
+    CreateDirectory(s_saveDir, NULL);
+    _snprintf(s_saveDir, sizeof(s_saveDir), "%s:\\saves\\%s", s_logDrive, folder);
+    s_saveDir[sizeof(s_saveDir) - 2] = 0;
+    CreateDirectory(s_saveDir, NULL);
+    strcat(s_saveDir, "\\");
+    s_saveDirtyAt = 0;
+    H64_INFO("[save] folder %s: %d file(s) loaded", s_saveDir, h64_save_load(sys->save, s_saveDir));
+}
+
+static void SavesTick(H64System *sys, u32 presented, int leaving)
+{
+    if (!sys->save->dirty) { s_saveDirtyAt = 0; return; }
+    if (!s_saveDirtyAt) s_saveDirtyAt = presented ? presented : 1;
+    if (leaving || presented - s_saveDirtyAt >= 120)
+    {
+        h64_save_store(sys->save, s_saveDir);
+        s_saveDirtyAt = 0;
+    }
+}
+
 static void RunGame(IDirect3DDevice9 *dev, const Config *c)
 {
     char rom[256];
@@ -828,6 +861,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         FreeSystem(sys);
         return;
     }
+    SavesOpen(sys);
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&frameStart);
     if (!c->xenia)
@@ -854,6 +888,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         profPresent += t2.QuadPart - t1.QuadPart;
         framesSincePerf++;
         presented++;
+        SavesTick(sys, presented, 0);
         {
             int i;
             for (i = 0; i < c->shotCount; i++)
@@ -976,6 +1011,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         }
     }
     WorkersStop(sys);
+    SavesTick(sys, presented, 1);
     sys->renderer = NULL;
     h64_xenos_free(renderer);
     xb_audio_shutdown();

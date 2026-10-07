@@ -5,6 +5,7 @@
 
 #include "../common/h64_types.h"
 #include "../cart/h64_rom.h"
+#include "../cart/h64_save.h"
 #include "../r4300/h64_cpu.h"
 #include "../rdp/h64_rdp.h"
 #include "../rsp/h64_rsp.h"
@@ -73,6 +74,7 @@ struct H64System
     u8 spMem[0x2000];   // DMEM (0x0000) + IMEM (0x1000)
     u8 pifRam[64];
     H64Rom rom;
+    H64SaveMem *save;   // cartridge save memory and Controller Pak (kept across resets)
 
     H64Mi mi;
     H64Vi vi;

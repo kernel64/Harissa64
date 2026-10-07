@@ -72,7 +72,12 @@ int h64_bus_read32(H64System *sys, u32 paddr, u32 *value)
     if (paddr < 0x04040000u) { *value = h64_load_be32(sys->spMem + (paddr & 0x1FFFu)); return 0; }
     if (paddr < 0x04900000u) { *value = h64_mmio_read(sys, paddr); return 0; }
     if (paddr < 0x05000000u) { *value = 0; return 0; }
-    if (paddr < 0x10000000u) { sys->pi.regs[1] = (paddr + 4) & ~1u; *value = open_bus(paddr); return 0; }
+    if (paddr < 0x10000000u)
+    {
+        sys->pi.regs[1] = (paddr + 4) & ~1u;
+        if (paddr < 0x08000000u || !h64_save_read32(sys->save, paddr, value)) *value = open_bus(paddr);   // SRAM/FlashRAM
+        return 0;
+    }
     if (paddr < 0x1FC00000u)
     {
         u32 off = paddr - 0x10000000u;
@@ -127,7 +132,11 @@ int h64_bus_write32(H64System *sys, u32 paddr, u32 value, u32 mask)
         return 0;
     }
     if (paddr < 0x04900000u) { h64_mmio_write(sys, paddr, value, mask); return 0; }
-    if (paddr < 0x10000000u) return 0;   // SRAM/FlashRAM: M5
+    if (paddr < 0x10000000u)
+    {
+        if (paddr >= 0x08000000u) h64_save_write32(sys->save, paddr, value & mask);   // SRAM/FlashRAM
+        return 0;
+    }
     if (paddr < 0x1FC00000u)
     {
         if (paddr >= ISV_BASE && paddr < ISV_END)

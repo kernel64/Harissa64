@@ -280,6 +280,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     static struct { u32 frame; const char *path; int done; } shots[32];
     int shotCount = 0;
     const char *wavPath = 0;
+    const char *saveDir = 0;
+    char saveDirSep[512];
     H64System *sys;
     u8 *file;
     u32 size;
@@ -309,6 +311,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--fb-png") && i + 1 < argc) fbPng = argv[++i];
         else if (!strcmp(argv[i], "--raw-png") && i + 1 < argc) rawPng = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
+        else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) saveDir = argv[++i];
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) { if (parse_input(argv[++i])) return 2; }
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc && shotCount < 32)
         {
@@ -357,7 +360,24 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     }
     sys->cpu.cpi = (u32)(cpi > 0 ? cpi : 1);
     free(file);
-    if (info) { h64_system_free(sys); free(sys); return 0; }
+    if (info)
+    {
+        char folder[64];
+        h64_save_folder_name(&sys->rom, folder, sizeof(folder));
+        printf("[info] save folder name: %s\n", folder);
+        h64_system_free(sys);
+        free(sys);
+        return 0;
+    }
+    if (saveDir)
+    {
+        // Save files (eeprom.bin, sram.bin, flash.bin, pak1.bin) read from and written back to that folder.
+        size_t n = strlen(saveDir);
+        if (n + 2 > sizeof(saveDirSep)) return 2;
+        memcpy(saveDirSep, saveDir, n + 1);
+        if (n && saveDir[n - 1] != '/' && saveDir[n - 1] != '\\') strcat(saveDirSep, "/");
+        h64_save_load(sys->save, saveDirSep);
+    }
     if (useJit && enable_jit(sys)) return 2;
     if (jitOps && sys->jit) sys->jit->opHist = (u32 *)calloc(232, sizeof(u32));
     if (noJitFpu && sys->jit) sys->jit->noFpu = 1;
@@ -526,6 +546,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         free(wav.data);
         memset(&wav, 0, sizeof(wav));
     }
+    if (saveDir && h64_save_store(sys->save, saveDirSep) < 0) result = result ? result : 1;
     h64_system_free(sys);
     free(sys);
     return result;

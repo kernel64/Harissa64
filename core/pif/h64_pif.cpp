@@ -77,9 +77,9 @@ static void pif_challenge(H64System *sys)
 }
 
 // ---- JoyBus devices ----
-// A standard controller with nothing plugged in on port 1 (state in
-// sys->pad[0]), nothing on ports 2-4 and no EEPROM yet (M5). Absent devices
-// answer with the "no response" bit.
+// A standard controller on port 1 (state in sys->pad[0]) with a Controller
+// Pak when the game uses one, nothing on ports 2-4, and the cartridge EEPROM
+// on channel 4 (h64_save.cpp). Absent devices answer with the "no response" bit.
 static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen, u8 *rx, int rxLen, u8 *rxLenByte)
 {
     if (channel == 0 && txLen >= 1)
@@ -88,8 +88,13 @@ static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen,
         {
         case 0x00:   // info
         case 0xFF:   // reset + info
-            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = 0x00; }   // controller; status 0: no pak (0x02 would mean "pak removed")
+            // controller; status bit 0: a pak is plugged in (0x02 would mean "pak removed")
+            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = sys->save->pak ? 0x01 : 0x00; }
             return;
+        case 0x02:   // pak read
+        case 0x03:   // pak write
+            if (h64_save_pak_command(sys->save, tx, txLen, rx, rxLen) >= 0) return;
+            break;
         case 0x01:   // buttons and stick
             if (rxLen >= 4)
             {
@@ -104,6 +109,7 @@ static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen,
             return;
         }
     }
+    if (channel == 4 && h64_save_eeprom_command(sys->save, tx, txLen, rx, rxLen) >= 0) return;
     *rxLenByte |= 0x80;   // no response
 }
 
