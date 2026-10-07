@@ -24,6 +24,7 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
 #include "../../core/dynarec/h64_lockstep.h"
+#include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
 #include "../../render/xenos/h64_xenos.h"
 #include "../../tests/unit/unit_tests.h"
@@ -154,6 +155,8 @@ struct Config
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
     int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
     int smooth;         // smooth=0: no edge smoothing when frames are shown
+    int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
+    u32 gfxCycles;      // gfxcycles=N: CPU cycles an asynchronous graphics task keeps the RSP busy
     int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
@@ -183,6 +186,8 @@ static void LoadConfig(Config *c)
     c->jitFpu = 1;
     c->regCache = 1;
     c->smooth = 1;
+    c->asyncGfx = 1;
+    c->gfxCycles = 400000;
     c->cpi = 1;
     c->exitAfter = 0;
     if (!f) return;
@@ -204,6 +209,8 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
         else if (!strcmp(line, "regcache")) c->regCache = atoi(eq + 1);
         else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
+        else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
+        else if (!strcmp(line, "gfxcycles")) c->gfxCycles = (u32)atoi(eq + 1);
         else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
@@ -320,6 +327,121 @@ static int FindRom(const Config *c, char *path, size_t len)
         return 1;
     }
     return 0;
+}
+
+// ---- Graphics worker (asyncgfx=1): graphics HLE tasks and frame presents run
+// on another hardware thread, in order, while the CPU thread emulates. The D3D
+// device belongs to one thread at a time (AcquireThreadOwnership): the worker
+// takes it for each job; the CPU thread takes it back only after waiting for
+// every queued job (s_ownsDevice), and gives it away before queuing one.
+#define WORK_SLOTS 8
+struct WorkJob { void (*fn)(void *); void *arg; };
+static WorkJob s_work[WORK_SLOTS];
+static volatile LONG s_workQueued, s_workDone;
+static HANDLE s_workSem, s_workDoneEvt, s_workThread;
+static volatile LONG s_workQuit;
+static IDirect3DDevice9 *s_workDev;
+static H64Renderer *s_workRenderer;
+static int s_ownsDevice = 1;
+static u32 s_presentRegs[WORK_SLOTS][32];
+
+static DWORD WINAPI WorkThread(LPVOID)
+{
+    for (;;)
+    {
+        WaitForSingleObject(s_workSem, INFINITE);
+        if (s_workQuit) break;
+        {
+            WorkJob *j = &s_work[s_workDone % WORK_SLOTS];
+            s_workDev->AcquireThreadOwnership();
+            j->fn(j->arg);
+            s_workDev->ReleaseThreadOwnership();
+        }
+        InterlockedIncrement(&s_workDone);
+        SetEvent(s_workDoneEvt);
+    }
+    return 0;
+}
+
+static void WorkWaitAll(void *)
+{
+    while (s_workDone != s_workQueued) WaitForSingleObject(s_workDoneEvt, INFINITE);
+    if (!s_ownsDevice)
+    {
+        s_workDev->AcquireThreadOwnership();
+        s_ownsDevice = 1;
+        h64_xenos_set_worker(s_workRenderer, 0);   // RDRAM copy-backs reported to the recompiler now
+    }
+}
+
+static void WorkStart(void *, void (*fn)(void *), void *arg)
+{
+    if (s_workQueued - s_workDone >= WORK_SLOTS - 1) WorkWaitAll(NULL);
+    if (s_ownsDevice)
+    {
+        h64_xenos_set_worker(s_workRenderer, 1);
+        s_workDev->ReleaseThreadOwnership();
+        s_ownsDevice = 0;
+    }
+    s_work[s_workQueued % WORK_SLOTS].fn = fn;
+    s_work[s_workQueued % WORK_SLOTS].arg = arg;
+    InterlockedIncrement(&s_workQueued);
+    ReleaseSemaphore(s_workSem, 1, NULL);
+}
+
+static void PresentJob(void *arg)
+{
+    h64_xenos_present_vi(s_workRenderer, (const u32 *)arg);
+}
+
+// The frame's present: on the worker when it runs, with the VI registers of now.
+static void PresentFrame(H64System *sys, H64Renderer *renderer)
+{
+    if (s_workThread)
+    {
+        u32 *regs = s_presentRegs[s_workQueued % WORK_SLOTS];
+        memcpy(regs, sys->vi.regs, sizeof(s_presentRegs[0]) < sizeof(sys->vi.regs) ? sizeof(s_presentRegs[0]) : sizeof(sys->vi.regs));
+        WorkStart(NULL, PresentJob, regs);
+    }
+    else
+        h64_xenos_present(renderer);
+}
+
+static int WorkerStart(H64System *sys, IDirect3DDevice9 *dev, H64Renderer *renderer, u32 gfxCycles)
+{
+    s_workDev = dev;
+    s_workRenderer = renderer;
+    s_workQueued = s_workDone = 0;
+    s_workQuit = 0;
+    s_ownsDevice = 1;
+    s_workSem = CreateSemaphore(NULL, 0, 1000, NULL);
+    s_workDoneEvt = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!s_workSem || !s_workDoneEvt) return -1;
+    s_workThread = CreateThread(NULL, 256 * 1024, WorkThread, NULL, CREATE_SUSPENDED, NULL);
+    if (!s_workThread) return -1;
+    XSetThreadProcessor(s_workThread, 2);   // core 1 (the CPU thread is on core 0)
+    ResumeThread(s_workThread);
+    sys->asyncStart = WorkStart;
+    sys->asyncWait = WorkWaitAll;
+    sys->asyncUser = NULL;
+    sys->asyncGfxCycles = gfxCycles;
+    H64_INFO("[main] graphics worker on hardware thread 2 (graphics tasks keep the RSP busy %u cycles)", gfxCycles);
+    return 0;
+}
+
+static void WorkerStop(H64System *sys)
+{
+    if (!s_workThread) return;
+    WorkWaitAll(NULL);
+    s_workQuit = 1;
+    ReleaseSemaphore(s_workSem, 1, NULL);
+    WaitForSingleObject(s_workThread, INFINITE);
+    CloseHandle(s_workThread);
+    CloseHandle(s_workSem);
+    CloseHandle(s_workDoneEvt);
+    s_workThread = NULL;
+    sys->asyncStart = NULL;
+    sys->asyncWait = NULL;
 }
 
 static int s_jitNoFpu;   // jitfpu=0
@@ -584,6 +706,9 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     else sys->renderer = renderer;
     H64_INFO("[main] running %s: cpu %s, RSP %s, %s renderer", rom, jit ? "recompiler" : "interpreter",
              c->hle ? "HLE" : "LLE", c->softRenderer ? "software" : "Xenos");
+    if (c->asyncGfx && c->hle && !c->softRenderer && !c->trace)
+        if (WorkerStart(sys, dev, renderer, c->gfxCycles ? c->gfxCycles : 400000))
+            H64_WARN("[main] graphics worker could not start: everything on the CPU thread");
 
     if (c->trace)
     {
@@ -642,7 +767,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         QueryPerformanceCounter(&t0);
         if (RunFrame(sys)) break;
         QueryPerformanceCounter(&t1);
-        h64_xenos_present(renderer);
+        PresentFrame(sys, renderer);
         QueryPerformanceCounter(&t2);
         profRun += t1.QuadPart - t0.QuadPart;
         profPresent += t2.QuadPart - t1.QuadPart;
@@ -656,6 +781,8 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                     char path[64];
                     _snprintf(path, sizeof(path), "%s:\\shot_%05u.bmp", s_logDrive, presented);
                     path[sizeof(path) - 1] = 0;
+                    h64_hle_async_wait(sys);
+                    WorkWaitAll(NULL);
                     H64_INFO("[main] screenshot %s: %s", path, h64_xenos_save_frame(renderer, path) ? "failed" : "saved");
                 }
         }
@@ -663,6 +790,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         {
             int k;
             H64_INFO("[main] paused at VI %u", presented);
+            if (s_workThread) WorkWaitAll(NULL);
             for (k = 0; k < 400; k++) { Sleep(50); h64_xenos_present(renderer); }
             H64_INFO("[main] resumed");
         }
@@ -731,7 +859,8 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                 const H64JitStats *js = sys->jit ? &sys->jit->stats : NULL;
                 H64_INFO("[prof] ms/frame: run %.1f (cpu %.1f, gfx hle %.1f incl. render %.1f, audio hle %.1f, rsp lle %.1f, "
                          "jit compile %.1f) present %.1f wait %.1f | jit +%llu blocks, +%llu invalidations, +%llu flushes, %llu interpreted/frame",
-                         run, run - gfx - aud - rsp - jitc, gfx, pr[H64_PROF_RENDER] * k, aud, rsp, jitc, profPresent * k,
+                         run, run - (s_workThread ? pr[H64_PROF_ASYNC_WAIT] * k : gfx) - aud - rsp - jitc, gfx,
+                         pr[H64_PROF_RENDER] * k, aud, rsp, jitc, profPresent * k,
                          profWait * k, js ? (unsigned long long)(js->blocksCompiled - jitBlocks) : 0ull,
                          js ? (unsigned long long)(js->invalidations - jitInval) : 0ull,
                          js ? (unsigned long long)(js->flushes - jitFlush) : 0ull,
@@ -752,8 +881,9 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                              xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
                              xs.bigRect ? "rectangle" : "triangle");
                 PcSamplerReport();
-                H64_INFO("[cprof] ms/frame inside cpu: interpreter helper %.1f, scheduler events %.1f",
-                         pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k);
+                H64_INFO("[cprof] ms/frame inside cpu: interpreter helper %.1f, scheduler events %.1f; waiting for the graphics worker %.1f%s",
+                         pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_ASYNC_WAIT] * k,
+                         s_workThread ? " (gfx hle runs on the worker, beside cpu)" : "");
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f, %u texels/frame) draw calls %.1f",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.texelsDecoded / framesSincePerf, xs.tDraw * k);
             }
@@ -764,6 +894,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
             instrAtPerf = sys->cpu.instructions;
         }
     }
+    WorkerStop(sys);
     sys->renderer = NULL;
     h64_xenos_free(renderer);
     xb_audio_shutdown();

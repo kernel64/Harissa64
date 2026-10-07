@@ -27,5 +27,8 @@ void h64_gfx_free(H64Gfx *gfx);
 // whether the display list ended with an RDP full sync), 0 to leave the
 // task to the LLE RSP.
 int h64_gfx_run_task(H64System *sys, H64Gfx *gfx, int *fullSync);
+// Whether the HLE knows the microcode the task in DMEM starts with (it may
+// still fall back to LLE on a G_LOAD_UCODE to an unknown one).
+int h64_gfx_task_known(H64System *sys, H64Gfx *gfx);
 
 #endif

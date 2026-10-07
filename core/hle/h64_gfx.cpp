@@ -1205,6 +1205,14 @@ static void flush_output(H64Gfx *g)
     sys->prof[H64_PROF_RENDER] += h64_prof_now(sys) - t0;
 }
 
+int h64_gfx_task_known(H64System *sys, H64Gfx *g)
+{
+    const u8 *dmem = sys->spMem;
+    u32 ucStart = h64_load_be32(dmem + 0xFD0), ucData = h64_load_be32(dmem + 0xFD8);
+    u32 ucDataSize = h64_load_be32(dmem + 0xFDC);
+    return find_ucode(g, ucStart & 0x7FFFFF, ucData & 0x7FFFFF, ucDataSize)->type != UC_NONE;
+}
+
 int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
     const u8 *dmem = sys->spMem;

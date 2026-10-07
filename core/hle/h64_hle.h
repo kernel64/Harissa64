@@ -32,6 +32,13 @@ void h64_hle_free(struct hle_t *hle);
 // with an RDP full sync). Returns 0 to let the LLE RSP run the task.
 int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpInterrupt);
 
+// Asynchronous graphics tasks: waits for the worker (if a task is pending).
+void h64_hle_async_wait(H64System *sys);
+// At the end of an HLE task's busy time: 1 if it was an asynchronous graphics
+// task; then *ran = 0 means it fell back (the LLE RSP must run it now) and
+// *fullSync tells whether to raise the DP interrupt.
+int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync);
+
 // hleAudioCheck: called when the LLE RSP halts; compares its RDRAM output
 // with the HLE's and logs the first difference.
 void h64_hle_check_end(H64System *sys);

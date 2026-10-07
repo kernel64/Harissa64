@@ -366,6 +366,21 @@ void h64_rsp_slice_event(H64System *sys)
     H64Rsp *rsp = &sys->rsp;
     if (rsp->hleBusy)
     {
+        int ran, fullSync;
+        if (h64_hle_async_finish(sys, &ran, &fullSync))
+        {
+            if (!ran)
+            {
+                // The graphics HLE fell back (G_LOAD_UCODE to an unknown
+                // microcode): the LLE RSP runs the task from now.
+                rsp->hleBusy = 0;
+                rsp->syncedCycles = sys->cpu.cycles;
+                rsp->cycleFrac = 0;
+                h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);
+                return;
+            }
+            rsp->hleDpInterrupt = fullSync;
+        }
         // End of an HLE task: halt with the bits the microcode would set.
         rsp->hleBusy = 0;
         rsp->status |= rsp->hleStatus | ST_HALT;

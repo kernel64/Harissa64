@@ -299,6 +299,40 @@ void h64_hle_check_end(H64System *sys)
     }
 }
 
+static void gfx_async_job(void *arg)
+{
+    H64System *sys = (H64System *)arg;
+    struct hle_t *hle = sys->hle;
+    int fullSync = 0, ran;
+    u64 t0 = h64_prof_now(sys);
+    ran = h64_gfx_run_task(sys, hle->gfx, &fullSync);
+    sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+    hle->gfxAsyncRan = ran;
+    hle->gfxAsyncFullSync = fullSync;
+}
+
+void h64_hle_async_wait(H64System *sys)
+{
+    // Every queued job (presents too): the renderer is the worker's until then.
+    if (sys->asyncWait)
+    {
+        u64 t0 = h64_prof_now(sys);
+        sys->asyncWait(sys->asyncUser);
+        sys->prof[H64_PROF_ASYNC_WAIT] += h64_prof_now(sys) - t0;
+    }
+}
+
+int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync)
+{
+    struct hle_t *hle = sys->hle;
+    if (!hle || !hle->gfxAsyncPending) return 0;
+    h64_hle_async_wait(sys);
+    hle->gfxAsyncPending = 0;
+    *ran = hle->gfxAsyncRan;
+    *fullSync = hle->gfxAsyncFullSync;
+    return 1;
+}
+
 int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpInterrupt)
 {
     struct hle_t *hle = sys->hle;
@@ -320,6 +354,20 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
         if (!sys->options.hleGfx)
             return 0;
         if (!hle->gfx) hle->gfx = h64_gfx_create(sys);
+        if (sys->asyncStart)
+        {
+            // On the worker: the CPU goes on; the task ends (or falls back
+            // to LLE) after asyncGfxCycles, where the CPU waits for it.
+            if (!h64_gfx_task_known(sys, hle->gfx)) return 0;
+            h64_hle_async_wait(sys);   // never two at once (cannot happen: the RSP is busy)
+            hle->gfxAsyncPending = 1;
+            hle->gfxAsyncRan = 0;
+            hle->gfxAsyncFullSync = 0;
+            sys->asyncStart(sys->asyncUser, gfx_async_job, sys);
+            *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
+            *busyCycles = sys->asyncGfxCycles ? sys->asyncGfxCycles : H64_HLE_GFX_CYCLES;
+            return 1;
+        }
         u64 t0 = h64_prof_now(sys);
         int ran = h64_gfx_run_task(sys, hle->gfx, &fullSync);
         sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;

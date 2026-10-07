@@ -9,6 +9,7 @@
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
 #include "../../render/api.h"
+#include "../hle/h64_hle.h"
 
 // Command length in 64-bit words, from the opcode (bits 56..61).
 static u32 command_words(u32 opcode)
@@ -46,6 +47,7 @@ static void run_commands(H64System *sys)
 {
     H64RdpRegs *dp = &sys->dp;
     if (dp->status & DPC_FREEZE) return;
+    h64_hle_async_wait(sys);   // the renderer belongs to the graphics worker while a task runs
     // Once given commands the RDP's pipeline runs (clock started) until a
     // SYNC_FULL (n64-systemtest "RDP STATUS: Flags during a run").
     dp->status |= DPC_PIPE_BUSY | DPC_START_GCLK;

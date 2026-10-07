@@ -54,6 +54,11 @@ struct H64XenosStats
     // decoding, draw calls, and the RDP command handler as a whole.
     u64 tState, tTexture, tDraw, tRdp;
 };
+// Presents with these VI registers (a copy taken at the VI, for the graphics worker).
+void h64_xenos_present_vi(H64Renderer *r, const u32 *viRegs);
+// The renderer is used by the graphics worker (on) or back on the CPU thread
+// (off: RDRAM written meanwhile is reported to the recompiler now).
+void h64_xenos_set_worker(H64Renderer *r, int on);
 // Edge smoothing (FXAA) when the frame is shown, in place of the VI's anti-aliasing (on by default).
 void h64_xenos_set_smooth(H64Renderer *r, int on);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);

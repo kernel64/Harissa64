@@ -125,6 +125,9 @@ struct hle_t
 
     struct cached_ucodes_t cached_ucodes;
     struct H64Gfx *gfx;       // graphics HLE (h64_gfx.cpp), created on first use
+    // Asynchronous graphics task (sys->asyncStart): set by the worker.
+    int gfxAsyncPending;      // started, its end not consumed yet
+    int gfxAsyncRan, gfxAsyncFullSync;
 };
 
 #define SP_STATUS_HALT 0x1

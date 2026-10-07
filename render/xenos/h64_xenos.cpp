@@ -116,6 +116,8 @@ struct Xenos
 
     std::vector<u32> decodeBuf;
     std::map<u64, int> modeLog;   // xenosdebug=4
+    int deferNotify;              // running on the graphics worker (h64_xenos_set_worker)
+    u32 pendingLo, pendingHi;     // RDRAM written meanwhile (copy-backs), for the recompiler
     // Texels a rectangle samples on its tile (tile-relative, inclusive), so that
     // only that window is decoded: OoT's backgrounds (S2DEX, LLE) sample a strip
     // of tiles declared up to 1024x1024 (10 million texels decoded a frame).
@@ -731,7 +733,15 @@ static void copy_back(Xenos *x, int slot)
                 h64_store_be16(ram + a, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
         }
     }
-    h64_jit_notify_write(x->sys, s->addr, w * h * s->bytes);
+    if (x->deferNotify)
+    {
+        // On the graphics worker: the recompiler is the CPU thread's; tell it later.
+        u32 lo = s->addr, hi = s->addr + w * h * s->bytes;
+        if (x->pendingHi <= x->pendingLo) { x->pendingLo = lo; x->pendingHi = hi; }
+        else { if (lo < x->pendingLo) x->pendingLo = lo; if (hi > x->pendingHi) x->pendingHi = hi; }
+    }
+    else
+        h64_jit_notify_write(x->sys, s->addr, w * h * s->bytes);
     s->gpuDirty = 0;
     x->stats.copyBacks++;
 }
@@ -1220,10 +1230,14 @@ static void show_rdram_frame(Xenos *x, u32 origin, u32 width, int bpp32)
 
 void h64_xenos_present(H64Renderer *r)
 {
+    h64_xenos_present_vi(r, X(r)->sys->vi.regs);
+}
+
+void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
+{
     Xenos *x = X(r);
     flush_batch(x);
     x->stateDirty = 1;
-    const u32 *vi = x->sys->vi.regs;
     u32 origin = vi[1] & 0xFFFFFF, width = vi[2] & 0xFFF, type = vi[0] & 3, i;
     int found = -1;
     if (x->curSlot >= 0 && x->targetBound) resolve_current(x);
@@ -1323,6 +1337,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->psCopy = compile_ps(dev, s_psCopySource);
     x->psSmooth = compile_ps(dev, s_psSmoothSource);
     x->smooth = 1;
+    x->deferNotify = 0;
+    x->pendingLo = x->pendingHi = 0;
     x->psFill = compile_ps(dev, s_psFillSource);
     x->psFallback = compile_ps(dev, s_psFallbackSource);
     x->dummy = make_dummy(dev);
@@ -1447,6 +1463,17 @@ int h64_xenos_save_frame(H64Renderer *r, const char *path)
     fclose(f);
     x->shown->UnlockRect(0);
     return 0;
+}
+
+void h64_xenos_set_worker(H64Renderer *r, int on)
+{
+    Xenos *x = X(r);
+    x->deferNotify = on;
+    if (!on && x->pendingHi > x->pendingLo)
+    {
+        h64_jit_notify_write(x->sys, x->pendingLo, x->pendingHi - x->pendingLo);
+        x->pendingLo = x->pendingHi = 0;
+    }
 }
 
 void h64_xenos_set_smooth(H64Renderer *r, int on)

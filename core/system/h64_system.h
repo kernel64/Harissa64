@@ -43,6 +43,7 @@ enum
     H64_PROF_JIT_COMPILE,    // recompiler: block compilation
     H64_PROF_HELPER,         // recompiler: instructions run by the interpreter helper (HLE tasks they start excluded)
     H64_PROF_EVENTS,         // scheduler events (VI, AI, SI, PI...; HLE tasks they start excluded)
+    H64_PROF_ASYNC_WAIT,     // waiting for the graphics worker (asyncWait)
     H64_PROF_COUNT
 };
 
@@ -104,6 +105,15 @@ struct H64System
     void *isvUser;
     // Audio output: called with each AI buffer as the game queues it
     // (16-bit big-endian stereo samples, `len` bytes, sample rate in Hz).
+    // Optional worker (platform): graphics HLE tasks run there while the CPU
+    // goes on; asyncWait returns once the job is done. NULL: synchronous.
+    // The task's end (SP and DP interrupts) stays at the same emulated time;
+    // the CPU waits for the worker there, and before anything else uses the
+    // renderer (LLE RDP commands, presenting a frame).
+    void (*asyncStart)(void *user, void (*job)(void *arg), void *arg);
+    void (*asyncWait)(void *user);
+    void *asyncUser;
+    u32 asyncGfxCycles;             // how long an asynchronous graphics task keeps the RSP busy
     void (*aiSink)(void *user, const u8 *samples, u32 len, u32 rate);
     void *aiUser;
 
