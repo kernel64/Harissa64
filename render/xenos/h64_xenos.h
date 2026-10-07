@@ -34,6 +34,10 @@ void h64_xenos_free(H64Renderer *r);
 // At each VI interrupt: shows the frame the VI is scanning out and presents.
 void h64_xenos_present(H64Renderer *r);
 
+// Optional: called just before each present, with the back buffer bound
+// (on-screen messages of the front end). NULL: nothing.
+void h64_xenos_set_overlay(H64Renderer *r, void (*fn)(void *user, IDirect3DDevice9 *dev), void *user);
+
 // Saves the frame shown at the last present as a 24-bit BMP (waits for the
 // GPU). Returns 0 on success.
 int h64_xenos_save_frame(H64Renderer *r, const char *path);

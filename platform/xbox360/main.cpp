@@ -26,6 +26,7 @@
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
+#include "../../core/savestate/h64_state.h"
 #include "../../render/xenos/h64_xenos.h"
 #include "../../tests/unit/unit_tests.h"
 #include "font8x8_basic.h"
@@ -160,6 +161,9 @@ struct Config
     u32 audioCycles;    // audiocycles=N: CPU cycles an asynchronous audio task keeps the RSP busy
     u32 gfxCycles;      // gfxcycles=N: CPU cycles an asynchronous graphics task keeps the RSP busy
     int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
+    int stateSlot;      // stateslot=N: save state slot at start (1..9)
+    int loadState;      // loadstate=1: load the slot's state at start (scripted runs)
+    u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
 
@@ -194,6 +198,9 @@ static void LoadConfig(Config *c)
     c->gfxCycles = 400000;
     c->cpi = 1;
     c->exitAfter = 0;
+    c->stateSlot = 1;
+    c->loadState = 0;
+    c->saveStateAt = 0;
     if (!f) return;
     while (fgets(line, sizeof(line), f))
     {
@@ -206,6 +213,9 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "rom")) { strncpy(c->rom, eq + 1, sizeof(c->rom) - 1); c->rom[sizeof(c->rom) - 1] = 0; }
         else if (!strcmp(line, "hle")) c->hle = atoi(eq + 1);
         else if (!strcmp(line, "exitafter")) c->exitAfter = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "stateslot")) c->stateSlot = atoi(eq + 1);
+        else if (!strcmp(line, "loadstate")) c->loadState = atoi(eq + 1);
+        else if (!strcmp(line, "savestateat")) c->saveStateAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");
         else if (!strcmp(line, "trace")) c->trace = (u32)atoi(eq + 1);
         else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
@@ -694,7 +704,8 @@ static void PadHook(H64System *sys)
     const XINPUT_GAMEPAD *g = &s_pad.Gamepad;
     u16 b = 0;
     if (s_script) { h64_input_script_apply(s_script, sys); return; }
-    if (!s_padValid) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; return; }
+    // BACK held: the buttons are front-end shortcuts, not the game's.
+    if (!s_padValid || (g->wButtons & XINPUT_GAMEPAD_BACK)) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; return; }
     if (g->wButtons & XINPUT_GAMEPAD_A) b |= 0x8000;
     if (g->wButtons & XINPUT_GAMEPAD_B) b |= 0x4000;
     if ((g->wButtons & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y)) || g->bLeftTrigger > 64 || g->bRightTrigger > 64) b |= 0x2000;
@@ -774,6 +785,74 @@ static void SavesTick(H64System *sys, u32 presented, int leaving)
         h64_save_store(sys->save, s_saveDir);
         s_saveDirtyAt = 0;
     }
+}
+
+// ---- Save states ----
+// <save folder>\state<N>.h64s. While BACK is held: RB saves, LB loads,
+// D-pad left/right change the slot. A message shows the result for 2 s.
+static int s_stateSlot = 1;
+static int s_statePending;          // a save waits for a quiet point (no HLE task in progress)
+static char s_osd[64];
+static DWORD s_osdUntil;
+
+static void Osd(const char *text)
+{
+    strncpy(s_osd, text, sizeof(s_osd) - 1);
+    s_osd[sizeof(s_osd) - 1] = 0;
+    s_osdUntil = GetTickCount() + 2000;
+    H64_INFO("[main] %s", text);
+}
+
+// Drawn by the renderer just before each present (on the graphics worker when it runs).
+static void OverlayHook(void *, IDirect3DDevice9 *dev)
+{
+    if (!s_osd[0] || (s32)(GetTickCount() - s_osdUntil) > 0) return;
+    AddText(64, 620, 3, s_osd);
+    FlushText(dev, D3DCOLOR_XRGB(255, 220, 60));
+}
+
+static void StatePath(char *out, size_t size)
+{
+    _snprintf(out, size, "%sstate%d.h64s", s_saveDir, s_stateSlot);
+    out[size - 1] = 0;
+}
+
+// Returns 1 when done (saved or failed), 0 when the machine is not quiet yet.
+static int SaveStateNow(H64System *sys)
+{
+    std::vector<u8> st;
+    char path[160], msg[64];
+    FILE *f;
+    if (!h64_state_quiet(sys)) return 0;
+    h64_state_save(sys, &st);
+    StatePath(path, sizeof(path));
+    f = fopen(path, "wb");
+    if (f && fwrite(&st[0], 1, st.size(), f) == st.size())
+        _snprintf(msg, sizeof(msg), "State %d saved", s_stateSlot);
+    else
+        _snprintf(msg, sizeof(msg), "State %d: write failed", s_stateSlot);
+    if (f) fclose(f);
+    msg[sizeof(msg) - 1] = 0;
+    Osd(msg);
+    return 1;
+}
+
+static void LoadStateNow(H64System *sys)
+{
+    char path[160], msg[64];
+    u32 size = 0;
+    u8 *data;
+    StatePath(path, sizeof(path));
+    data = LoadFile(path, &size);
+    if (!data)
+        _snprintf(msg, sizeof(msg), "No state in slot %d", s_stateSlot);
+    else if (h64_state_load(sys, data, size))
+        _snprintf(msg, sizeof(msg), "State %d: cannot load it", s_stateSlot);
+    else
+        _snprintf(msg, sizeof(msg), "State %d loaded", s_stateSlot);
+    free(data);
+    msg[sizeof(msg) - 1] = 0;
+    Osd(msg);
 }
 
 static void RunGame(IDirect3DDevice9 *dev, const Config *c)
@@ -862,6 +941,11 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         return;
     }
     SavesOpen(sys);
+    s_stateSlot = c->stateSlot >= 1 && c->stateSlot <= 9 ? c->stateSlot : 1;
+    s_statePending = 0;
+    s_osd[0] = 0;
+    h64_xenos_set_overlay(renderer, OverlayHook, NULL);
+    if (c->loadState) LoadStateNow(sys);
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&frameStart);
     if (!c->xenia)
@@ -873,19 +957,40 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     }
     PcSamplerStart(sys);
     DWORD backSince = 0;
+    int backUsed = 0;
+    WORD prevButtons = 0;
     for (;;)
     {
         int queued;
         if (XInputGetState(0, &s_pad) == ERROR_SUCCESS) s_padValid = 1;
         else s_padValid = 0;
-        // BACK held for 2 s returns to the dashboard (BACK + START is the dashboard's screenshot).
+        // BACK held for 2 s returns to the dashboard (BACK + START is the
+        // dashboard's screenshot); with BACK held, RB/LB save/load a state and
+        // the D-pad changes the slot.
         if (s_padValid && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK))
         {
-            if (!backSince) backSince = GetTickCount() | 1;
-            else if (GetTickCount() - backSince >= 2000) break;
+            WORD down = s_pad.Gamepad.wButtons & ~prevButtons;
+            if (!backSince) { backSince = GetTickCount() | 1; backUsed = 0; }
+            if (down & XINPUT_GAMEPAD_RIGHT_SHOULDER) { s_statePending = 1; backUsed = 1; }
+            if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) { LoadStateNow(sys); backUsed = 1; }
+            if (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT))
+            {
+                char msg[32];
+                s_stateSlot += (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : -1;
+                if (s_stateSlot < 1) s_stateSlot = 9;
+                if (s_stateSlot > 9) s_stateSlot = 1;
+                _snprintf(msg, sizeof(msg), "Slot %d", s_stateSlot);
+                msg[sizeof(msg) - 1] = 0;
+                Osd(msg);
+                backUsed = 1;
+            }
+            if (!backUsed && GetTickCount() - backSince >= 2000) break;
         }
         else
             backSince = 0;
+        prevButtons = s_padValid ? s_pad.Gamepad.wButtons : 0;
+        if (c->saveStateAt && presented == c->saveStateAt) s_statePending = 1;
+        if (s_statePending && SaveStateNow(sys)) s_statePending = 0;
         QueryPerformanceCounter(&t0);
         if (RunFrame(sys)) break;
         QueryPerformanceCounter(&t1);

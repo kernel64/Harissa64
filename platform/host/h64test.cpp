@@ -24,6 +24,7 @@
 #include "../../core/vi/h64_vi.h"
 #include "../../core/rdp/h64_rdp.h"
 #include "../../core/pif/h64_input_script.h"
+#include "../../core/savestate/h64_state.h"
 #include "../../core/common/h64_fenv.h"
 #include "../../render/api.h"
 #include "png_write.h"
@@ -281,6 +282,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     int shotCount = 0;
     const char *wavPath = 0;
     const char *saveDir = 0;
+    const char *loadState = 0, *saveStatePath = 0;
+    u32 saveStateFrame = 0;
+    int stateSaved = 0;
     char saveDirSep[512];
     H64System *sys;
     u8 *file;
@@ -312,6 +316,14 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--raw-png") && i + 1 < argc) rawPng = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
         else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) saveDir = argv[++i];
+        else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) loadState = argv[++i];
+        else if (!strcmp(argv[i], "--save-state") && i + 1 < argc)
+        {
+            char *colon;
+            saveStateFrame = (u32)strtoul(argv[++i], &colon, 10);
+            if (*colon != ':') { fprintf(stderr, "--save-state takes FRAME:file\n"); return 2; }
+            saveStatePath = colon + 1;
+        }
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) { if (parse_input(argv[++i])) return 2; }
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc && shotCount < 32)
         {
@@ -407,6 +419,13 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->padHook = apply_input;
 
     limit = seconds > 0 ? (u64)(seconds * 93750000.0) : (u64)frames * sys->vi.frameCycles;
+    if (loadState)
+    {
+        u32 n;
+        u8 *st = read_file(loadState, &n);
+        if (!st || h64_state_load(sys, st, n)) { fprintf(stderr, "cannot load the state %s\n", loadState); return 2; }
+        free(st);
+    }
     if (traceFrames && traceStep >= 1000000000u)
     {
         // Instruction trace: --trace-step 1000000000+START runs to cycle START,
@@ -468,6 +487,17 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                         printf("[shot] frame %u: %s\n", sys->vi.frames, shots[k].path);
                 }
         }
+        if (saveStatePath && !stateSaved && sys->vi.frames >= saveStateFrame && h64_state_quiet(sys))
+        {
+            // At the first quiet point from that frame on (between two run slices).
+            std::vector<u8> st;
+            FILE *f;
+            h64_state_save(sys, &st);
+            f = fopen(saveStatePath, "wb");
+            if (!f || fwrite(&st[0], 1, st.size(), f) != st.size()) { fprintf(stderr, "cannot write %s\n", saveStatePath); result = 1; }
+            if (f) fclose(f);
+            stateSaved = 1;
+        }
         h64_system_run_cycles(sys, dillon ? 10000 : 1000000);
         if (dillon && sys->cpu.gpr[30] != 0)
             break;
@@ -485,6 +515,11 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     printf("[run] %u frames, %.2f emulated s, %llu instructions, %u RSP tasks (%u HLE), %llu RSP instructions, %llu RDP commands\n",
            sys->vi.frames, (double)sys->cpu.cycles / 93750000.0, (unsigned long long)sys->cpu.instructions,
            sys->rsp.tasks, sys->rsp.hleTasks, (unsigned long long)sys->rsp.instructions, (unsigned long long)sys->dpCommands);
+    {
+        u32 ch, rh;
+        h64_system_state_hash(sys, &ch, &rh);
+        printf("[run] state hash cpu=%08X ram=%08X\n", ch, rh);
+    }
     if (sys->jit)
         printf("[jit] %llu instructions executed, %llu skipped in idle loops, %llu blocks run, %llu interpreted\n",
                (unsigned long long)(sys->cpu.instructions - sys->jit->stats.idleSkipped),

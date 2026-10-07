@@ -9,7 +9,8 @@ Order agreed with the user: (1) texture lookup speed, (2) graphics task ends bef
 | 1. Faster texture cache keys | Done (identical images in Xenia) |
 | 2. Graphics task ends once its display list ran; rendering goes on beside the next frame | Done. Console (OoT PAL, 3 cores): 97 % of 2-s periods at ≥49 VI/s (87 % before). Fix: a task that reads a colour image as a texture (Link on the pause screen's equipment page) renders from RDRAM, not from the snapshot taken before its own rendering; checked in Xenia with the user's save. |
 | 3a. Game saves: EEPROM 4K/16K (JoyBus channel 4), SRAM 32 KB and FlashRAM 128 KB (domain 2, CPU and PI DMA), Controller Pak on port 1 (formatted when new) | Done. Save type from mupen64plus's catalogue by header CRC (1575 entries), or the homebrew "ED" header; unknown cartridges get an EEPROM 4K and SRAM or FlashRAM on the first domain-2 access. Files: `<drive>:\saves\<name> <game code>\eeprom.bin`, `sram.bin`, `flash.bin`, `pak1.bin` (drive `game:`, `cache:` in Xenia), written 2 s after the game changes them and when leaving. Checked: unit tests on every target; on the host SM64/MK64/BK/SF64 create their EEPROM and OoT its SRAM, and reload them on the next run without rewriting them; in Xenia OoT writes `cache:\saves\THE LEGEND OF ZELDA CZLE\sram.bin`. Test ROM scores unchanged. |
-| 3b. Save states | Next |
+| 3b. Save states | Done. Portable format (console, Xenia, hosts), 9 slots per game in the save folder, BACK+RB / BACK+LB, D-pad for the slot. Checked: unit test (round trip, rejected bad data), straight run = save + load in a new process on SM64 (HLE and LLE), MK64, OoT (same CPU/RAM hash and image); a ppc64 state continues identically on MSVC and gcc; on the console, a state made on the PC loads (OoT PAL, Link's house, then the equipment page) and a state saved on the console loads on the PC. |
+| 4. Menu, ROM browser, settings, game profiles | Next |
 
 ## M4 — HLE and the Xenos renderer (complete, 2026-10-07)
 

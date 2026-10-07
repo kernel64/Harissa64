@@ -336,6 +336,12 @@ void h64_hle_async_wait(H64System *sys)
     }
 }
 
+int h64_hle_idle(H64System *sys)
+{
+    struct hle_t *hle = sys->hle;
+    return !hle || (!hle->gfxAsyncPending && !hle->audioAsyncPending);
+}
+
 static void audio_async_job(void *arg)
 {
     H64System *sys = (H64System *)arg;

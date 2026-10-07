@@ -43,6 +43,9 @@ struct H64Renderer
     // does not matter.
     void (*triangle)(void *user, const H64RenderVertex *v0, const H64RenderVertex *v1, const H64RenderVertex *v2,
                      u32 flags, u32 tile, u32 levels);
+    // Optional: the machine state was replaced (save state loaded): drop
+    // everything derived from RDRAM (cached frames, textures).
+    void (*reset)(void *user);
 };
 
 #endif

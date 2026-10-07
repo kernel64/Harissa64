@@ -112,6 +112,8 @@ struct Xenos
     IDirect3DTexture9 *shown;   // texture shown at the last present
     float shownU, shownV;
     int shownTiled;
+    void (*overlay)(void *user, IDirect3DDevice9 *dev);   // front-end messages, drawn before each present
+    void *overlayUser;
     int drewFrame;      // the RDP has drawn a colour image (until then RDRAM frames are not shown)
     u32 blankPresents;  // presents left black waiting for that
     int targetBound;    // the N64 target is bound (not the back buffer)
@@ -1182,6 +1184,25 @@ static void raw_triangle(Xenos *x, const u32 *w, u32 op)
     xenos_triangle(x, &v[0], &v[1], &v[2], op & 7, (w[0] >> 16) & 7, ((w[0] >> 19) & 7) + 1);
 }
 
+// A save state was loaded: the frames and the N64 target describe the old
+// RDRAM. Textures stay (their keys hash the texels they were made from).
+static void xenos_reset(void *user)
+{
+    Xenos *x = (Xenos *)user;
+    u32 i;
+    x->batch.clear();
+    for (i = 0; i < FB_SLOTS; i++)
+    {
+        x->fb[i].valid = 0;
+        x->fb[i].gpuDirty = 0;   // never copy the old frame back over the loaded RDRAM
+    }
+    x->curSlot = -1;
+    x->edramOwner = -1;
+    x->targetBound = 0;
+    x->tmemGen++;
+    x->stateDirty = 1;
+}
+
 static void xenos_rdp(void *user, const u64 *words, u32 count)
 {
     Xenos *x = (Xenos *)user;
@@ -1314,10 +1335,18 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     // else: at boot the VI often shows RDRAM the game still uses for other data
     // (noise); stay black until the RDP draws a frame, or for 300 VIs at most
     // (games that draw their first images with the CPU).
+    if (x->overlay) x->overlay(x->overlayUser, x->dev);
     x->dev->Present(NULL, NULL, NULL, NULL);
     x->stats.presents++;
     // The next draw rebinds the N64 target and restores its content.
     x->curSlot = -1;
+}
+
+void h64_xenos_set_overlay(H64Renderer *r, void (*fn)(void *user, IDirect3DDevice9 *dev), void *user)
+{
+    Xenos *x = X(r);
+    x->overlay = fn;
+    x->overlayUser = user;
 }
 
 // ---------------------------------------------------------------- creation
@@ -1349,6 +1378,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->api.user = x;
     x->api.rdp = xenos_rdp;
     x->api.triangle = xenos_triangle;
+    x->api.reset = xenos_reset;
     x->sys = sys;
     x->dev = dev;
     sys->options.rdpStateOnly = 1;
@@ -1365,6 +1395,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->edramOwner = -1;
     x->drewFrame = 0;
     x->blankPresents = 0;
+    x->overlay = NULL;
+    x->overlayUser = NULL;
     x->copyBacks = 0;
     x->useCounter = 0;
     x->debug = 0;
