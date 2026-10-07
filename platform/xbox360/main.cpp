@@ -121,6 +121,7 @@ struct Config
     u32 trace, traceStep;
     int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
+    int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
     int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
@@ -148,6 +149,7 @@ static void LoadConfig(Config *c)
     c->xenia = 0;
     c->fpuFlags = 1;
     c->jitFpu = 1;
+    c->regCache = 1;
     c->cpi = 1;
     c->exitAfter = 0;
     if (!f) return;
@@ -167,6 +169,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
         else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
         else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
+        else if (!strcmp(line, "regcache")) c->regCache = atoi(eq + 1);
         else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
@@ -286,6 +289,7 @@ static int FindRom(const Config *c, char *path, size_t len)
 }
 
 static int s_jitNoFpu;   // jitfpu=0
+static int s_noRegCache; // regcache=0
 static u32 s_cpi = 1;    // cpi=N
 
 // ---- N64 PC sampler (diagnosis): a thread on another hardware thread reads
@@ -361,6 +365,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
         return NULL;
     }
     if (sys->jit) sys->jit->noFpu = s_jitNoFpu;
+    if (sys->jit) sys->jit->noRegCache = s_noRegCache;
     sys->cpu.cpi = s_cpi;
     return sys;
 }
@@ -746,9 +751,10 @@ int __cdecl main()
     LoadConfig(&cfg);
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
     s_jitNoFpu = !cfg.jitFpu;
+    s_noRegCache = !cfg.regCache;
     s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 1;
-    H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s jitfpu=%d cpi=%d", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)",
-             cfg.jitFpu, cfg.cpi);
+    H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s jitfpu=%d cpi=%d regcache=%d", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)",
+             cfg.jitFpu, cfg.cpi, cfg.regCache);
 
     failures = h64_run_all_unit_tests(&tests, &checks);
     _snprintf(status, sizeof(status), "Unit tests: %s\n%d tests, %d checks, %d failures",
