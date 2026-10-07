@@ -110,8 +110,9 @@ struct H64System
     // The task's end (SP and DP interrupts) stays at the same emulated time;
     // the CPU waits for the worker there, and before anything else uses the
     // renderer (LLE RDP commands, presenting a frame).
-    void (*asyncStart)(void *user, void (*job)(void *arg), void *arg);
-    void (*asyncWait)(void *user);
+    u32 (*asyncStart)(void *user, void (*job)(void *arg), void *arg);   // returns the job's ticket
+    void (*asyncWait)(void *user);                                        // every queued job
+    void (*asyncWaitTicket)(void *user, u32 ticket);                      // up to that job
     void *asyncUser;
     u32 asyncGfxCycles;             // how long an asynchronous graphics task keeps the RSP busy
     // Audio HLE tasks on another worker, the same way (their RDRAM output is

@@ -15,6 +15,7 @@
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
 #include "../rdp/h64_rdp.h"
+#include "../rdp/h64_rdp_state.h"
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 
@@ -109,6 +110,14 @@ struct H64Gfx
     std::vector<u64> words;
     std::vector<GfxTri> tris;
     std::vector<GfxOp> ops;
+
+    // Deferred rendering: what texture loads read (snapshot), colour images seen.
+    u32 timgAddr, timgWidth, timgSize;
+    std::vector<u32> loadRanges;   // start, end pairs
+    u32 cimg[8][2];                // recent colour images: start, end
+    u32 cimgNext;
+    int texFromCimg;
+    u8 *snapshot;                  // RDRAM-sized; only the ranges above are valid
 };
 
 // ---------------------------------------------------------------- memory
@@ -166,8 +175,59 @@ static void out_rdp(H64Gfx *g, const u64 *w, u32 n)
     g->ops.push_back(op);
 }
 
+// Texture images and loads (h64_rdp_load's arithmetic): the RDRAM a load reads.
+static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 op = (w0 >> 24) & 0x3F;
+    if (op == 0x3D)   // SET_TEXTURE_IMAGE
+    {
+        u32 k;
+        g->timgSize = (w0 >> 19) & 3;
+        g->timgWidth = (w0 & 0x3FF) + 1;
+        g->timgAddr = w1 & 0xFFFFFF;
+        for (k = 0; k < 8; k++)
+            if (g->timgAddr >= g->cimg[k][0] && g->timgAddr < g->cimg[k][1]) g->texFromCimg = 1;
+    }
+    else if (op == 0x3F)   // SET_COLOR_IMAGE: remember it (a later texture may read it)
+    {
+        u32 size = (w0 >> 19) & 3, width = (w0 & 0x3FF) + 1, start = w1 & 0xFFFFFF;
+        u32 bytes = width * (width <= 320 ? 240 : width * 3 / 4) << (size ? size - 1 : 0);
+        g->cimg[g->cimgNext & 7][0] = start;
+        g->cimg[g->cimgNext & 7][1] = start + bytes;
+        g->cimgNext++;
+    }
+    else if (op == 0x30 || op == 0x33 || op == 0x34)   // LOAD_TLUT, LOAD_BLOCK, LOAD_TILE
+    {
+        u32 sl = (w0 >> 12) & 0xFFF, tl = w0 & 0xFFF, sh = (w1 >> 12) & 0xFFF, th = w1 & 0xFFF;
+        u32 sz = g->timgSize ? g->timgSize : 1, start, end;
+        if (op == 0x33)
+        {
+            u32 texels = (sh - sl + 1) & 0xFFF;
+            start = g->timgAddr + ((tl * g->timgWidth + sl) << (sz - 1));
+            end = start + ((((texels << sz) + 15) >> 4) * 8);
+        }
+        else
+        {
+            u32 lines = (th >> 2) >= (tl >> 2) ? (th >> 2) - (tl >> 2) + 1 : 1;
+            u32 pixels = ((sh >> 2) - (sl >> 2) + 1) & 0xFFF;
+            start = g->timgAddr + (((tl >> 2) * g->timgWidth + (sl >> 2)) << (sz - 1));
+            end = start + (lines - 1) * (g->timgWidth << (sz - 1)) + ((((pixels << sz) + 15) >> 4) * 8);
+            if (op == 0x30) end = start + lines * (g->timgWidth << 1) + 4096;   // TLUT: generous
+        }
+        start &= ~7u;
+        end = (end + 15) & ~7u;
+        if (start < H64_RDRAM_SIZE)
+        {
+            if (end > H64_RDRAM_SIZE || end < start) end = H64_RDRAM_SIZE;
+            g->loadRanges.push_back(start);
+            g->loadRanges.push_back(end);
+        }
+    }
+}
+
 static void out_rdp1(H64Gfx *g, u32 w0, u32 w1)
 {
+    note_rdp(g, w0, w1);
     u64 w = ((u64)w0 << 32) | w1;
     out_rdp(g, &w, 1);
 }
@@ -1166,11 +1226,17 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->fullSync = 0;
     g->commands = 0;
     g->warned = 0;
+    g->timgAddr = g->timgWidth = g->timgSize = 0;
+    memset(g->cimg, 0, sizeof(g->cimg));
+    g->cimgNext = 0;
+    g->texFromCimg = 0;
+    g->snapshot = 0;
     return g;
 }
 
 void h64_gfx_free(H64Gfx *g)
 {
+    free(g->snapshot);
     delete g;
 }
 
@@ -1213,7 +1279,38 @@ int h64_gfx_task_known(H64System *sys, H64Gfx *g)
     return find_ucode(g, ucStart & 0x7FFFFF, ucData & 0x7FFFFF, ucDataSize)->type != UC_NONE;
 }
 
+static int parse_task(H64System *sys, H64Gfx *g, int *fullSync);
+
 int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
+{
+    if (!parse_task(sys, g, fullSync)) return 0;
+    flush_output(g);
+    return 1;
+}
+
+int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
+{
+    size_t k;
+    g->loadRanges.clear();
+    g->texFromCimg = 0;
+    if (!parse_task(sys, g, fullSync)) return 0;
+    *mustSync = g->texFromCimg;
+    if (!g->snapshot) g->snapshot = (u8 *)malloc(H64_RDRAM_SIZE);
+    if (!g->snapshot) { *mustSync = 1; return 1; }
+    for (k = 0; k + 1 < g->loadRanges.size(); k += 2)
+        memcpy(g->snapshot + g->loadRanges[k], sys->rdram + g->loadRanges[k], g->loadRanges[k + 1] - g->loadRanges[k]);
+    return 1;
+}
+
+void h64_gfx_render(H64System *sys, H64Gfx *g)
+{
+    H64RdpState *st = h64_rdp_state(sys);
+    st->loadRam = g->snapshot;
+    flush_output(g);
+    st->loadRam = 0;
+}
+
+static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
     const u8 *dmem = sys->spMem;
     u32 ucStart = h64_load_be32(dmem + 0xFD0), ucData = h64_load_be32(dmem + 0xFD8);
@@ -1261,7 +1358,6 @@ int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
     }
     if (g->abort)
         return 0;
-    flush_output(g);
     *fullSync = g->fullSync;
     return 1;
 }

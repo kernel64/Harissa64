@@ -37,7 +37,11 @@ static void tm16_write_logical(H64RdpState *st, u32 h, u32 v)
 }
 
 // ---- Loads ----
-static u8 rd8(H64System *sys, u32 a) { return sys->rdram[a & (H64_RDRAM_SIZE - 1)]; }
+static u8 rd8(H64System *sys, u32 a)
+{
+    const u8 *ram = sys->rdpState->loadRam ? sys->rdpState->loadRam : sys->rdram;
+    return ram[a & (H64_RDRAM_SIZE - 1)];
+}
 
 void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th, int mode)
 {

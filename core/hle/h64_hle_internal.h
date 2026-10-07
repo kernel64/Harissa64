@@ -127,7 +127,8 @@ struct hle_t
     struct H64Gfx *gfx;       // graphics HLE (h64_gfx.cpp), created on first use
     // Asynchronous graphics task (sys->asyncStart): set by the worker.
     int gfxAsyncPending;      // started, its end not consumed yet
-    int gfxAsyncRan, gfxAsyncFullSync;
+    int gfxAsyncRan, gfxAsyncFullSync, gfxAsyncMustSync;
+    u32 gfxParseTicket, gfxRenderTicket;   // worker jobs: the display list, then its rendering
     int audioAsyncPending;    // an audio task runs on the audio worker
     ucode_func_t audioAsyncFunc;
 };

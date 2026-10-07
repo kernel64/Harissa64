@@ -384,13 +384,21 @@ static void QueueWait(WorkQueue *q)
     while (q->done != q->queued) WaitForSingleObject(q->doneEvt, INFINITE);
 }
 
-static void QueuePush(WorkQueue *q, void (*fn)(void *), void *arg)
+// Until job `ticket` (a QueuePush result) is done.
+static void QueueWaitTicket(WorkQueue *q, u32 ticket)
 {
-    if (q->queued - q->done >= WORK_SLOTS - 1) QueueWait(q);
+    if (!q->thread) return;
+    while ((s32)((u32)q->done - ticket) < 0) WaitForSingleObject(q->doneEvt, INFINITE);
+}
+
+static u32 QueuePush(WorkQueue *q, void (*fn)(void *), void *arg)
+{
+    if (q->queued - q->done >= WORK_SLOTS - 1) QueueWaitTicket(q, (u32)q->done + 1);
     q->jobs[q->queued % WORK_SLOTS].fn = fn;
     q->jobs[q->queued % WORK_SLOTS].arg = arg;
     InterlockedIncrement(&q->queued);
     ReleaseSemaphore(q->sem, 1, NULL);
+    return (u32)q->queued;
 }
 
 static int QueueStart(WorkQueue *q, int usesDevice, DWORD hwThread)
@@ -433,7 +441,7 @@ static void WorkWaitAll(void *)
     }
 }
 
-static void WorkStart(void *, void (*fn)(void *), void *arg)
+static u32 WorkStart(void *, void (*fn)(void *), void *arg)
 {
     if (s_ownsDevice)
     {
@@ -442,8 +450,10 @@ static void WorkStart(void *, void (*fn)(void *), void *arg)
         s_workDev->ReleaseThreadOwnership();
         s_ownsDevice = 0;
     }
-    QueuePush(&s_gfxQ, fn, arg);
+    return QueuePush(&s_gfxQ, fn, arg);
 }
+
+static void WorkWaitTicket(void *, u32 ticket) { QueueWaitTicket(&s_gfxQ, ticket); }
 
 static void AudioStart(void *, void (*fn)(void *), void *arg) { QueuePush(&s_audioQ, fn, arg); }
 static void AudioWait(void *) { QueueWait(&s_audioQ); }
@@ -479,6 +489,7 @@ static void WorkersStart(H64System *sys, IDirect3DDevice9 *dev, H64Renderer *ren
         {
             sys->asyncStart = WorkStart;
             sys->asyncWait = WorkWaitAll;
+            sys->asyncWaitTicket = WorkWaitTicket;
             sys->asyncGfxCycles = gfxCycles;
             H64_INFO("[main] graphics worker on hardware thread 2 (graphics tasks keep the RSP busy %u cycles)", gfxCycles);
         }
@@ -509,6 +520,7 @@ static void WorkersStop(H64System *sys)
     }
     sys->asyncStart = NULL;
     sys->asyncWait = NULL;
+    sys->asyncWaitTicket = NULL;
     sys->asyncAudioStart = NULL;
     sys->asyncAudioWait = NULL;
 }

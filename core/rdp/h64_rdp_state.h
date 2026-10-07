@@ -72,6 +72,7 @@ struct H64RdpCombiner { u8 rgbMulAdd, rgbMulSub, rgbMul, rgbAdd, aMulAdd, aMulSu
 struct H64RdpState
 {
     u8 tmem[4096];               // N64 byte order (logical)
+    const u8 *loadRam;           // where texture loads read (NULL: RDRAM); a snapshot for deferred rendering
     H64RdpTile tiles[8];
 
     u32 rasterFlags;             // RS_*
