@@ -54,6 +54,8 @@ struct H64XenosStats
     // decoding, draw calls, and the RDP command handler as a whole.
     u64 tState, tTexture, tDraw, tRdp;
 };
+// Edge smoothing (FXAA) when the frame is shown, in place of the VI's anti-aliasing (on by default).
+void h64_xenos_set_smooth(H64Renderer *r, int on);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);
 
 #endif

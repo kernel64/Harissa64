@@ -153,6 +153,7 @@ struct Config
     int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
     int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
+    int smooth;         // smooth=0: no edge smoothing when frames are shown
     int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
@@ -181,6 +182,7 @@ static void LoadConfig(Config *c)
     c->fpuFlags = 1;
     c->jitFpu = 1;
     c->regCache = 1;
+    c->smooth = 1;
     c->cpi = 1;
     c->exitAfter = 0;
     if (!f) return;
@@ -201,6 +203,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
         else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
         else if (!strcmp(line, "regcache")) c->regCache = atoi(eq + 1);
+        else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
         else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
@@ -576,6 +579,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     renderer = h64_xenos_create(sys, dev);
     if (!renderer) { MessageScreen(dev, "Renderer initialisation failed", "See harissa64v2.log", D3DCOLOR_XRGB(240, 60, 60)); return; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);
+    h64_xenos_set_smooth(renderer, c->smooth);
     if (c->softRenderer) sys->options.rdpStateOnly = 0;
     else sys->renderer = renderer;
     H64_INFO("[main] running %s: cpu %s, RSP %s, %s renderer", rom, jit ? "recompiler" : "interpreter",

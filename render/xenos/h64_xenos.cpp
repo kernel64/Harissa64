@@ -77,6 +77,8 @@ struct Xenos
     IDirect3DVertexDeclaration9 *decl;
     IDirect3DVertexShader9 *vs;
     IDirect3DPixelShader9 *psCopy, *psFill, *psFallback;
+    IDirect3DPixelShader9 *psSmooth;   // edge smoothing at display (FXAA)
+    int smooth;
     IDirect3DTexture9 *dummy;
     IDirect3DTexture9 *cpuFb[2];
     int cpuFbNext;
@@ -184,6 +186,37 @@ static const char s_vsSource[] =
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
     "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0) : COLOR { return tex2D(t0, tc.xy); }\n";
+
+// Edge smoothing at display time, in place of the VI's anti-aliasing filter
+// (all three games run the VI in "AA and resample" mode, which blends the
+// edges of polygons with the background using the coverage the RDP stored;
+// Xenos has no coverage). This is FXAA 2 (Timothy Lottes, public domain, as
+// in NVIDIA's FXAA_PC_CONSOLE path): luma-based edge direction, then a blend
+// of 2 or 4 taps along the edge, kept only when it stays within the local
+// luma range. c0 = (1/width, 1/height) of the frame texture.
+static const char s_psSmoothSource[] =
+    "sampler t0 : register(s0);\n"
+    "float4 rcp : register(c0);\n"
+    "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
+    "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0) : COLOR {\n"
+    "  float2 uv = tc.xy;\n"
+    "  float3 rgbM = tex2D(t0, uv).rgb;\n"
+    "  float lNW = luma(tex2D(t0, uv + float2(-0.5, -0.5) * rcp.xy).rgb);\n"
+    "  float lNE = luma(tex2D(t0, uv + float2( 0.5, -0.5) * rcp.xy).rgb);\n"
+    "  float lSW = luma(tex2D(t0, uv + float2(-0.5,  0.5) * rcp.xy).rgb);\n"
+    "  float lSE = luma(tex2D(t0, uv + float2( 0.5,  0.5) * rcp.xy).rgb);\n"
+    "  float lM = luma(rgbM);\n"
+    "  float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));\n"
+    "  float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));\n"
+    "  float2 dir = float2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));\n"
+    "  float reduce = max((lNW + lNE + lSW + lSE) * (0.25 / 8.0), 1.0 / 128.0);\n"
+    "  float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);\n"
+    "  dir = clamp(dir * rcpMin, -8.0, 8.0) * rcp.xy;\n"
+    "  float3 a = 0.5 * (tex2D(t0, uv + dir * (1.0 / 3.0 - 0.5)).rgb + tex2D(t0, uv + dir * (2.0 / 3.0 - 0.5)).rgb);\n"
+    "  float3 b = a * 0.5 + 0.25 * (tex2D(t0, uv - dir * 0.5).rgb + tex2D(t0, uv + dir * 0.5).rgb);\n"
+    "  float lB = luma(b);\n"
+    "  return float4((lB < lMin || lB > lMax) ? a : b, 1.0);\n"
+    "}\n";
 
 // Used when a combiner shader does not compile: texture times shade.
 static const char s_psFallbackSource[] =
@@ -542,8 +575,17 @@ static void bind_n64_target(Xenos *x)
 
 // Draws `tex` (its [0, u1] x [0, v1] part) over the rectangle (x0, y0, w, h)
 // of a target of tw x th pixels.
+static void draw_textured_ps(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTexture9 *tex, float u1, float v1, float x0,
+                             float y0, float w, float h, float tw, float th);
+
 static void draw_textured(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1, float x0, float y0, float w, float h,
                           float tw, float th)
+{
+    draw_textured_ps(x, x->psCopy, tex, u1, v1, x0, y0, w, h, tw, th);
+}
+
+static void draw_textured_ps(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTexture9 *tex, float u1, float v1, float x0,
+                             float y0, float w, float h, float tw, float th)
 {
     XVtx q[4];
     float c[4];
@@ -561,7 +603,7 @@ static void draw_textured(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1, 
         q[i].u1 = q[i].v1 = 0;
     }
     x->dev->SetVertexShaderConstantF(0, c, 1);
-    x->dev->SetPixelShader(x->psCopy);
+    x->dev->SetPixelShader(ps ? ps : x->psCopy);
     x->dev->SetTexture(0, tex);
     x->dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
     x->dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
@@ -592,7 +634,15 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1)
     h = bh;
     w = bh * 4.0f / 3.0f;
     if (w > bw) { w = bw; h = bw * 3.0f / 4.0f; }
-    draw_textured(x, tex, u1, v1, (bw - w) / 2, (bh - h) / 2, w, h, bw, bh);
+    if (x->smooth && x->psSmooth)
+    {
+        float c[4];
+        c[0] = 1.0f / RT_WIDTH; c[1] = 1.0f / RT_HEIGHT; c[2] = c[3] = 0;
+        x->dev->SetPixelShaderConstantF(0, c, 1);
+        draw_textured_ps(x, x->psSmooth, tex, u1, v1, (bw - w) / 2, (bh - h) / 2, w, h, bw, bh);
+    }
+    else
+        draw_textured(x, tex, u1, v1, (bw - w) / 2, (bh - h) / 2, w, h, bw, bh);
 }
 
 static void resolve_current(Xenos *x)
@@ -1271,6 +1321,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     dev->CreateVertexDeclaration(decl, &x->decl);
     x->vs = compile_vs(dev, s_vsSource);
     x->psCopy = compile_ps(dev, s_psCopySource);
+    x->psSmooth = compile_ps(dev, s_psSmoothSource);
+    x->smooth = 1;
     x->psFill = compile_ps(dev, s_psFillSource);
     x->psFallback = compile_ps(dev, s_psFallbackSource);
     x->dummy = make_dummy(dev);
@@ -1395,6 +1447,11 @@ int h64_xenos_save_frame(H64Renderer *r, const char *path)
     fclose(f);
     x->shown->UnlockRect(0);
     return 0;
+}
+
+void h64_xenos_set_smooth(H64Renderer *r, int on)
+{
+    X(r)->smooth = on;
 }
 
 void h64_xenos_set_debug(H64Renderer *r, int mode)

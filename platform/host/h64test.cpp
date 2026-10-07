@@ -500,6 +500,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (nullRenderer) printf("[run] null renderer: %u triangles\n", s_nullTris);
     printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
            sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
+    printf("[run] VI control %08X, width %u, x scale %08X, y scale %08X\n", sys->vi.regs[0], sys->vi.regs[2],
+           sys->vi.regs[12], sys->vi.regs[13]);
     if (state) print_state(sys);
     if (fbPng || rawPng)
     {
