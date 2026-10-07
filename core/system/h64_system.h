@@ -41,6 +41,8 @@ enum
     H64_PROF_RENDER,         // RDP commands and triangles sent to the renderer (HLE and LLE)
     H64_PROF_RSP_LLE,        // the LLE RSP interpreter
     H64_PROF_JIT_COMPILE,    // recompiler: block compilation
+    H64_PROF_HELPER,         // recompiler: instructions run by the interpreter helper (HLE tasks they start excluded)
+    H64_PROF_EVENTS,         // scheduler events (VI, AI, SI, PI...; HLE tasks they start excluded)
     H64_PROF_COUNT
 };
 

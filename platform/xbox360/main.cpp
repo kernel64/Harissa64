@@ -710,6 +710,8 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                              xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
                              xs.bigRect ? "rectangle" : "triangle");
                 PcSamplerReport();
+                H64_INFO("[cprof] ms/frame inside cpu: interpreter helper %.1f, scheduler events %.1f",
+                         pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k);
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f, %u texels/frame) draw calls %.1f",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.texelsDecoded / framesSincePerf, xs.tDraw * k);
             }

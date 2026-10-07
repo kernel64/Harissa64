@@ -151,12 +151,18 @@ int h64_jit_should_exit(H64System *sys)
 
 static void process_events(H64System *sys)
 {
+    u64 t0, nested;
+    if (sys->sched.next > sys->cpu.cycles) return;
+    t0 = h64_prof_now(sys);
+    nested = sys->prof[H64_PROF_GFX_HLE] + sys->prof[H64_PROF_AUDIO_HLE] + sys->prof[H64_PROF_RSP_LLE];
     while (sys->sched.next <= sys->cpu.cycles)
     {
         int ev = h64_sched_pop_due(&sys->sched, sys->cpu.cycles);
         if (ev < 0) break;
         h64_device_event(sys, ev);
     }
+    nested = sys->prof[H64_PROF_GFX_HLE] + sys->prof[H64_PROF_AUDIO_HLE] + sys->prof[H64_PROF_RSP_LLE] - nested;
+    sys->prof[H64_PROF_EVENTS] += h64_prof_now(sys) - t0 - nested;
 }
 
 // Links the exit the previous block left by to b (the block it leads to).
