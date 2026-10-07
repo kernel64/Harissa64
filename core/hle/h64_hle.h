@@ -34,10 +34,12 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
 
 // Asynchronous graphics tasks: waits for the worker (if a task is pending).
 void h64_hle_async_wait(H64System *sys);
-// At the end of an HLE task's busy time: 1 if it was an asynchronous graphics
-// task; then *ran = 0 means it fell back (the LLE RSP must run it now) and
-// *fullSync tells whether to raise the DP interrupt.
-int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync);
+// At the end of an HLE task's busy time: 0 if it ran synchronously, 1 if it
+// was an asynchronous graphics task, 2 an asynchronous audio task. Then
+// *ran = 0 means it fell back (the LLE RSP must run it now), *fullSync whether
+// to raise the DP interrupt, and for audio *statusBits the SP_STATUS bits the
+// task set.
+int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBits);
 
 // hleAudioCheck: called when the LLE RSP halts; compares its RDRAM output
 // with the HLE's and logs the first difference.

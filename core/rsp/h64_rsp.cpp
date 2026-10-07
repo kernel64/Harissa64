@@ -366,8 +366,10 @@ void h64_rsp_slice_event(H64System *sys)
     H64Rsp *rsp = &sys->rsp;
     if (rsp->hleBusy)
     {
-        int ran, fullSync;
-        if (h64_hle_async_finish(sys, &ran, &fullSync))
+        int ran, fullSync, kind;
+        u32 bits = 0;
+        kind = h64_hle_async_finish(sys, &ran, &fullSync, &bits);
+        if (kind)
         {
             if (!ran)
             {
@@ -380,6 +382,7 @@ void h64_rsp_slice_event(H64System *sys)
                 return;
             }
             rsp->hleDpInterrupt = fullSync;
+            if (kind == 2) rsp->hleStatus = bits;
         }
         // End of an HLE task: halt with the bits the microcode would set.
         rsp->hleBusy = 0;

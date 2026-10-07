@@ -114,6 +114,11 @@ struct H64System
     void (*asyncWait)(void *user);
     void *asyncUser;
     u32 asyncGfxCycles;             // how long an asynchronous graphics task keeps the RSP busy
+    // Audio HLE tasks on another worker, the same way (their RDRAM output is
+    // complete when the task ends, where the CPU waits for it).
+    void (*asyncAudioStart)(void *user, void (*job)(void *arg), void *arg);
+    void (*asyncAudioWait)(void *user);
+    u32 asyncAudioCycles;
     void (*aiSink)(void *user, const u8 *samples, u32 len, u32 rate);
     void *aiUser;
 

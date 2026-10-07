@@ -322,10 +322,34 @@ void h64_hle_async_wait(H64System *sys)
     }
 }
 
-int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync)
+static void audio_async_job(void *arg)
+{
+    H64System *sys = (H64System *)arg;
+    struct hle_t *hle = sys->hle;
+    u64 t0 = h64_prof_now(sys);
+    hle->audioAsyncFunc(hle);
+    sys->prof[H64_PROF_AUDIO_HLE] += h64_prof_now(sys) - t0;
+}
+
+int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBits)
 {
     struct hle_t *hle = sys->hle;
-    if (!hle || !hle->gfxAsyncPending) return 0;
+    if (!hle) return 0;
+    if (hle->audioAsyncPending)
+    {
+        u64 t0 = h64_prof_now(sys);
+        if (sys->asyncAudioWait) sys->asyncAudioWait(sys->asyncUser);
+        sys->prof[H64_PROF_ASYNC_WAIT] += h64_prof_now(sys) - t0;
+        hle->audioAsyncPending = 0;
+        *fullSync = 0;
+        *statusBits = hle->sp_status;
+        *ran = !hle->forwarded;
+        // RDRAM written by the task: the recompiler hears of it here, on the CPU thread.
+        if (*ran && hle->dirtyHi > hle->dirtyLo)
+            h64_jit_notify_write(sys, hle->dirtyLo, hle->dirtyHi - hle->dirtyLo);
+        return 2;
+    }
+    if (!hle->gfxAsyncPending) return 0;
     h64_hle_async_wait(sys);
     hle->gfxAsyncPending = 0;
     *ran = hle->gfxAsyncRan;
@@ -409,6 +433,17 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
     hle->forwarded = 0;
     hle->sp_status = 0;
     hle->dirtyLo = hle->dirtyHi = 0;
+    if (sys->asyncAudioStart && !sys->options.hleAudioCheck && info->uc_pfunc != &forward_task)
+    {
+        // On the audio worker; the end (status bits, RDRAM output) is taken at
+        // the end of the busy time, where the CPU waits for it.
+        hle->audioAsyncPending = 1;
+        hle->audioAsyncFunc = info->uc_pfunc;
+        sys->asyncAudioStart(sys->asyncUser, audio_async_job, sys);
+        *statusBits = 0;
+        *busyCycles = sys->asyncAudioCycles ? sys->asyncAudioCycles : H64_HLE_AUDIO_CYCLES;
+        return 1;
+    }
     if (sys->options.hleAudioCheck)
     {
         // Run the HLE on a copy of RDRAM, then let the LLE run the task.

@@ -128,6 +128,8 @@ struct hle_t
     // Asynchronous graphics task (sys->asyncStart): set by the worker.
     int gfxAsyncPending;      // started, its end not consumed yet
     int gfxAsyncRan, gfxAsyncFullSync;
+    int audioAsyncPending;    // an audio task runs on the audio worker
+    ucode_func_t audioAsyncFunc;
 };
 
 #define SP_STATUS_HALT 0x1
