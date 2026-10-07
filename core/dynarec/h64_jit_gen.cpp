@@ -92,11 +92,10 @@ static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
     }
     {
         u64 t0 = h64_prof_now(sys);
-        u64 nested = sys->prof[H64_PROF_GFX_HLE] + sys->prof[H64_PROF_AUDIO_HLE] + sys->prof[H64_PROF_RSP_LLE];
+        u64 nested = h64_prof_nested(sys);
         if (haveOp) h64_cpu_step_op(sys, op);
         else h64_cpu_step(sys);
-        nested = sys->prof[H64_PROF_GFX_HLE] + sys->prof[H64_PROF_AUDIO_HLE] + sys->prof[H64_PROF_RSP_LLE] - nested;
-        sys->prof[H64_PROF_HELPER] += h64_prof_now(sys) - t0 - nested;
+        h64_prof_add_outer(sys, H64_PROF_HELPER, t0, nested);
     }
     if (sys->jit->opHist)
     {

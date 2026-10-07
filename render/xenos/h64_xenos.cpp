@@ -112,6 +112,8 @@ struct Xenos
     IDirect3DTexture9 *shown;   // texture shown at the last present
     float shownU, shownV;
     int shownTiled;
+    int drewFrame;      // the RDP has drawn a colour image (until then RDRAM frames are not shown)
+    u32 blankPresents;  // presents left black waiting for that
     int targetBound;    // the N64 target is bound (not the back buffer)
 
     std::vector<u32> decodeBuf;
@@ -697,6 +699,7 @@ static void resolve_current(Xenos *x)
     s = &x->fb[x->curSlot];
     x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, NULL, s->tex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
     s->valid = 1;
+    x->drewFrame = 1;
 }
 
 static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32);
@@ -1306,8 +1309,11 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->shownU = x->shownV = 1.0f;
         x->shownTiled = 1;
     }
-    else
+    else if (x->drewFrame || ++x->blankPresents > 300)
         show_rdram_frame(x, origin, width, type == 3);
+    // else: at boot the VI often shows RDRAM the game still uses for other data
+    // (noise); stay black until the RDP draws a frame, or for 300 VIs at most
+    // (games that draw their first images with the CPU).
     x->dev->Present(NULL, NULL, NULL, NULL);
     x->stats.presents++;
     // The next draw rebinds the N64 target and restores its content.
@@ -1357,6 +1363,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->batch.reserve(BATCH_VERTICES);
     x->curSlot = -1;
     x->edramOwner = -1;
+    x->drewFrame = 0;
+    x->blankPresents = 0;
     x->copyBacks = 0;
     x->useCounter = 0;
     x->debug = 0;

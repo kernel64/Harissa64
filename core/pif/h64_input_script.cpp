@@ -14,7 +14,7 @@ int h64_input_script_parse(H64InputScript *s, const char *script)
         { "DL", 0x0200 }, { "DR", 0x0100 }, { "L", 0x0020 }, { "R", 0x0010 }, { "CU", 0x0008 }, { "CD", 0x0004 },
         { "CL", 0x0002 }, { "CR", 0x0001 } };
     const char *p = script;
-    while (*p && s->count < 64)
+    while (*p && s->count < (int)(sizeof(s->events) / sizeof(s->events[0])))
     {
         H64InputEvent *e = &s->events[s->count];
         char name[16];

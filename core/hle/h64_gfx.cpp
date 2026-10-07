@@ -1305,7 +1305,10 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
 void h64_gfx_render(H64System *sys, H64Gfx *g)
 {
     H64RdpState *st = h64_rdp_state(sys);
-    st->loadRam = g->snapshot;
+    // A task that reads a colour image as a texture (OoT's Link on the pause
+    // screen) renders before it ends: its loads read RDRAM, where the renderer
+    // copies the colour image back; the snapshot predates that copy.
+    st->loadRam = g->texFromCimg ? 0 : g->snapshot;
     flush_output(g);
     st->loadRam = 0;
 }

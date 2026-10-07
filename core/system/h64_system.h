@@ -152,6 +152,21 @@ static inline void h64_jit_notify_write(H64System *sys, u32 paddr, u32 len)
 
 static inline u64 h64_prof_now(const H64System *sys) { return sys->profClock ? sys->profClock() : 0; }
 
+// HLE and LLE RSP time spent on the CPU thread, to leave out of what a caller
+// measures (the workers add theirs to the same counters while the CPU runs).
+static inline u64 h64_prof_nested(const H64System *sys)
+{
+    return (sys->asyncStart ? 0 : sys->prof[H64_PROF_GFX_HLE]) + (sys->asyncAudioStart ? 0 : sys->prof[H64_PROF_AUDIO_HLE]) +
+           sys->prof[H64_PROF_RSP_LLE];
+}
+
+// Adds the time since t0 minus the nested time since `nested` (h64_prof_nested at t0) to prof[slot].
+static inline void h64_prof_add_outer(H64System *sys, int slot, u64 t0, u64 nested)
+{
+    u64 spent = h64_prof_now(sys) - t0, inner = h64_prof_nested(sys) - nested;
+    sys->prof[slot] += spent > inner ? spent - inner : 0;
+}
+
 // Interrupt lines.
 void h64_mi_raise(H64System *sys, u32 bits);
 void h64_mi_clear(H64System *sys, u32 bits);

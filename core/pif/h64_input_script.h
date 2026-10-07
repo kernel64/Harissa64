@@ -21,7 +21,7 @@ struct H64InputEvent
 
 struct H64InputScript
 {
-    H64InputEvent events[64];
+    H64InputEvent events[256];
     int count;
 };
 
