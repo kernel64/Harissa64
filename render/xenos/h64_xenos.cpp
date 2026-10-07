@@ -237,7 +237,7 @@ enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2 };
 static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c)
 {
     sprintf_s(out, len,
-              "  comb = float4(saturate((%s - %s) * %s + %s), saturate((%s - %s) * %s + %s));\n",
+              "  comb = float4(float3(saturate((%s - %s) * %s + %s)), saturate((%s - %s) * %s + %s));\n",
               rgb_a(c->rgbMulAdd), rgb_b(c->rgbMulSub), rgb_c(c->rgbMul), rgb_d(c->rgbAdd), a_abd(c->aMulAdd),
               a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
 }
@@ -767,13 +767,15 @@ static void set_depth(Xenos *x, int hasDepth)
     x->dev->SetRenderState(D3DRS_ZENABLE, test || update ? TRUE : FALSE);
     x->dev->SetRenderState(D3DRS_ZFUNC, test ? D3DCMP_LESSEQUAL : D3DCMP_ALWAYS);
     x->dev->SetRenderState(D3DRS_ZWRITEENABLE, update && st->zMode != 3 ? TRUE : FALSE);
-    if (st->zMode == 3)
+    if (st->zMode == 3 || st->zMode == 2)
     {
         // Decal: the N64 passes a pixel whose depth is within the surface's
-        // own slope (dz) of the stored one. A bias of a few depth slopes (the
+        // own slope (dz) of the stored one. Translucent surfaces (Z mode XLU)
+        // also pass within dz: OoT draws its paths as translucent layers on
+        // the ground mesh (Kokiri forest). A bias of a few depth slopes (the
         // N64 pixel is 3 render-target pixels wide) plus a constant keeps
-        // decals (Mario's shadow, OoT's ground overlays) on their surface
-        // instead of fighting with it.
+        // them on their surface instead of fighting with it (Mario's shadow,
+        // the paths appearing and vanishing as the camera moved).
         float bias = -0.0001f, slope = -6.0f;
         x->dev->SetRenderState(D3DRS_DEPTHBIAS, *(DWORD *)&bias);
         x->dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *(DWORD *)&slope);

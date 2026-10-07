@@ -45,7 +45,8 @@ int h64_jit_init(H64System *sys, void *execMem, u32 size, void (*flushIcache)(vo
     if (!j->blocks || !j->links || !j->codeMap) { free(j->blocks); free(j->links); free(j->codeMap); free(j); return -1; }
     j->runEnd = ~0ull;
     // Linked exits read sys->sched.next and sys->jit with 16-bit displacements.
-    if (offsetof(H64System, sched) + offsetof(H64Scheduler, next) > 32760 || offsetof(H64System, jit) > 32760)
+    if (offsetof(H64System, sched) + offsetof(H64Scheduler, next) > 32760 || offsetof(H64System, jit) > 32760 ||
+        offsetof(H64System, mi) > 32760)
     {
         H64_WARN("[jit] H64System fields out of reach of linked exits: block linking off");
         j->noLink = 1;

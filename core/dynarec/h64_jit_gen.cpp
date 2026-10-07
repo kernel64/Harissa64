@@ -32,6 +32,11 @@
 #include "../system/h64_system.h"
 
 #define FRAME 304
+
+// Fields generated code reaches with 16-bit displacements.
+static_assert(offsetof(H64System, mi) + 16 < 32768, "sys->mi out of displacement range");
+static_assert(offsetof(H64System, jit) < 32768, "sys->jit out of displacement range");
+static_assert(offsetof(H64Jit, codeMap) < 32768, "jit->codeMap out of displacement range");
 #define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 2048)
 
 // Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r27 branch taken, r26 jump target.
@@ -744,16 +749,15 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
     slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
     if (store)
     {
-        H64Jit *j = g->sys->jit;
         // No block over this 64-byte chunk (codeMap[paddr >> 6] == 0)...
-        ppc_li64(c, 6, (u64)(uintptr_t)j->codeMap);
+        load_ptr(g, 6, (s32)offsetof(H64System, jit), JR_SYS);
+        load_ptr(g, 6, (s32)offsetof(H64Jit, codeMap), 6);
         ppc_rlwinm(c, 5, 4, 32 - 5, 5, 30);     // (paddr >> 6) * 2
         ppc_lhzx(c, 5, 6, 5);
         ppc_cmpdi(c, 0, 5, 0);
         slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
         // ...and no MI repeat mode.
-        ppc_li64(c, 6, (u64)(uintptr_t)&g->sys->mi.mode);
-        ppc_lwz(c, 5, 0, 6);
+        ppc_lwz(c, 5, (s32)(offsetof(H64System, mi) + offsetof(H64Mi, mode)), JR_SYS);
         ppc_andi_(c, 5, 5, 0x80);
         slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
         if (fpu) fpu_access(g, rt, size, 1);   // the value to store, in r5
@@ -795,30 +799,58 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
 // Slow path shared by the native instructions that can leave their fast path:
 // the interpreter runs the instruction, then the block goes on with the
 // counters as the fast path leaves them (this instruction pending).
-static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow, u32 done)
+// The slow paths are emitted after the block's body (emit_cold_tails), so the
+// fast paths stay contiguous in the instruction cache; each one branches back
+// to the instruction after its fast path.
+struct ColdTail
+{
+    u32 slow[16], nSlow;
+    u32 pc, pend, back;
+    RegCache pre, post;
+};
+static ColdTail s_tails[H64_JIT_MAX_INSNS + 2];   // one block is compiled at a time
+static u32 s_nTails;
+
+static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow)
+{
+    ColdTail *t;
+    u32 i;
+    if (s_nTails >= H64_JIT_MAX_INSNS + 2) { g->c.overflow = 1; return; }
+    t = &s_tails[s_nTails++];
+    for (i = 0; i < nSlow && i < 16; i++) t->slow[i] = slow[i];
+    t->nSlow = nSlow < 16 ? nSlow : 16;
+    t->pc = pc;
+    t->pend = g->pending;
+    t->back = g->c.pos;
+    t->pre = g->pre;
+    t->post = g->rc;
+    g->pending++;
+}
+
+static void emit_cold_tails(Gen *g)
 {
     H64PpcCode *c = &g->c;
-    u32 i;
-    for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
+    u32 k, i;
+    for (k = 0; k < s_nTails; k++)
     {
-        u32 pend = g->pending;
-        if (g->cacheOn) rc_writeback(g, &g->pre);
-        call_interp_nc(g, pc);
-        if (g->cacheOn) rc_reload(g, &g->rc);
-        add_to(g, OFF_CYCLES, -(s32)((pend + 1) * g->cpi));
-        add_to(g, OFF_INSNS, -(s32)(pend + 1));
-        g->pending = pend;
+        const ColdTail *t = &s_tails[k];
+        for (i = 0; i < t->nSlow; i++) ppc_patch_here(c, t->slow[i]);
+        g->pending = t->pend;
+        if (g->cacheOn) rc_writeback(g, &t->pre);
+        call_interp_nc(g, t->pc);
+        if (g->cacheOn) rc_reload(g, &t->post);
+        add_to(g, OFF_CYCLES, -(s32)((t->pend + 1) * g->cpi));
+        add_to(g, OFF_INSNS, -(s32)(t->pend + 1));
+        ppc_put(c, 0x48000000u | ((u32)((s32)(t->back - c->pos) * 4) & 0x03FFFFFCu));   // b back
     }
-    ppc_patch_here(c, done);
-    g->pending++;
+    s_nTails = 0;
 }
 
 static int emit_mem(Gen *g, u32 op, u32 pc)
 {
-    u32 slow[8], nSlow = 0, done;
+    u32 slow[8], nSlow = 0;
     if (!emit_mem_fast(g, op, slow, &nSlow)) return 0;
-    done = ppc_b_fwd(&g->c);
-    emit_slow_tail(g, pc, slow, nSlow, done);
+    emit_slow_tail(g, pc, slow, nSlow);
     return 1;
 }
 
@@ -857,10 +889,9 @@ static int emit_ovf_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
 
 static int emit_ovf(Gen *g, u32 op, u32 pc)
 {
-    u32 slow[1], nSlow = 0, done;
+    u32 slow[1], nSlow = 0;
     if (!emit_ovf_fast(g, op, slow, &nSlow)) return 0;
-    done = ppc_b_fwd(&g->c);
-    emit_slow_tail(g, pc, slow, nSlow, done);
+    emit_slow_tail(g, pc, slow, nSlow);
     return 1;
 }
 
@@ -1155,10 +1186,9 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
 
 static int emit_fpu(Gen *g, u32 op, u32 pc)
 {
-    u32 slow[16], nSlow = 0, done;
+    u32 slow[16], nSlow = 0;
     if (!emit_fpu_fast(g, op, slow, &nSlow)) return 0;
-    done = ppc_b_fwd(&g->c);
-    emit_slow_tail(g, pc, slow, nSlow, done);
+    emit_slow_tail(g, pc, slow, nSlow);
     return 1;
 }
 
@@ -1476,6 +1506,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     sys->cpu.jitFpMin[0] = ldexp(1.0, -126);
     sys->cpu.jitFpMin[1] = ldexp(1.0, -1022);
 
+    s_nTails = 0;
     emit_prologue(&g);
     bodyAt = g.c.pos;
     for (i = 0; i < n; i++)
@@ -1514,6 +1545,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         if (ends_block(ops[n - 1])) exit_block(&g);   // COP0: the mode may have changed
         else link_exit(&g, pc + n * 4);
     }
+    emit_cold_tails(&g);
     for (i = 0; i < g.nExits; i++) ppc_patch_here(&g.c, g.exits[i]);
     emit_epilogue(&g);
     if (g.c.overflow)

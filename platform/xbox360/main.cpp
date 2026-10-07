@@ -87,6 +87,37 @@ static void BenchCodeMemory(void)
     QueryPerformanceCounter(&c);
     H64_INFO("[jit] code memory: 1.6M nops in %.2f ms (generated, .jitc) vs %.2f ms (.text)",
              (double)(b.QuadPart - a.QuadPart) * 1000.0 / f.QuadPart, (double)(c.QuadPart - b.QuadPart) * 1000.0 / f.QuadPart);
+
+    // Locality: a chain of 2048 one-instruction blocks ("b next") laid out at
+    // different strides through the code cache. The time per hop shows what a
+    // jump to code far away costs (instruction cache, L2, address translation).
+    {
+        static const u32 strides[4] = { 128, 1024, 4096, 8192 };
+        char line[200];
+        size_t len = 0;
+        u32 s;
+        line[0] = 0;
+        for (s = 0; s < 4; s++)
+        {
+            u32 stride = strides[s], hops = 2048, words = stride / 4, h, rep;
+            BenchFn chain = (BenchFn)(void *)s_jitMem;
+            if ((u64)hops * stride + 4096 > JIT_BYTES) hops = (JIT_BYTES - 4096) / stride;
+            for (h = 0; h < hops; h++)
+            {
+                u32 *w = s_jitMem + h * words;
+                *w = h + 1 < hops ? 0x48000000u | (stride & 0x03FFFFFCu) : 0x4E800020u;   // b +stride / blr
+                FlushIcache(w, 4);
+            }
+            chain(0);   // warm up
+            QueryPerformanceCounter(&a);
+            for (rep = 0; rep < 50; rep++) chain(0);
+            QueryPerformanceCounter(&b);
+            len += _snprintf(line + len, sizeof(line) - len, "%s%u B: %.1f ns", s ? ", " : "", stride,
+                             (double)(b.QuadPart - a.QuadPart) * 1e9 / f.QuadPart / (50.0 * hops));
+        }
+        line[sizeof(line) - 1] = 0;
+        H64_INFO("[jit] code locality, per jump between blocks %s", line);
+    }
 }
 
 static FILE *s_log = NULL;

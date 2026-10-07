@@ -470,6 +470,11 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                (unsigned long long)(sys->cpu.instructions - sys->jit->stats.idleSkipped),
                (unsigned long long)sys->jit->stats.idleSkipped, (unsigned long long)sys->jit->stats.blocksRun,
                (unsigned long long)sys->jit->stats.helperCalls);
+    if (sys->jit)
+        printf("[jit] code: %u bytes in use for %u live blocks, %llu instructions compiled (%llu native), %llu flushes\n",
+               sys->jit->memUsed, sys->jit->blockCount,
+               (unsigned long long)(sys->jit->stats.nativeInsns + sys->jit->stats.helperInsns),
+               (unsigned long long)sys->jit->stats.nativeInsns, (unsigned long long)sys->jit->stats.flushes);
     if (sys->jit && sys->jit->opHist)
     {
         // The most frequent instructions that ran through the interpreter helper.
