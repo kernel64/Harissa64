@@ -768,11 +768,20 @@ static void set_depth(Xenos *x, int hasDepth)
     x->dev->SetRenderState(D3DRS_ZWRITEENABLE, update && st->zMode != 3 ? TRUE : FALSE);
     if (st->zMode == 3)
     {
-        float bias = -0.00002f;
+        // Decal: the N64 passes a pixel whose depth is within the surface's
+        // own slope (dz) of the stored one. A bias of a few depth slopes (the
+        // N64 pixel is 3 render-target pixels wide) plus a constant keeps
+        // decals (Mario's shadow, OoT's ground overlays) on their surface
+        // instead of fighting with it.
+        float bias = -0.0001f, slope = -6.0f;
         x->dev->SetRenderState(D3DRS_DEPTHBIAS, *(DWORD *)&bias);
+        x->dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *(DWORD *)&slope);
     }
     else
+    {
         x->dev->SetRenderState(D3DRS_DEPTHBIAS, 0);
+        x->dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
+    }
 }
 
 static void set_alpha_test(Xenos *x)
