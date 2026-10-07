@@ -68,7 +68,8 @@ struct H64Jit
     u16 *codeMap;                   // live blocks over each 64-byte RDRAM chunk (stores there take the slow path)
 
     u8 *mem;                        // executable code memory (from the platform)
-    u32 memSize, memUsed;
+    u32 memSize, memUsed;           // hot code grows from the start...
+    u32 coldBase, coldUsed;         // ...and the slow paths from coldBase (half of the memory)
     void (*flushIcache)(void *addr, u32 len);
 
     H64JitBlock *blocks;            // block pool
@@ -84,6 +85,7 @@ struct H64Jit
     u32 *rtCheck[2][4];             // [store][log2 size]: r3 = address -> r4 = physical, cr0.eq = fast path
     u32 *rtFpCheck[2][2];           // [double][two operands]: f1 (and f2) normal, zero or infinite -> cr0.eq
     u32 *rtFpFinish[3];             // [result: none, single, double]: FPSCR and FCR31 after an operation -> cr0.eq
+    u32 *rtSlow;                    // a slow path's interpreter call (see h64_jit_emit_runtime)
 
     // Block linking: exits with a fixed target jump straight into the next
     // block's body once it has been compiled (see h64_jit_gen.cpp).

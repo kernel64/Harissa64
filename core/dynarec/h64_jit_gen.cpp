@@ -361,19 +361,20 @@ static void link_exit(Gen *g, u32 targetPc)
 
 // Not linked yet (cold, after the body): tell the dispatcher where the exit is
 // and where it goes (r5 = sys->jit), then leave.
-static void emit_cold_links(Gen *g)
+static void emit_cold_links(Gen *g, H64PpcCode *hot)
 {
     H64PpcCode *c = &g->c;
     u32 k;
     for (k = 0; k < s_nLinkTails; k++)
     {
         u32 patchAt = s_linkTails[k].patchAt;
-        ppc_patch_here(c, patchAt);
+        s32 off = (s32)((const u8 *)(c->buf + c->pos) - (const u8 *)(hot->buf + patchAt));
+        if (patchAt < hot->cap) hot->buf[patchAt] = 0x48000000u | ((u32)off & 0x03FFFFFCu);
 #if defined(H64_JIT_ABI_XBOX)
-        ppc_li32u(c, 3, (u32)(uintptr_t)(c->buf + patchAt));
+        ppc_li32u(c, 3, (u32)(uintptr_t)(hot->buf + patchAt));
         ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
 #else
-        ppc_li64(c, 3, (u64)(uintptr_t)(c->buf + patchAt));
+        ppc_li64(c, 3, (u64)(uintptr_t)(hot->buf + patchAt));
         ppc_std(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
 #endif
         ppc_li32u(c, 3, s_linkTails[k].target);
@@ -542,6 +543,62 @@ void h64_jit_emit_runtime(H64System *sys)
             }
             ppc_blr(c);
         }
+    // Slow path call: r4 = the instruction's pc, r5 = the instruction, r9 =
+    // pending instructions before it, r10 = their cycles, r11 = cycles per
+    // instruction. Syncs cycles/instructions/pc as call_interp does, runs the
+    // interpreter for that instruction, and returns cr0.ne when the block must
+    // stop (state left as the interpreter made it), else takes the counters
+    // back to the fast path's view (this instruction pending) and returns eq.
+    // LR and the counts are kept in the block's frame (free bytes 112..151).
+    {
+        H64PpcCode *c = &g.c;
+        u32 stop;
+        j->rtSlow = c->buf + c->pos;
+        ppc_mflr(c, 0);
+        ppc_std(c, 0, 120, 1);
+        ppc_ld(c, 3, OFF_CYCLES, JR_CPU);
+        ppc_add(c, 3, 3, 10);
+        ppc_add(c, 10, 10, 11);                     // to take back: pending + 1 instructions
+        ppc_std(c, 10, 128, 1);
+        ppc_std(c, 3, OFF_CYCLES, JR_CPU);
+        ppc_ld(c, 3, OFF_INSNS, JR_CPU);
+        ppc_add(c, 3, 3, 9);
+        ppc_addi(c, 9, 9, 1);
+        ppc_std(c, 9, 136, 1);
+        ppc_std(c, 3, OFF_INSNS, JR_CPU);
+        ppc_extsw(c, 3, 4);
+        ppc_std(c, 3, OFF_PC, JR_CPU);
+        ppc_addi(c, 3, 3, 4);
+        ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
+        ppc_li(c, 3, 0);
+        ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+        ppc_mr(c, 3, JR_SYS);
+        ppc_addi(c, 4, 4, 4);                       // expectedNext
+        ppc_li(c, 6, 1);
+#if defined(H64_JIT_ABI_ELFV1)
+        ppc_ld(c, 0, 0, JR_TMP);
+        ppc_ld(c, 2, 8, JR_TMP);
+        ppc_mtctr(c, 0);
+#else
+        ppc_mtctr(c, JR_TMP);
+#endif
+        ppc_bctrl(c);
+        ppc_ld(c, 0, 120, 1);
+        ppc_mtlr(c, 0);
+        ppc_cmpwi(c, 0, 3, 0);
+        stop = ppc_bc_fwd(c, 4, 0, PPC_EQ);         // bne: stop, nothing taken back
+        ppc_ld(c, 3, OFF_CYCLES, JR_CPU);
+        ppc_ld(c, 4, 128, 1);
+        ppc_subf(c, 3, 4, 3);
+        ppc_std(c, 3, OFF_CYCLES, JR_CPU);
+        ppc_ld(c, 3, OFF_INSNS, JR_CPU);
+        ppc_ld(c, 4, 136, 1);
+        ppc_subf(c, 3, 4, 3);
+        ppc_std(c, 3, OFF_INSNS, JR_CPU);
+        ppc_cmpw(c, 0, 3, 3);                       // eq
+        ppc_patch_here(c, stop);
+        ppc_blr(c);
+    }
     // FP operand checks: f4 = smallest normal number of the format, f5 = 0;
     // f1 (and f2) must be normal, zero or infinite (no NaN, no denormal).
     {
@@ -1008,6 +1065,8 @@ struct ColdTail
 {
     u32 slow[16], nSlow;
     u32 pc, pend, back;
+    u32 veneer;           // hot word: b <the tail in the cold region>
+    u32 *coldStart;
     RegCache pre, post;
 };
 static ColdTail s_tails[H64_JIT_MAX_INSNS + 2];   // one block is compiled at a time
@@ -1029,28 +1088,58 @@ static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow)
     g->pending++;
 }
 
-static void emit_cold_tails(Gen *g)
+// Hot side: the slow branches of each tail go to a one-word veneer at the end
+// of the block (conditional branches reach +-32 KB), filled in later.
+static void emit_cold_veneers(Gen *g)
 {
     H64PpcCode *c = &g->c;
     u32 k, i;
     for (k = 0; k < s_nTails; k++)
     {
-        const ColdTail *t = &s_tails[k];
+        ColdTail *t = &s_tails[k];
         for (i = 0; i < t->nSlow; i++) ppc_patch_here(c, t->slow[i]);
-        g->pending = t->pend;
+        t->veneer = c->pos;
+        ppc_put(c, 0x48000000u);
+    }
+}
+
+// Cold side (g->c is the cold buffer here, hot the block's buffer).
+static void emit_cold_tails(Gen *g, H64PpcCode *hot)
+{
+    H64PpcCode *c = &g->c;
+    u32 k;
+    for (k = 0; k < s_nTails; k++)
+    {
+        ColdTail *t = &s_tails[k];
+        t->coldStart = c->buf + c->pos;
         if (g->cacheOn) rc_writeback(g, &t->pre);
-        call_interp_nc(g, t->pc);
+        ppc_li32u(c, 4, t->pc);
+        ppc_li32u(c, 5, h64_load_be32(g->sys->rdram + g->paddr0 + (t->pc - g->pc0)));
+        ppc_li(c, 9, (s32)t->pend);
+        ppc_li(c, 10, (s32)(t->pend * g->cpi));
+        ppc_li(c, 11, (s32)g->cpi);
+        ppc_branch_to(c, g->sys->jit->rtSlow, 1);
+        add_exit(g, ppc_bc_fwd(c, 4, 0, PPC_EQ));   // bne exit
         if (g->cacheOn) rc_reload(g, &t->post);
-        add_to(g, OFF_CYCLES, -(s32)((t->pend + 1) * g->cpi));
-        add_to(g, OFF_INSNS, -(s32)(t->pend + 1));
-        ppc_put(c, 0x48000000u | ((u32)((s32)(t->back - c->pos) * 4) & 0x03FFFFFCu));   // b back
+        ppc_branch_to(c, hot->buf + t->back, 0);   // back to the fast path's end
+    }
+}
+
+static void fill_cold_veneers(H64PpcCode *hot)
+{
+    u32 k;
+    for (k = 0; k < s_nTails; k++)
+    {
+        const ColdTail *t = &s_tails[k];
+        s32 off = (s32)((const u8 *)t->coldStart - (const u8 *)(hot->buf + t->veneer));
+        if (t->veneer < hot->cap) hot->buf[t->veneer] = 0x48000000u | ((u32)off & 0x03FFFFFCu);
     }
     s_nTails = 0;
 }
 
 static int emit_mem(Gen *g, u32 op, u32 pc)
 {
-    u32 slow[8], nSlow = 0;
+    u32 slow[16], nSlow = 0;
     if (!emit_mem_fast(g, op, slow, &nSlow)) return 0;
     emit_slow_tail(g, pc, slow, nSlow);
     return 1;
@@ -1617,7 +1706,8 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     H64Jit *j = sys->jit;
     H64JitBlock *b;
     Gen g;
-    u32 ops[H64_JIT_MAX_INSNS], n = 0, i, bodyAt;
+    u32 ops[H64_JIT_MAX_INSNS], n = 0, i, bodyAt, coldWords = 0;
+    int coldOverflow = 0;
     u32 pageEnd = (paddr | 0xFFF) + 1;
     int endsWithBranch = 0;
     u8 *start;
@@ -1643,7 +1733,8 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     }
     if (n == 0) return 0;
 
-    if (j->blockCount >= j->blockCap || j->memUsed + MAX_BLOCK_BYTES + 64 > j->memSize)
+    if (j->blockCount >= j->blockCap || j->memUsed + MAX_BLOCK_BYTES + 64 > j->coldBase ||
+        j->coldUsed + MAX_BLOCK_BYTES + 64 > j->memSize)
         h64_jit_reset(sys);
 
     j->memUsed = (j->memUsed + 15) & ~15u;
@@ -1702,12 +1793,29 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         if (ends_block(ops[n - 1])) exit_block(&g);   // COP0: the mode may have changed
         else link_exit(&g, pc + n * 4);
     }
-    j->stats.hotBytes += g.c.pos * 4;
-    emit_cold_tails(&g);
-    emit_cold_links(&g);
+    // The slow paths go to the cold region (they would dilute the hot code in
+    // the caches): veneers here, then the shared exit.
+    emit_cold_veneers(&g);
     for (i = 0; i < g.nExits; i++) ppc_patch_here(&g.c, g.exits[i]);
     ppc_branch_to(&g.c, j->rtExit, 0);   // the shared epilogue
-    if (g.c.overflow)
+    j->stats.hotBytes += g.c.pos * 4;
+    {
+        H64PpcCode hot = g.c;
+        g.c.buf = (u32 *)(j->mem + j->coldUsed);
+        g.c.pos = 0;
+        g.c.cap = MAX_BLOCK_BYTES / 4;
+        g.c.overflow = 0;
+        g.nExits = 0;
+        emit_cold_tails(&g, &hot);
+        emit_cold_links(&g, &hot);
+        for (i = 0; i < g.nExits; i++) ppc_patch_here(&g.c, g.exits[i]);
+        ppc_branch_to(&g.c, j->rtExit, 0);
+        fill_cold_veneers(&hot);
+        coldWords = g.c.pos;
+        coldOverflow = g.c.overflow;
+        g.c = hot;
+    }
+    if (g.c.overflow || coldOverflow)
     {
         H64_ERROR("[jit] block at %08X too large", pc);
         return 0;
@@ -1725,7 +1833,12 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     if (g.native) classify_idle(b, ops, n);
     b->fn = 0;
     j->memUsed = (u32)((start - j->mem) + g.c.pos * 4);
-    if (j->flushIcache) j->flushIcache(start, g.c.pos * 4);
+    if (j->flushIcache)
+    {
+        j->flushIcache(start, g.c.pos * 4);
+        if (coldWords) j->flushIcache(j->mem + j->coldUsed, coldWords * 4);
+    }
+    j->coldUsed = (j->coldUsed + coldWords * 4 + 15) & ~15u;
 
     b->hashNext = j->hash[(pc >> 2) & 8191];
     j->hash[(pc >> 2) & 8191] = b;
@@ -1733,7 +1846,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     j->pageHead[paddr >> 12] = b;
     h64_jit_code_map(j, b, 1);
     j->stats.blocksCompiled++;
-    j->stats.codeBytes += g.c.pos * 4;
+    j->stats.codeBytes += (g.c.pos + coldWords) * 4;
     H64_DEBUG("[jit] block %08X (phys %06X): %u instructions, %u bytes, first %08X", pc, paddr, n, g.c.pos * 4, ops[0]);
     return b;
 }

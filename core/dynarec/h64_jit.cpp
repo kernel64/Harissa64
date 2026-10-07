@@ -24,6 +24,8 @@ void h64_jit_reset(H64System *sys)
     j->linkCount = 0;
     j->lastExit = 0;
     j->memUsed = 0;
+    j->coldBase = (j->memSize / 2) & ~63u;   // slow paths take about as much as the hot code
+    j->coldUsed = j->coldBase;
     h64_jit_emit_runtime(sys);   // sets memUsed past the shared code
     j->curInvalidated = 1;
     j->stats.flushes++;

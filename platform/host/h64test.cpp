@@ -62,7 +62,7 @@ extern "C" void __stack_chk_fail(void)
 
 static int enable_jit(H64System *sys)
 {
-    const u32 size = 32u << 20;
+    const u32 size = 16u << 20;   // as on the Xbox
     void *mem = exec_alloc(size);
     if (!mem || h64_jit_init(sys, mem, size, flush_icache))
     {
