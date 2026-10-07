@@ -1,6 +1,18 @@
 # Progress
 
-## Current milestone: M4 — HLE and the Xenos renderer (all parts done; final console test pending)
+## Current milestone: M5 — Platform and features (next)
+
+## M4 — HLE and the Xenos renderer (complete, 2026-10-07)
+
+Final console test (RGH, PAL games, 50 VI/s target), share of 2-second periods at 49 VI/s or more:
+
+| Game | 1 core | 2 cores (graphics worker) | 3 cores (+ audio worker) |
+|---|---|---|---|
+| SM64 | 94 % | - | 92 % |
+| MK64 | 89 % | - | 89 % |
+| OoT | 76 % | 82 % | 87 % |
+
+All three are playable with sound on 3 cores. In OoT's heaviest scenes (36–47 VI/s) the CPU thread runs ~13 ms a frame and then waits 8–11 ms for the graphics worker: the game waits for its display list, so the worker barely overlaps; the graphics time there is mostly texture lookups (3–6 ms: TMEM hashing on every memo miss) and the RDP state (1.5–2 ms). Audio: 1–7 underruns per 2 s in those scenes only (rate control at 0.93–0.95).
 
 | Part | Status |
 |---|---|
