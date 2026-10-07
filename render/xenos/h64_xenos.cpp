@@ -345,6 +345,19 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b)
         if (rows < 1) rows = 1;
         if (b->clampS && b->w > rowTexels) b->w = rowTexels;
         if (b->clampT && b->h > rows) b->h = rows;
+        // Wrapped in T over more lines than TMEM holds: line y reads the same
+        // TMEM words as line y mod (TMEM bytes / stride), so one such period is
+        // the whole texture (a power of two dividing the mask; at least 2 for
+        // the odd-line word swap).
+        {
+            u32 bytes = (t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 : 4096;
+            if (b->wrapT && stride && bytes % stride == 0)
+            {
+                u32 p = bytes / stride;
+                if (p < 2) p = 2;
+                if ((p & (p - 1)) == 0 && b->h > p && b->h % p == 0) b->h = p;
+            }
+        }
     }
 }
 
@@ -479,6 +492,14 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     x->textureBytes += e.w * e.h * 4;
     x->stats.textureUploads++;
     x->stats.texelsDecoded += b->w * b->h;
+    if (b->w * b->h >= 65536) x->stats.bigCount++;
+    if (b->w * b->h > x->stats.bigW * x->stats.bigH)
+    {
+        x->stats.bigW = b->w; x->stats.bigH = b->h;
+        x->stats.bigFmt = t->fmt; x->stats.bigSize = t->size; x->stats.bigStride = t->stride;
+        x->stats.bigMaskS = t->maskS; x->stats.bigMaskT = t->maskT; x->stats.bigFlags = t->flags;
+        x->stats.bigRect = x->win.active;
+    }
     return e.tex;
 }
 

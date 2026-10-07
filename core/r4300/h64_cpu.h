@@ -87,6 +87,8 @@ struct H64Cpu
     H64TlbEntry tlb[32];
 
     u64 cycles;        // PClock cycles since power-on
+    u32 cpi;           // PClock cycles per instruction (1 = the reference model; mupen64plus's
+                       // CountPerOp N is 2N: fewer instructions per frame in busy-wait loops)
     u64 instructions;  // executed instructions (statistics)
     int exceptionRaised;
 

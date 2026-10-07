@@ -288,7 +288,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     const char *fbPng = 0, *rawPng = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 traceFrames = 0, traceStep = 0;
-    int jitOps = 0, noJitFpu = 0;
+    int jitOps = 0, noJitFpu = 0, cpi = 1;
     H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
@@ -330,6 +330,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--no-fpu-flags")) h64_fenv_disable_host_flags();
         else if (!strcmp(argv[i], "--jit-ops")) jitOps = 1;
         else if (!strcmp(argv[i], "--no-jit-fpu")) noJitFpu = 1;
+        else if (!strcmp(argv[i], "--cpi") && i + 1 < argc) cpi = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hle")) { hleGfx = 1; hleAudio = 1; }
@@ -349,8 +350,10 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         ref->options.hleAudio = hleAudio == 1;
         ref->options.hleGfx = hleGfx;
         ref->padHook = apply_input;
+        ref->cpu.cpi = (u32)(cpi > 0 ? cpi : 1);
         useJit = 1;
     }
+    sys->cpu.cpi = (u32)(cpi > 0 ? cpi : 1);
     free(file);
     if (info) { h64_system_free(sys); free(sys); return 0; }
     if (useJit && enable_jit(sys)) return 2;
@@ -458,6 +461,11 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     printf("[run] %u frames, %.2f emulated s, %llu instructions, %u RSP tasks (%u HLE), %llu RSP instructions, %llu RDP commands\n",
            sys->vi.frames, (double)sys->cpu.cycles / 93750000.0, (unsigned long long)sys->cpu.instructions,
            sys->rsp.tasks, sys->rsp.hleTasks, (unsigned long long)sys->rsp.instructions, (unsigned long long)sys->dpCommands);
+    if (sys->jit)
+        printf("[jit] %llu instructions executed, %llu skipped in idle loops, %llu blocks run, %llu interpreted\n",
+               (unsigned long long)(sys->cpu.instructions - sys->jit->stats.idleSkipped),
+               (unsigned long long)sys->jit->stats.idleSkipped, (unsigned long long)sys->jit->stats.blocksRun,
+               (unsigned long long)sys->jit->stats.helperCalls);
     if (sys->jit && sys->jit->opHist)
     {
         // The most frequent instructions that ran through the interpreter helper.

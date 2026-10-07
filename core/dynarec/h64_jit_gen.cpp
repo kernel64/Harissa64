@@ -116,6 +116,7 @@ struct Gen
     u32 nExits;
     int native;       // native code allowed (kernel-mode block)
     int fpu;          // native FPU arithmetic allowed (host FPU flags readable)
+    u32 cpi;          // cycles per instruction (sys->cpu.cpi)
 };
 
 static void add_exit(Gen *g, u32 at) { if (g->nExits < H64_JIT_MAX_INSNS * 4) g->exits[g->nExits++] = at; }
@@ -142,7 +143,7 @@ static void add_to(Gen *g, s32 off, s32 n)
 // cycles/instructions += pending; pc = next; nextPc = next + 4; branchPending = 0.
 static void sync_to(Gen *g, u32 pending, u32 next)
 {
-    add_to(g, OFF_CYCLES, (s32)pending);
+    add_to(g, OFF_CYCLES, (s32)(pending * g->cpi));
     add_to(g, OFF_INSNS, (s32)pending);
     ppc_li64(&g->c, 3, sext32(next));
     ppc_std(&g->c, 3, OFF_PC, JR_CPU);
@@ -561,7 +562,7 @@ static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow, u32 done)
     {
         u32 pend = g->pending;
         call_interp(g, pc);
-        add_to(g, OFF_CYCLES, -(s32)(pend + 1));
+        add_to(g, OFF_CYCLES, -(s32)((pend + 1) * g->cpi));
         add_to(g, OFF_INSNS, -(s32)(pend + 1));
         g->pending = pend;
     }
@@ -992,7 +993,7 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
     // The delay slot.
     if (g->native && !is_branch(ds) && !ends_block(ds) && (emit_alu(g, ds) ? (g->pending++, 1) : 0))
     {
-        add_to(g, OFF_CYCLES, (s32)g->pending);
+        add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
         add_to(g, OFF_INSNS, (s32)g->pending);
         store_branch_pc(g, dynamicTarget, target, dsPc + 4);
         ppc_li(c, 3, 0);
@@ -1009,7 +1010,7 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
         u32 pend = g->pending;
         if (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) || emit_fpu_fast(g, ds, slow, &nSlow))
         {
-            add_to(g, OFF_CYCLES, (s32)(pend + 1));
+            add_to(g, OFF_CYCLES, (s32)((pend + 1) * g->cpi));
             add_to(g, OFF_INSNS, (s32)(pend + 1));
             store_branch_pc(g, dynamicTarget, target, dsPc + 4);
             ppc_li(c, 3, 0);
@@ -1021,7 +1022,7 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
     }
     // Otherwise the interpreter runs the slot, as it would after the branch:
     // pc = slot, nextPc = target or fall-through, branchPending = 1.
-    add_to(g, OFF_CYCLES, (s32)g->pending);
+    add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
     add_to(g, OFF_INSNS, (s32)g->pending);
     g->pending = 0;
     store_branch_pc(g, dynamicTarget, target, dsPc + 4);   // pc = target/fallthrough (temporarily)
@@ -1117,6 +1118,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     g.c.cap = MAX_BLOCK_BYTES / 4;
     g.pc0 = pc;
     g.paddr0 = paddr;
+    g.cpi = sys->cpu.cpi ? sys->cpu.cpi : 1;
     g.native = h64_jit_kernel_mode(&sys->cpu) && !j->noNative;
     g.fpu = g.native && !j->noFpu && h64_fenv_reliable();
     sys->cpu.jitFpMin[0] = ldexp(1.0, -126);

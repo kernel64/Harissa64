@@ -152,13 +152,13 @@ void h64_jit_run_one(H64System *sys)
         }
     }
     // Run the block only if no event falls inside it; otherwise one step.
-    if (sys->sched.next < cpu->cycles + b->insns)
+    if (sys->sched.next < cpu->cycles + (u64)b->insns * cpu->cpi)
     {
         h64_cpu_step(sys);
         j->stats.interpSteps++;
         return;
     }
-    j->blockEndCycles = cpu->cycles + b->insns;
+    j->blockEndCycles = cpu->cycles + (u64)b->insns * cpu->cpi;
     j->curPage = b->paddr >> 12;
     j->curInvalidated = 0;
     j->stats.blocksRun++;
@@ -170,7 +170,7 @@ void h64_jit_run_one(H64System *sys)
     if (b->idle && b->valid && cpu->pc == (u64)(s64)(s32)b->vpc && !cpu->branchPending && !interrupt_pending(cpu) &&
         sys->sched.next != H64_NEVER && sys->sched.next > cpu->cycles)
     {
-        u64 k = (sys->sched.next - cpu->cycles) / b->insns;
+        u64 k = (sys->sched.next - cpu->cycles) / ((u64)b->insns * cpu->cpi);
         if (b->idle == 2)
         {
             // The polled address must be plain RDRAM (a register read could have side effects).
@@ -182,7 +182,7 @@ void h64_jit_run_one(H64System *sys)
         if (k > (1u << 24)) k = 1u << 24;
         if (k)
         {
-            cpu->cycles += k * b->insns;
+            cpu->cycles += k * b->insns * cpu->cpi;
             cpu->instructions += k * b->insns;
             j->stats.idleSkipped += k * b->insns;
         }

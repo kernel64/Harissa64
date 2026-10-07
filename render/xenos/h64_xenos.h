@@ -47,6 +47,9 @@ struct H64XenosStats
     u32 triangles, rects, fills, draws;
     u32 textureUploads, textureCreates, shaderCompiles, presents, copyBacks, fbSwitches;
     u32 texelsDecoded;
+    // The largest texture decoded: its size, tile (fmt, size, stride, masks, flags) and source
+    // (0 triangle, 1 rectangle).
+    u32 bigW, bigH, bigFmt, bigSize, bigStride, bigMaskS, bigMaskT, bigFlags, bigRect, bigCount;
     // Time (sys->profClock ticks) in the software RDP state, texture lookups and
     // decoding, draw calls, and the RDP command handler as a whole.
     u64 tState, tTexture, tDraw, tRdp;

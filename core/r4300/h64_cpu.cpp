@@ -20,6 +20,7 @@ static void record_jump(H64Cpu *cpu, u64 target);
 void h64_cpu_reset(H64Cpu *cpu)
 {
     u64 cycles = cpu->cycles;
+    u32 cpi = cpu->cpi ? cpu->cpi : 1;
     void (*hook)(void *, int) = cpu->excHook;
     void (*watch)(void *) = cpu->watchHook;
     void (*jhook)(void *, u32, u32) = cpu->jumpHook;
@@ -29,6 +30,7 @@ void h64_cpu_reset(H64Cpu *cpu)
     void *hookUser = cpu->excUser;
     memset(cpu, 0, sizeof(*cpu));
     cpu->cycles = cycles;
+    cpu->cpi = cpi;
     cpu->excHook = hook;
     cpu->watchHook = watch;
     cpu->jumpHook = jhook;
@@ -1025,19 +1027,19 @@ static void step(H64System *sys, int haveOp, u32 op)
     if ((sr & SR_IE) && !(sr & (SR_EXL | SR_ERL)) && (cpu->cop0[CP0_CAUSE] & sr & SR_IM))
     {
         h64_cpu_exception(cpu, EXC_INT, 0x180);
-        cpu->cycles++;
+        cpu->cycles += cpu->cpi;
         return;
     }
 
     if (cpu->pc & 3)
     {
         address_error(cpu, cpu->pc, 0);
-        cpu->cycles++;
+        cpu->cycles += cpu->cpi;
         return;
     }
     if (!haveOp && (translate(cpu, cpu->pc, ACC_FETCH, &paddr) || h64_bus_read32(sys, paddr, &op)))
     {
-        cpu->cycles++;
+        cpu->cycles += cpu->cpi;
         return;
     }
 
@@ -1052,7 +1054,7 @@ static void step(H64System *sys, int haveOp, u32 op)
     cpu->nextPc += 4;
     execute(sys, op);
     cpu->gpr[0] = 0;
-    cpu->cycles++;
+    cpu->cycles += cpu->cpi;
     cpu->instructions++;
 }
 

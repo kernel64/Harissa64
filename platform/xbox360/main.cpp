@@ -48,6 +48,47 @@ static void FlushIcache(void *p, u32 size)
     __emit(0x4C00012C);   // isync
 }
 
+// Speed of the code memory: a loop of 16 nops generated at the end of
+// the code cache, against the same loop compiled into .text. A large ratio
+// would mean the .jitc pages run uncached.
+typedef u32 (*BenchFn)(u32 iterations);
+
+__declspec(noinline) static u32 BenchText(u32 n)
+{
+    u32 v = 0;
+    do
+    {
+        __emit(0x60000000); __emit(0x60000000); __emit(0x60000000); __emit(0x60000000);
+        __emit(0x60000000); __emit(0x60000000); __emit(0x60000000); __emit(0x60000000);
+        __emit(0x60000000); __emit(0x60000000); __emit(0x60000000); __emit(0x60000000);
+        __emit(0x60000000); __emit(0x60000000); __emit(0x60000000); __emit(0x60000000);
+        v++;
+    } while (v < n);
+    return v;
+}
+
+static void BenchCodeMemory(void)
+{
+    u32 *code = s_jitMem + (JIT_BYTES - 4096) / 4, i, k = 0;
+    LARGE_INTEGER f, a, b, c;
+    BenchFn fn = (BenchFn)(void *)code;
+    code[k++] = 0x38800000;                       // li r4, 0
+    code[k++] = 0x7C6903A6;                       // mtctr r3
+    for (i = 0; i < 16; i++) code[k++] = 0x60000000;   // nop (both loops: instruction fetch speed)
+    code[k++] = 0x4200FFC0;                       // bdnz -64
+    code[k++] = 0x7C832378;                       // mr r3, r4
+    code[k++] = 0x4E800020;                       // blr
+    FlushIcache(code, k * 4);
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&a);
+    fn(100000);
+    QueryPerformanceCounter(&b);
+    BenchText(100000);
+    QueryPerformanceCounter(&c);
+    H64_INFO("[jit] code memory: 1.6M nops in %.2f ms (generated, .jitc) vs %.2f ms (.text)",
+             (double)(b.QuadPart - a.QuadPart) * 1000.0 / f.QuadPart, (double)(c.QuadPart - b.QuadPart) * 1000.0 / f.QuadPart);
+}
+
 static FILE *s_log = NULL;
 static const char *s_logDrive = "game";   // where the log (and screenshots) go
 
@@ -80,6 +121,7 @@ struct Config
     u32 trace, traceStep;
     int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
+    int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
 };
 
@@ -106,6 +148,7 @@ static void LoadConfig(Config *c)
     c->xenia = 0;
     c->fpuFlags = 1;
     c->jitFpu = 1;
+    c->cpi = 1;
     c->exitAfter = 0;
     if (!f) return;
     while (fgets(line, sizeof(line), f))
@@ -124,6 +167,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
         else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
         else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
+        else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
@@ -242,6 +286,68 @@ static int FindRom(const Config *c, char *path, size_t len)
 }
 
 static int s_jitNoFpu;   // jitfpu=0
+static u32 s_cpi = 1;    // cpi=N
+
+// ---- N64 PC sampler (diagnosis): a thread on another hardware thread reads
+// the emulated PC every millisecond; [pc] lines give the hottest addresses
+// (busy-wait loops the recompiler does not skip show up there).
+#define PC_SLOTS 1024
+static volatile const u64 *s_samplePc;
+static volatile LONG s_samplerOn;
+static u32 s_pcKey[PC_SLOTS], s_pcCount[PC_SLOTS], s_pcSamples;
+
+static DWORD WINAPI PcSamplerThread(LPVOID)
+{
+    while (s_samplerOn)
+    {
+        u32 pc, h, n;
+        Sleep(1);
+        if (!s_samplePc) continue;
+        pc = (u32)*s_samplePc;
+        h = (pc >> 2) & (PC_SLOTS - 1);
+        for (n = 0; n < 8; n++, h = (h + 1) & (PC_SLOTS - 1))
+            if (s_pcCount[h] == 0 || s_pcKey[h] == pc) { s_pcKey[h] = pc; s_pcCount[h]++; break; }
+        s_pcSamples++;
+    }
+    return 0;
+}
+
+static void PcSamplerStart(H64System *sys)
+{
+    HANDLE h;
+    s_samplePc = &sys->cpu.pc;
+    if (s_samplerOn) return;
+    s_samplerOn = 1;
+    h = CreateThread(NULL, 0, PcSamplerThread, NULL, CREATE_SUSPENDED, NULL);
+    if (!h) { s_samplerOn = 0; return; }
+    XSetThreadProcessor(h, 5);
+    ResumeThread(h);
+    CloseHandle(h);
+}
+
+static void PcSamplerReport(void)
+{
+    u32 best[4] = { 0, 0, 0, 0 }, bestPc[4] = { 0, 0, 0, 0 }, i, k, total = s_pcSamples;
+    char line[160];
+    if (!total) return;
+    for (i = 0; i < PC_SLOTS; i++)
+        for (k = 0; k < 4; k++)
+            if (s_pcCount[i] > best[k])
+            {
+                u32 m;
+                for (m = 3; m > k; m--) { best[m] = best[m - 1]; bestPc[m] = bestPc[m - 1]; }
+                best[k] = s_pcCount[i];
+                bestPc[k] = s_pcKey[i];
+                break;
+            }
+    _snprintf(line, sizeof(line), "[pc] %u samples: %08X %u%%, %08X %u%%, %08X %u%%, %08X %u%%", total,
+              bestPc[0], best[0] * 100 / total, bestPc[1], best[1] * 100 / total, bestPc[2], best[2] * 100 / total,
+              bestPc[3], best[3] * 100 / total);
+    line[sizeof(line) - 1] = 0;
+    H64_INFO("%s", line);
+    memset(s_pcCount, 0, sizeof(s_pcCount));
+    s_pcSamples = 0;
+}
 
 static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
 {
@@ -255,6 +361,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
         return NULL;
     }
     if (sys->jit) sys->jit->noFpu = s_jitNoFpu;
+    sys->cpu.cpi = s_cpi;
     return sys;
 }
 
@@ -407,7 +514,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     u32 framesSincePerf = 0, presented = 0;
     LARGE_INTEGER t0, t1, t2;
     LONGLONG profRun = 0, profPresent = 0, profWait = 0;
-    u64 jitBlocks = 0, jitInval = 0, jitFlush = 0, jitHelper = 0;
+    u64 jitBlocks = 0, jitInval = 0, jitFlush = 0, jitHelper = 0, jitRun = 0, jitIdle = 0, jitSteps = 0, insnsPrev = 0;
     u64 instrAtPerf = 0;
 
     if (!FindRom(c, rom, sizeof(rom)))
@@ -470,11 +577,15 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         sys->renderer = NULL;
         h64_xenos_free(renderer);
         xb_audio_shutdown();
+        s_samplePc = NULL;
+        Sleep(5);
         FreeSystem(sys);
         return;
     }
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&frameStart);
+    if (!c->xenia) BenchCodeMemory();
+    PcSamplerStart(sys);
     for (;;)
     {
         int queued;
@@ -578,7 +689,22 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                          js ? (unsigned long long)(js->invalidations - jitInval) : 0ull,
                          js ? (unsigned long long)(js->flushes - jitFlush) : 0ull,
                          js ? (unsigned long long)((js->helperCalls - jitHelper) / framesSincePerf) : 0ull);
-                if (js) { jitBlocks = js->blocksCompiled; jitInval = js->invalidations; jitFlush = js->flushes; jitHelper = js->helperCalls; }
+                if (js)
+                {
+                    u64 ins = sys->cpu.instructions - insnsPrev, idle = js->idleSkipped - jitIdle;
+                    H64_INFO("[jit] per frame: %llu instructions executed, %llu skipped idle, %llu blocks run, %llu interpreter steps",
+                             (unsigned long long)((ins - idle) / framesSincePerf), (unsigned long long)(idle / framesSincePerf),
+                             (unsigned long long)((js->blocksRun - jitRun) / framesSincePerf),
+                             (unsigned long long)((js->interpSteps - jitSteps) / framesSincePerf));
+                    jitBlocks = js->blocksCompiled; jitInval = js->invalidations; jitFlush = js->flushes; jitHelper = js->helperCalls;
+                    jitRun = js->blocksRun; jitIdle = js->idleSkipped; jitSteps = js->interpSteps;
+                }
+                insnsPrev = sys->cpu.instructions;
+                if (xs.bigW)
+                    H64_INFO("[xtex] largest decode %ux%u (%u of 64K+ texels) fmt %u size %u stride %u mask %u/%u flags %X from a %s",
+                             xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
+                             xs.bigRect ? "rectangle" : "triangle");
+                PcSamplerReport();
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f, %u texels/frame) draw calls %.1f",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.texelsDecoded / framesSincePerf, xs.tDraw * k);
             }
@@ -592,6 +718,8 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     sys->renderer = NULL;
     h64_xenos_free(renderer);
     xb_audio_shutdown();
+    s_samplePc = NULL;
+    Sleep(5);
     FreeSystem(sys);
     if (s_crashed) MessageScreen(dev, "The game crashed", s_crashText, D3DCOLOR_XRGB(240, 60, 60));
 }
@@ -618,7 +746,9 @@ int __cdecl main()
     LoadConfig(&cfg);
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
     s_jitNoFpu = !cfg.jitFpu;
-    H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)");
+    s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 1;
+    H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s jitfpu=%d cpi=%d", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)",
+             cfg.jitFpu, cfg.cpi);
 
     failures = h64_run_all_unit_tests(&tests, &checks);
     _snprintf(status, sizeof(status), "Unit tests: %s\n%d tests, %d checks, %d failures",
