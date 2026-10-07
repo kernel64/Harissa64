@@ -620,7 +620,13 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     }
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&frameStart);
-    if (!c->xenia) BenchCodeMemory();
+    if (!c->xenia)
+    {
+        BenchCodeMemory();
+        // The benchmark wrote over the code memory, where the recompiler keeps its
+        // shared entry/exit code: rebuild it.
+        if (sys->jit) h64_jit_reset(sys);
+    }
     PcSamplerStart(sys);
     for (;;)
     {
