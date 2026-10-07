@@ -82,6 +82,8 @@ struct H64Jit
     void (*enter)(H64System *sys, u32 *body);   // an ELFv1 descriptor on ppc64 Linux
     u32 *rtExit;
     u32 *rtCheck[2][4];             // [store][log2 size]: r3 = address -> r4 = physical, cr0.eq = fast path
+    u32 *rtFpCheck[2][2];           // [double][two operands]: f1 (and f2) normal, zero or infinite -> cr0.eq
+    u32 *rtFpFinish[3];             // [result: none, single, double]: FPSCR and FCR31 after an operation -> cr0.eq
 
     // Block linking: exits with a fixed target jump straight into the next
     // block's body once it has been compiled (see h64_jit_gen.cpp).
