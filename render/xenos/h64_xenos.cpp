@@ -113,6 +113,7 @@ struct Xenos
     int targetBound;    // the N64 target is bound (not the back buffer)
 
     std::vector<u32> decodeBuf;
+    std::map<u64, int> modeLog;   // xenosdebug=4
     // Texels a rectangle samples on its tile (tile-relative, inclusive), so that
     // only that window is decoded: OoT's backgrounds (S2DEX, LLE) sample a strip
     // of tiles declared up to 1024x1024 (10 million texels decoded a frame).
@@ -807,8 +808,30 @@ static void set_alpha_test(Xenos *x)
 
 // Common setup of a combined (1/2-cycle) primitive. Returns the scales from
 // N64 pixels to the render target.
+// xenosdebug=4: log each new drawing mode once (combiner, other modes, depth,
+// tiles), up to 300 lines, to find what a scene draws with (diagnosis).
+static void log_mode(Xenos *x, int hasDepth, u32 tile)
+{
+    const H64RdpState *st = x->st;
+    const H64RdpTile *a = &st->tiles[tile & 7], *b = &st->tiles[(tile + 1) & 7];
+    u64 key = 0xCBF29CE484222325ull;
+    u32 v[8];
+    if (x->modeLog.size() >= 300) return;
+    v[0] = (u32)x->combineRaw; v[1] = (u32)(x->combineRaw >> 32); v[2] = st->rasterFlags; v[3] = st->depthBlendFlags;
+    v[4] = st->zMode | (hasDepth << 4) | (tile << 8); v[5] = st->blend[0][0] | st->blend[0][1] << 4 | st->blend[0][2] << 8 | st->blend[0][3] << 12 |
+                                       st->blend[1][0] << 16 | st->blend[1][1] << 20 | st->blend[1][2] << 24 | st->blend[1][3] << 28;
+    v[6] = a->fmt | a->size << 4 | a->maskS << 8 | a->maskT << 12 | a->shiftS << 16 | a->shiftT << 20 | a->flags << 24;
+    v[7] = b->fmt | b->size << 4 | b->maskS << 8 | b->maskT << 12 | b->shiftS << 16 | b->shiftT << 20 | b->flags << 24;
+    key = fnv64(key, (const u8 *)v, sizeof(v));
+    if (x->modeLog.find(key) != x->modeLog.end()) return;
+    x->modeLog[key] = 1;
+    H64_INFO("[mode] cc %08X%08X rf %08X db %08X z %u depth %d tile %u blend %08X t0 %07X t1 %07X prim %08X env %08X primlod %u",
+             v[1], v[0], v[2], v[3], st->zMode, hasDepth, tile, v[5], v[6], v[7], st->primColor, st->envColor, st->primLodFrac);
+}
+
 static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *tb1, u32 tile)
 {
+    if (x->debug == 4) log_mode(x, hasDepth, tile);
     const H64RdpState *st = x->st;
     int two = (st->rasterFlags & RS_MULTI_CYCLE) != 0;
     u32 flags = two ? KEY_TWO_CYCLE : 0;
