@@ -11,7 +11,7 @@
 
 #include "../../core/common/h64_types.h"
 
-#define XB_AUDIO_DEFAULT_MS 150   // V1 used 100: one underrun every 2 s on OoT (console A/B, 2026-10-08)
+#define XB_AUDIO_DEFAULT_MS 250   // user choice; V1 used 100: one underrun every 2 s on OoT (console A/B, 2026-10-08)
 
 int xb_audio_init(void);
 // Queue target (ini audioms=, 40..500): the pacing threshold and the fill the
@@ -25,7 +25,8 @@ void xb_audio_sink(void *user, const u8 *samples, u32 len, u32 rate);
 // a while, pace on the clock instead).
 int xb_audio_queued_ms(void);
 
-struct XbAudioStats { u32 buffers, underruns, fillMs, ratioPermille; };
+// playedHz: stereo frames the voice really played per second since the last reset.
+struct XbAudioStats { u32 buffers, underruns, fillMs, ratioPermille, playedHz; };
 void xb_audio_stats(XbAudioStats *out, int reset);
 
 #endif

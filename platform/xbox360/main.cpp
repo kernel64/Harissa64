@@ -29,7 +29,9 @@
 #include "../../core/savestate/h64_state.h"
 #include "../../render/xenos/h64_xenos.h"
 #include "../../tests/unit/unit_tests.h"
-#include "font8x8_basic.h"
+#include "xb_config.h"
+#include "xb_ui.h"
+#include "xb_menu.h"
 #include "xb_audio.h"
 
 // ---- Recompiler code memory (M0.3 result: only an image section linked
@@ -137,158 +139,15 @@ static void file_sink(int level, const char *line)
     }
 }
 
-// ---- Configuration ----
-struct Config
-{
-    char mode[32];
-    char cpu[32];
-    char rom[256];
-    int hle;
-    int softRenderer;
-    int xenosDebug;
-    u32 pauseAt;
-    H64InputScript input;   // input=SCRIPT: scripted controller 1 (h64test --input syntax) instead of the pad        // pauseat=N: hold the frame shown at VI N for 20 s (window captures in Xenia)     // xenosdebug=1..3: renderer debug output (h64_xenos_set_debug)   // renderer=soft: the software RDP draws into RDRAM, Xenos only shows RDRAM (diagnosis)
-    u32 shots[16];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)
-    int shotCount;
-    u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
-    u32 trace, traceStep;
-    int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
-    int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
-    int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
-    int smooth;         // smooth=0: no edge smoothing when frames are shown
-    int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
-    int asyncAudio;     // asyncaudio=0: audio HLE tasks on the CPU thread
-    u32 audioCycles;    // audiocycles=N: CPU cycles an asynchronous audio task keeps the RSP busy
-    u32 gfxCycles;      // gfxcycles=N: CPU cycles an asynchronous graphics task keeps the RSP busy
-    int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
-    int audioMs;        // audioms=N: audio queue target in ms (pacing threshold)
-    int stateSlot;      // stateslot=N: save state slot at start (1..9)
-    int loadState;      // loadstate=1: load the slot's state at start (scripted runs)
-    u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
-    int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
-};
-
-static void trim(char *s)
-{
-    size_t n = strlen(s);
-    while (n && (s[n - 1] == '\r' || s[n - 1] == '\n' || s[n - 1] == ' ' || s[n - 1] == '\t')) s[--n] = 0;
-}
+// ---- Configuration: xb_config.cpp ----
 
 static void LoadConfig(Config *c)
 {
-    FILE *f = fopen("game:\\harissa64v2.ini", "r");
-    char line[512];
-    strcpy(c->mode, "play");
-    strcpy(c->cpu, "dynarec");
-    c->rom[0] = 0;
-    c->hle = 1;
-    c->shotCount = 0;
-    c->softRenderer = 0;
-    c->xenosDebug = 0;
-    c->pauseAt = 0;
-    memset(&c->input, 0, sizeof(c->input));
-    c->trace = c->traceStep = 0;
-    c->xenia = 0;
-    c->fpuFlags = 1;
-    c->jitFpu = 1;
-    c->regCache = 1;
-    c->smooth = 1;
-    c->asyncGfx = 1;
-    c->asyncAudio = 1;
-    c->audioCycles = 100000;
-    c->gfxCycles = 400000;
-    c->cpi = 1;
-    c->exitAfter = 0;
-    c->audioMs = XB_AUDIO_DEFAULT_MS;
-    c->stateSlot = 1;
-    c->loadState = 0;
-    c->saveStateAt = 0;
-    if (!f) return;
-    while (fgets(line, sizeof(line), f))
-    {
-        char *eq = strchr(line, '=');
-        trim(line);
-        if (line[0] == '#' || line[0] == ';' || !eq) continue;
-        *eq = 0;
-        if (!strcmp(line, "mode")) { strncpy(c->mode, eq + 1, sizeof(c->mode) - 1); c->mode[sizeof(c->mode) - 1] = 0; }
-        else if (!strcmp(line, "cpu")) { strncpy(c->cpu, eq + 1, sizeof(c->cpu) - 1); c->cpu[sizeof(c->cpu) - 1] = 0; }
-        else if (!strcmp(line, "rom")) { strncpy(c->rom, eq + 1, sizeof(c->rom) - 1); c->rom[sizeof(c->rom) - 1] = 0; }
-        else if (!strcmp(line, "hle")) c->hle = atoi(eq + 1);
-        else if (!strcmp(line, "exitafter")) c->exitAfter = (u32)atoi(eq + 1);
-        else if (!strcmp(line, "stateslot")) c->stateSlot = atoi(eq + 1);
-        else if (!strcmp(line, "audioms")) c->audioMs = atoi(eq + 1);
-        else if (!strcmp(line, "loadstate")) c->loadState = atoi(eq + 1);
-        else if (!strcmp(line, "savestateat")) c->saveStateAt = (u32)atoi(eq + 1);
-        else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");
-        else if (!strcmp(line, "trace")) c->trace = (u32)atoi(eq + 1);
-        else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
-        else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
-        else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
-        else if (!strcmp(line, "regcache")) c->regCache = atoi(eq + 1);
-        else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
-        else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
-        else if (!strcmp(line, "asyncaudio")) c->asyncAudio = atoi(eq + 1);
-        else if (!strcmp(line, "audiocycles")) c->audioCycles = (u32)atoi(eq + 1);
-        else if (!strcmp(line, "gfxcycles")) c->gfxCycles = (u32)atoi(eq + 1);
-        else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
-        else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
-        else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
-        else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
-        else if (!strcmp(line, "tracestep")) c->traceStep = (u32)strtoul(eq + 1, NULL, 10);
-        else if (!strcmp(line, "shots"))
-        {
-            char *p = eq + 1;
-            while (*p && c->shotCount < 16)
-            {
-                c->shots[c->shotCount++] = (u32)strtoul(p, &p, 10);
-                while (*p == ',' || *p == ' ') p++;
-            }
-        }
-    }
-    fclose(f);
+    ConfigDefaults(c);
+    ConfigParseFile(c, "game:\\harissa64v2.ini");
 }
 
-// ---- Text through Clear rectangles ----
-#define MAX_RECTS 4096
-static D3DRECT s_rects[MAX_RECTS];
-static int s_rectCount;
-
-static void AddText(int x, int y, int scale, const char *text)
-{
-    int cx = x;
-    for (; *text; text++)
-    {
-        unsigned char c = (unsigned char)*text;
-        int row, col;
-        if (c == '\n') { y += 10 * scale; cx = x; continue; }
-        if (c >= 128) c = '?';
-        for (row = 0; row < 8; row++)
-        {
-            unsigned char bits = font8x8_basic[c][row];
-            for (col = 0; col < 8; col++)
-            {
-                if ((bits & (1 << col)) && s_rectCount < MAX_RECTS)   // bit 0 = leftmost pixel
-                {
-                    D3DRECT *r = &s_rects[s_rectCount++];
-                    r->x1 = cx + col * scale;
-                    r->y1 = y + row * scale;
-                    r->x2 = r->x1 + scale;
-                    r->y2 = r->y1 + scale;
-                }
-            }
-        }
-        cx += 8 * scale;
-    }
-}
-
-static void FlushText(IDirect3DDevice9 *dev, D3DCOLOR color)
-{
-    if (s_rectCount)
-        dev->Clear(s_rectCount, s_rects, D3DCLEAR_TARGET, color, 1.0f, 0);
-    s_rectCount = 0;
-}
-
-// Shows a message until BACK is pressed, then returns to the dashboard.
+// Shows a message until BACK is pressed (and released).
 static void MessageScreen(IDirect3DDevice9 *dev, const char *title, const char *text, D3DCOLOR color)
 {
     for (;;)
@@ -297,18 +156,20 @@ static void MessageScreen(IDirect3DDevice9 *dev, const char *title, const char *
         if (dev)
         {
             dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(14, 16, 26), 1.0f, 0);
-            AddText(96, 80, 6, "HARISSA64 V2");
-            FlushText(dev, D3DCOLOR_XRGB(220, 40, 30));
-            AddText(100, 170, 3, title);
-            FlushText(dev, D3DCOLOR_XRGB(230, 230, 230));
-            AddText(100, 240, 2, text);
-            FlushText(dev, color);
-            AddText(100, 640, 2, "Press BACK to return to the dashboard");
-            FlushText(dev, D3DCOLOR_XRGB(140, 140, 160));
+            UiText(dev, 96, 80, 6, D3DCOLOR_XRGB(220, 40, 30), "HARISSA64 V2");
+            UiText(dev, 100, 170, 3, D3DCOLOR_XRGB(230, 230, 230), title);
+            UiText(dev, 100, 240, 2, color, text);
+            UiText(dev, 100, 640, 2, D3DCOLOR_XRGB(140, 140, 160), "Press BACK to continue");
             dev->Present(NULL, NULL, NULL, NULL);
         }
         if (XInputGetState(0, &in) == ERROR_SUCCESS && (in.Gamepad.wButtons & XINPUT_GAMEPAD_BACK))
             break;
+        Sleep(16);
+    }
+    for (;;)
+    {
+        XINPUT_STATE in;
+        if (XInputGetState(0, &in) != ERROR_SUCCESS || !(in.Gamepad.wButtons & XINPUT_GAMEPAD_BACK)) break;
         Sleep(16);
     }
 }
@@ -806,12 +667,17 @@ static void Osd(const char *text)
     H64_INFO("[main] %s", text);
 }
 
+static int s_showFps;               // showfps=1: frames shown per second in the top-right corner
+static char s_fpsText[16];
+static UiMenu s_menu;
+static int s_menuOpen;              // the in-game menu is drawn over the frozen frame
+
 // Drawn by the renderer just before each present (on the graphics worker when it runs).
 static void OverlayHook(void *, IDirect3DDevice9 *dev)
 {
-    if (!s_osd[0] || (s32)(GetTickCount() - s_osdUntil) > 0) return;
-    AddText(64, 620, 3, s_osd);
-    FlushText(dev, D3DCOLOR_XRGB(255, 220, 60));
+    if (s_showFps && s_fpsText[0]) UiText(dev, 1180 - UiTextWidth(2, s_fpsText), 40, 2, D3DCOLOR_XRGB(255, 220, 60), s_fpsText);
+    if (s_menuOpen) UiMenuDraw(dev, &s_menu);
+    if (s_osd[0] && (s32)(GetTickCount() - s_osdUntil) <= 0) UiText(dev, 64, 620, 3, D3DCOLOR_XRGB(255, 220, 60), s_osd);
 }
 
 static void StatePath(char *out, size_t size)
@@ -858,8 +724,121 @@ static void LoadStateNow(H64System *sys)
     Osd(msg);
 }
 
-static void RunGame(IDirect3DDevice9 *dev, const Config *c)
+// ---- In-game menu ----
+// BACK pressed and released (without RB/LB/D-pad) pauses the game and shows
+// it over the frozen frame. Settings changed there apply at once (audio
+// margin, smoothing, FPS) or at the next start (CPU, RSP); they are saved
+// for all games (config\settings.ini) or for this game (config\<game>.ini).
+enum { RG_DASHBOARD = 0, RG_BROWSER, RG_CONTINUE };
+enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_SETTINGS, M_RESET, M_ROMS, M_DASHBOARD };
+static char s_settingsPath[160];    // <drive>:\config\settings.ini ("" when the menu files are not used)
+static char s_profilePath[160];     // <drive>:\config\<game>.ini
+
+static void BuildGameMenu(void)
 {
+    char slot[16];
+    UiMenuClear(&s_menu, "Paused", "A: choose   B: resume");
+    UiMenuAdd(&s_menu, "Resume", "");
+    UiMenuAdd(&s_menu, "Save state", "");
+    UiMenuAdd(&s_menu, "Load state", "");
+    sprintf(slot, "< %d >", s_stateSlot);
+    UiMenuAdd(&s_menu, "State slot", slot);
+    UiMenuAdd(&s_menu, "Settings", "");
+    UiMenuAdd(&s_menu, "Reset the game", "");
+    UiMenuAdd(&s_menu, "Back to the ROM list", "");
+    UiMenuAdd(&s_menu, "Quit to the dashboard", "");
+}
+
+static void ResetGame(H64System *sys)
+{
+    h64_hle_async_wait(sys);
+    if (sys->asyncAudioWait) sys->asyncAudioWait(sys->asyncUser);
+    h64_system_reset(sys);
+    if (sys->renderer && sys->renderer->reset) sys->renderer->reset(sys->renderer->user);
+    Osd("Game reset");
+}
+
+// Runs the menu; returns RG_CONTINUE, RG_BROWSER or RG_DASHBOARD.
+static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
+{
+    UiInput in;
+    int settings = 0, sel, result = -1;
+    if (s_gfxQ.thread) WorkWaitAll(NULL);   // the device is this thread's while the menu shows
+    BuildGameMenu();
+    UiInputInit(&in);
+    s_menuOpen = 1;
+    while (result < 0)
+    {
+        WORD down = UiInputPoll(&in);
+        if (settings)
+        {
+            int r = SettingsInput(&s_menu, c, s_settingsPath[0] != 0, down);
+            if (r == SET_CHANGED)
+            {
+                xb_audio_set_target_ms(c->audioMs);
+                h64_xenos_set_smooth(renderer, c->smooth);
+                s_showFps = c->showFps;
+            }
+            else if (r == SET_SAVE_ALL || r == SET_SAVE_GAME)
+            {
+                const char *path = r == SET_SAVE_ALL ? s_settingsPath : s_profilePath;
+                if (!path[0]) Osd("Not saved: started by rom= or a script");
+                else Osd(ConfigWriteMenuKeys(c, path, r == SET_SAVE_ALL) ? (r == SET_SAVE_ALL ? "Saved for all games" : "Saved for this game")
+                                                                         : "Settings: write failed");
+            }
+            if (r == SET_BACK || r == SET_SAVE_ALL || r == SET_SAVE_GAME)
+            {
+                settings = 0;
+                BuildGameMenu();
+                s_menu.sel = M_SETTINGS;
+            }
+        }
+        else
+        {
+            UiMenuNavigate(&s_menu, down);
+            sel = s_menu.sel;
+            if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)) result = RG_CONTINUE;
+            if (sel == M_SLOT && (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_A)))
+            {
+                s_stateSlot += (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 1;
+                if (s_stateSlot < 1) s_stateSlot = 9;
+                if (s_stateSlot > 9) s_stateSlot = 1;
+                sprintf(s_menu.value[M_SLOT], "< %d >", s_stateSlot);
+            }
+            else if (down & XINPUT_GAMEPAD_A)
+            {
+                switch (sel)
+                {
+                case M_RESUME: result = RG_CONTINUE; break;
+                case M_SAVE: s_statePending = 1; result = RG_CONTINUE; break;   // at the next quiet point
+                case M_LOAD: LoadStateNow(sys); result = RG_CONTINUE; break;
+                case M_SETTINGS: settings = 1; SettingsBuild(&s_menu, c, s_profilePath[0] != 0); break;
+                case M_RESET: ResetGame(sys); result = RG_CONTINUE; break;
+                case M_ROMS: result = RG_BROWSER; break;
+                case M_DASHBOARD: result = RG_DASHBOARD; break;
+                }
+            }
+        }
+        h64_xenos_present(renderer);   // the frozen frame, the menu (overlay) on top
+        Sleep(16);
+    }
+    s_menuOpen = 0;
+    return result;
+}
+
+// The system clock (the one Aurora and XBDM show), in 100 ns units.
+static u64 WallClock100ns(void)
+{
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    return ((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+}
+
+static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
+{
+    int result = RG_DASHBOARD, menuRequest = 0;
+    u32 fpsFrames = 0;
+    DWORD fpsStart = GetTickCount();
     char rom[256];
     u8 *data;
     u32 size = 0;
@@ -868,22 +847,31 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     H64Renderer *renderer = NULL;
     LARGE_INTEGER freq, now, frameStart;
     DWORD perfStart = GetTickCount();
+    u64 wallStart = WallClock100ns();
     u32 framesSincePerf = 0, presented = 0;
     LARGE_INTEGER t0, t1, t2;
     LONGLONG profRun = 0, profPresent = 0, profWait = 0;
     u64 jitBlocks = 0, jitInval = 0, jitFlush = 0, jitHelper = 0, jitRun = 0, jitIdle = 0, jitSteps = 0, insnsPrev = 0;
     u64 instrAtPerf = 0;
 
-    if (!FindRom(c, rom, sizeof(rom)))
+    s_crashed = 0;
+    s_showFps = c->showFps;
+    s_fpsText[0] = 0;
+    if (romPath)
+    {
+        strncpy(rom, romPath, sizeof(rom) - 1);
+        rom[sizeof(rom) - 1] = 0;
+    }
+    else if (!FindRom(c, rom, sizeof(rom)))
     {
         MessageScreen(dev, "No ROM found", "Put a ROM at game:\\test.z64 or in game:\\roms\\", D3DCOLOR_XRGB(240, 200, 60));
-        return;
+        return RG_DASHBOARD;
     }
     data = LoadFile(rom, &size);
-    if (!data) { MessageScreen(dev, "Cannot read the ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return; }
+    if (!data) { MessageScreen(dev, "Cannot read the ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys = MakeSystem(data, size, jit);
     free(data);
-    if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return; }
+    if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
@@ -897,7 +885,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         sys->aiUser = NULL;
     }
     renderer = h64_xenos_create(sys, dev);
-    if (!renderer) { MessageScreen(dev, "Renderer initialisation failed", "See harissa64v2.log", D3DCOLOR_XRGB(240, 60, 60)); return; }
+    if (!renderer) { MessageScreen(dev, "Renderer initialisation failed", "See harissa64v2.log", D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);
     h64_xenos_set_smooth(renderer, c->smooth);
     if (c->softRenderer) sys->options.rdpStateOnly = 0;
@@ -943,7 +931,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         s_samplePc = NULL;
         Sleep(5);
         FreeSystem(sys);
-        return;
+        return RG_DASHBOARD;
     }
     SavesOpen(sys);
     s_stateSlot = c->stateSlot >= 1 && c->stateSlot <= 9 ? c->stateSlot : 1;
@@ -989,15 +977,29 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
                 Osd(msg);
                 backUsed = 1;
             }
-            if (!backUsed && GetTickCount() - backSince >= 2000) break;
+            if (!backUsed && GetTickCount() - backSince >= 2000) { result = RG_DASHBOARD; break; }
         }
         else
+        {
+            if (backSince && !backUsed && GetTickCount() - backSince < 600) menuRequest = 1;   // a short press
             backSince = 0;
+        }
         prevButtons = s_padValid ? s_pad.Gamepad.wButtons : 0;
         if (c->saveStateAt && presented == c->saveStateAt) s_statePending = 1;
+        if (c->menuAt && presented == c->menuAt) menuRequest = 1;
         if (s_statePending && SaveStateNow(sys)) s_statePending = 0;
+        if (menuRequest)
+        {
+            menuRequest = 0;
+            result = GameMenu(sys, renderer, c);
+            if (result != RG_CONTINUE) break;
+            result = RG_DASHBOARD;
+            QueryPerformanceCounter(&frameStart);   // no catching up for the paused time
+            prevButtons = 0;
+            continue;
+        }
         QueryPerformanceCounter(&t0);
-        if (RunFrame(sys)) break;
+        if (RunFrame(sys)) { result = RG_BROWSER; break; }
         QueryPerformanceCounter(&t1);
         PresentFrame(sys, renderer);
         QueryPerformanceCounter(&t2);
@@ -1005,6 +1007,13 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         profPresent += t2.QuadPart - t1.QuadPart;
         framesSincePerf++;
         presented++;
+        fpsFrames++;
+        if (GetTickCount() - fpsStart >= 1000)
+        {
+            sprintf(s_fpsText, "%.1f FPS", fpsFrames * 1000.0 / (GetTickCount() - fpsStart));
+            fpsFrames = 0;
+            fpsStart = GetTickCount();
+        }
         SavesTick(sys, presented, 0);
         {
             int i;
@@ -1064,14 +1073,15 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         if (GetTickCount() - perfStart >= 2000)
         {
             DWORD ms = GetTickCount() - perfStart;
+            u64 wallNow = WallClock100ns();
             H64XenosStats xs;
             XbAudioStats as;
             h64_xenos_stats(renderer, &xs, 1);
             xb_audio_stats(&as, 1);
-            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u (new %u) shaders=%u copyback=%u fbswitch=%u audio=%u buffers %u underruns fill %u ms rate %u.%03u",
+            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u (new %u) shaders=%u copyback=%u fbswitch=%u audio=%u buffers %u underruns fill %u ms rate %u.%03u played %u Hz (period %u ms, system clock %u ms)",
                      framesSincePerf * 1000.0 / ms, (double)(sys->cpu.instructions - instrAtPerf) / (ms * 1000.0),
                      xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.textureCreates, xs.shaderCompiles, xs.copyBacks, xs.fbSwitches, as.buffers, as.underruns, as.fillMs,
-                     as.ratioPermille / 1000, as.ratioPermille % 1000);
+                     as.ratioPermille / 1000, as.ratioPermille % 1000, as.playedHz, (u32)ms, (u32)((wallNow - wallStart) / 10000));
             {
                 MEMORYSTATUS ms;
                 GlobalMemoryStatus(&ms);
@@ -1123,6 +1133,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;
             perfStart = GetTickCount();
+            wallStart = wallNow;
             framesSincePerf = 0;
             instrAtPerf = sys->cpu.instructions;
         }
@@ -1136,6 +1147,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     Sleep(5);
     FreeSystem(sys);
     if (s_crashed) MessageScreen(dev, "The game crashed", s_crashText, D3DCOLOR_XRGB(240, 60, 60));
+    return result;
 }
 
 int __cdecl main()
@@ -1194,8 +1206,7 @@ int __cdecl main()
         if (dev)
         {
             dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(14, 16, 26), 1.0f, 0);
-            AddText(100, 300, 3, "Recompiler test running...");
-            FlushText(dev, D3DCOLOR_XRGB(230, 230, 230));
+            UiText(dev, 100, 300, 3, D3DCOLOR_XRGB(230, 230, 230), "Recompiler test running...");
             dev->Present(NULL, NULL, NULL, NULL);
         }
         RunDynarecTest(&cfg, jitReport, sizeof(jitReport));
@@ -1203,7 +1214,42 @@ int __cdecl main()
                       strstr(jitReport, "DIVERGED") ? D3DCOLOR_XRGB(240, 60, 60) : D3DCOLOR_XRGB(200, 200, 120));
     }
     else if (dev)
-        RunGame(dev, &cfg);
+    {
+        // Scripted runs and rom= (or game:\test.z64) start one game directly
+        // with harissa64v2.ini alone; otherwise the ROM browser, with the
+        // menu's settings and the game's profile over harissa64v2.ini.
+        int scripted = cfg.input.count || cfg.exitAfter || cfg.trace || cfg.shotCount || cfg.loadState || cfg.saveStateAt || cfg.menuAt;
+        if (scripted || cfg.rom[0] || GetFileAttributesA("game:\\test.z64") != 0xFFFFFFFF)
+        {
+            s_settingsPath[0] = s_profilePath[0] = 0;
+            RunGame(dev, &cfg, NULL);
+        }
+        else
+        {
+            static Config base, game;
+            char dir[64], path[256], folder[64];
+            _snprintf(dir, sizeof(dir), "%s:\\config", s_logDrive);
+            dir[sizeof(dir) - 1] = 0;
+            CreateDirectoryA(dir, NULL);
+            _snprintf(s_settingsPath, sizeof(s_settingsPath), "%s\\settings.ini", dir);
+            s_settingsPath[sizeof(s_settingsPath) - 1] = 0;
+            for (;;)
+            {
+                base = cfg;
+                ConfigParseFile(&base, s_settingsPath);
+                if (!RomBrowser(dev, &base, s_settingsPath, path, sizeof(path))) break;
+                game = base;
+                s_profilePath[0] = 0;
+                if (RomFolderName(path, folder, sizeof(folder)))
+                {
+                    _snprintf(s_profilePath, sizeof(s_profilePath), "%s\\%s.ini", dir, folder);
+                    s_profilePath[sizeof(s_profilePath) - 1] = 0;
+                    if (ConfigParseFile(&game, s_profilePath)) H64_INFO("[main] game profile %s", s_profilePath);
+                }
+                if (RunGame(dev, &game, path) == RG_DASHBOARD) break;
+            }
+        }
+    }
 
     if (s_log)
         fclose(s_log);

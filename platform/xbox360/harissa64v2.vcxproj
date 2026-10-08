@@ -96,6 +96,9 @@
     <ClCompile Include="..\..\tests\unit\*.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="xb_audio.cpp" />
+    <ClCompile Include="xb_config.cpp" />
+    <ClCompile Include="xb_menu.cpp" />
+    <ClCompile Include="xb_ui.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\core\**\*.h" />

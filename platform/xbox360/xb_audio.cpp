@@ -177,7 +177,19 @@ int xb_audio_queued_ms(void)
 
 void xb_audio_stats(XbAudioStats *out, int reset)
 {
+    static u64 lastPlayed;
+    static DWORD lastTick;
+    DWORD now = GetTickCount();
+    u64 played = 0;
+    if (s_voice)
+    {
+        XAUDIO2_VOICE_STATE vs;
+        s_voice->GetState(&vs);
+        played = vs.SamplesPlayed;
+    }
+    s_stats.playedHz = (lastTick && now != lastTick && played >= lastPlayed) ? (u32)((played - lastPlayed) * 1000 / (now - lastTick)) : 0;
     *out = s_stats;
+    if (reset) { lastPlayed = played; lastTick = now; }
     if (reset)
     {
         u32 ratio = s_stats.ratioPermille, fill = s_stats.fillMs;
