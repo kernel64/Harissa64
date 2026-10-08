@@ -1,6 +1,6 @@
 # Progress
 
-## Current milestone: M5 — Platform and features (in progress)
+## Current milestone: M5 — Platform and features (steps 1-4 done, 2026-10-08)
 
 Order agreed with the user: (1) texture lookup speed, (2) graphics task ends before its rendering, (3) game saves, then save states, (4) menu, ROM browser, settings, game profiles.
 
@@ -10,7 +10,13 @@ Order agreed with the user: (1) texture lookup speed, (2) graphics task ends bef
 | 2. Graphics task ends once its display list ran; rendering goes on beside the next frame | Done. Console (OoT PAL, 3 cores): 97 % of 2-s periods at ≥49 VI/s (87 % before). Fix: a task that reads a colour image as a texture (Link on the pause screen's equipment page) renders from RDRAM, not from the snapshot taken before its own rendering; checked in Xenia with the user's save. |
 | 3a. Game saves: EEPROM 4K/16K (JoyBus channel 4), SRAM 32 KB and FlashRAM 128 KB (domain 2, CPU and PI DMA), Controller Pak on port 1 (formatted when new) | Done. Save type from mupen64plus's catalogue by header CRC (1575 entries), or the homebrew "ED" header; unknown cartridges get an EEPROM 4K and SRAM or FlashRAM on the first domain-2 access. Files: `<drive>:\saves\<name> <game code>\eeprom.bin`, `sram.bin`, `flash.bin`, `pak1.bin` (drive `game:`, `cache:` in Xenia), written 2 s after the game changes them and when leaving. Checked: unit tests on every target; on the host SM64/MK64/BK/SF64 create their EEPROM and OoT its SRAM, and reload them on the next run without rewriting them; in Xenia OoT writes `cache:\saves\THE LEGEND OF ZELDA CZLE\sram.bin`. Test ROM scores unchanged. |
 | 3b. Save states | Done. Portable format (console, Xenia, hosts), 9 slots per game in the save folder, BACK+RB / BACK+LB, D-pad for the slot. Checked: unit test (round trip, rejected bad data), straight run = save + load in a new process on SM64 (HLE and LLE), MK64, OoT (same CPU/RAM hash and image); a ppc64 state continues identically on MSVC and gcc; on the console, a state made on the PC loads (OoT PAL, Link's house, then the equipment page) and a state saved on the console loads on the PC. |
-| 4. Menu, ROM browser, settings, game profiles | Next |
+| 4. Menu, ROM browser, settings, game profiles | Done. ROM browser at start-up (game:\roms\, header name, game code, save type; last selection kept), in-game menu on a short BACK press over the frozen frame (resume, save/load state, slot, settings, reset, ROM list, dashboard), settings (CPU, RSP, audio margin, edge smoothing, FPS display) saved for all games (`config\settings.ini`) or one game (`config\<game>.ini`), button prompts in V1's style. Checked on the console with XBDM screenshots (browser, menu). Navigation itself is the user's to try (no remote controller). |
+| Audio margin | 250 ms by default (user's choice, `audioms=`); console A/B on OoT: 100 ms gave ~1 underrun per 2 s, 150 ms 3 in 76 s, 200 ms 2. |
+| Timing measurements | The FPS/[perf] rates read 52-54 on OoT PAL although the game ran at 50.0: the log flushed every line to the USB stick (~120 ms per period, left out of the measured period) and GetTickCount and the system clock fall behind while the emulator runs (system clock 96.2 s in 100 s, measured against the PC through XBDM). Now QPC, period start at the measurement, log flushed once per period. Console: 50.0 FPS, XAudio2 plays 31970 Hz for 31995. |
+| Fixes found on the way | Link missing on OoT's equipment page (deferred rendering read a stale snapshot); boot noise (VI showing RDRAM before the first RDP frame: black instead); white strips on OoT's title logo (texture cache emptied between binding unit 0 and unit 1: unit 0 left on the white dummy texture). |
+| Remote console tests | Scripted runs deployed by FTP and launched with XBDM from this PC (see CLAUDE.md), with screenshots, logs and XBDM captures. |
+
+Still open for later milestones: Paper Mario hang, Mario Party 3 boot, Donkey Kong 64 (LLE boot), S2DEX BG_1CYC and object commands, the LLE RSP on a worker, OoT's Kokiri paths flickering (now reproducible with a save state from the user), the OoT MQ intro stall on the host, controllers 2-4, zipped ROMs in the browser.
 
 ## M4 — HLE and the Xenos renderer (complete, 2026-10-07)
 
