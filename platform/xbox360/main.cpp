@@ -847,6 +847,28 @@ static double QpcMs(void)
     return (double)t.QuadPart * 1000.0 / (double)freq.QuadPart;
 }
 
+// The menu with a crash guard: an exception there is logged (and the log
+// flushed) instead of DashLaunch's crash notice and a silent return to Aurora.
+static int GameMenuSafe(H64System *sys, H64Renderer *renderer, Config *c)
+{
+    int r = RG_DASHBOARD;
+    H64_INFO("[menu] opened at VI %u", sys->vi.frames);
+    LogFlush();
+    __try
+    {
+        r = GameMenu(sys, renderer, c);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        s_menuOpen = 0;
+        H64_ERROR("[crash] exception %08X in the in-game menu", GetExceptionCode());
+        r = RG_BROWSER;
+    }
+    H64_INFO("[menu] closed: %s", r == RG_CONTINUE ? "resume" : r == RG_BROWSER ? "ROM list" : "dashboard");
+    LogFlush();
+    return r;
+}
+
 static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
 {
     int result = RG_DASHBOARD, menuRequest = 0;
@@ -1003,7 +1025,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         if (menuRequest)
         {
             menuRequest = 0;
-            result = GameMenu(sys, renderer, c);
+            result = GameMenuSafe(sys, renderer, c);
             if (result != RG_CONTINUE) break;
             result = RG_DASHBOARD;
             QueryPerformanceCounter(&frameStart);   // no catching up for the paused time
@@ -1242,7 +1264,7 @@ int __cdecl main()
         // Scripted runs and rom= (or game:\test.z64) start one game directly
         // with harissa64v2.ini alone; otherwise the ROM browser, with the
         // menu's settings and the game's profile over harissa64v2.ini.
-        int scripted = cfg.input.count || cfg.exitAfter || cfg.trace || cfg.shotCount || cfg.loadState || cfg.saveStateAt || cfg.menuAt;
+        int scripted = cfg.input.count || cfg.exitAfter || cfg.trace || cfg.shotCount || cfg.loadState || cfg.saveStateAt;
         if (scripted || cfg.rom[0] || GetFileAttributesA("game:\\test.z64") != 0xFFFFFFFF)
         {
             s_settingsPath[0] = s_profilePath[0] = 0;
@@ -1262,6 +1284,7 @@ int __cdecl main()
                 base = cfg;
                 ConfigParseFile(&base, s_settingsPath);
                 if (!RomBrowser(dev, &base, s_settingsPath, path, sizeof(path))) break;
+                cfg.autoStart = 0;   // only the first time
                 game = base;
                 s_profilePath[0] = 0;
                 if (RomFolderName(path, folder, sizeof(folder)))

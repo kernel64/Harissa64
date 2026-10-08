@@ -38,7 +38,8 @@ struct Config
     int stateSlot;      // stateslot=N: save state slot at start (1..9)
     int loadState;      // loadstate=1: load the slot's state at start (scripted runs)
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
-    u32 menuAt;         // menuat=N: open the in-game menu at VI N (checks of the menu's look)
+    u32 menuAt;         // menuat=N: open the in-game menu at VI N (remote checks; does not skip the ROM browser)
+    int autoStart;      // autostart=1: the ROM browser starts its last selection at once (remote checks)
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)
 };
 

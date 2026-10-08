@@ -21,6 +21,7 @@ void ConfigDefaults(Config *c)
     c->lastRom[0] = 0;
     c->showFps = 0;
     c->menuAt = 0;
+    c->autoStart = 0;
     c->hle = 1;
     c->shotCount = 0;
     c->softRenderer = 0;
@@ -62,6 +63,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "lastrom")) { strncpy(c->lastRom, eq + 1, sizeof(c->lastRom) - 1); c->lastRom[sizeof(c->lastRom) - 1] = 0; }
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "autostart")) c->autoStart = atoi(eq + 1);
         else if (!strcmp(line, "hle")) c->hle = atoi(eq + 1);
         else if (!strcmp(line, "exitafter")) c->exitAfter = (u32)atoi(eq + 1);
         else if (!strcmp(line, "stateslot")) c->stateSlot = atoi(eq + 1);

@@ -220,7 +220,17 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     const int rows = 13, rowH = 30, listY = 140;
     scan_roms(&roms);
     for (i = 0; i < (int)roms.size(); i++)
-        if (!_stricmp(roms[i].file.c_str(), c->lastRom)) sel = i;
+        if (!_stricmp(roms[i].file.c_str(), c->lastRom))
+        {
+            sel = i;
+            if (c->autoStart)
+            {
+                c->autoStart = 0;   // once: back in the browser it waits again
+                strncpy(path, roms[i].file.c_str(), pathSize - 1);
+                path[pathSize - 1] = 0;
+                return 1;
+            }
+        }
     UiInputInit(&in);
     details[0] = 0;
     for (;;)
