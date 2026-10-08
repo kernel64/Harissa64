@@ -90,6 +90,7 @@ struct Xenos
     // the console, and OoT's backgrounds (S2DEX, LLE) load ~90 strips a frame.
     std::map<u32, std::vector<IDirect3DTexture9 *> > pool;
     u32 poolBytes;
+    u32 retires;        // times the texture cache was emptied (it unbinds both texture units)
     u64 combineRaw;
 
     // Batching: triangles with the same state go to one draw.
@@ -343,6 +344,7 @@ static void retire_all_textures(Xenos *x)
     x->textures.clear();
     x->textureBytes = 0;
     x->tmemGen++;   // the memos point at released textures
+    x->retires++;
 }
 
 static u64 fnv64(u64 h, const u8 *p, u32 n)
@@ -967,8 +969,15 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     x->dev->SetPixelShaderConstantF(6, c, 1);
     c[0] = 2.0f / fbw; c[1] = -2.0f / fbh; c[2] = 0; c[3] = 0;
     x->dev->SetVertexShaderConstantF(0, c, 1);
-    bind_texture(x, 0, tile, tb0);
-    bind_texture(x, 1, (tile + 1) & 7, tb1);
+    {
+        // A full cache is emptied while a texture is looked up, which puts the
+        // dummy (white) texture on both units: if that happened for unit 1,
+        // unit 0 must be bound again (OoT's title logo: one white strip for a frame).
+        u32 retires = x->retires;
+        bind_texture(x, 0, tile, tb0);
+        bind_texture(x, 1, (tile + 1) & 7, tb1);
+        if (x->retires != retires) bind_texture(x, 0, tile, tb0);
+    }
     set_blend(x, two ? 1 : 0);
     set_depth(x, hasDepth);
     set_alpha_test(x);
@@ -1386,6 +1395,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->combineRaw = 0;
     x->textureBytes = 0;
     x->poolBytes = 0;
+    x->retires = 0;
     x->stateDirty = 1;
     x->batchFlags = x->batchTile = 0xFFFFFFFF;
     x->tmemGen = 1;

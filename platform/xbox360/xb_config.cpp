@@ -87,7 +87,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "shots"))
         {
             char *p = eq + 1;
-            while (*p && c->shotCount < 16)
+            while (*p && c->shotCount < 64)
             {
                 c->shots[c->shotCount++] = (u32)strtoul(p, &p, 10);
                 while (*p == ',' || *p == ' ') p++;

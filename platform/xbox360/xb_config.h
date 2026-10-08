@@ -20,7 +20,7 @@ struct Config
     int xenosDebug;     // xenosdebug=1..4: renderer debug output (h64_xenos_set_debug)
     u32 pauseAt;        // pauseat=N: hold the frame shown at VI N for 20 s (window captures in Xenia)
     H64InputScript input;   // input=SCRIPT: scripted controller 1 (h64test --input syntax) instead of the pad
-    u32 shots[16];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)
+    u32 shots[64];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)
     int shotCount;
     u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
     u32 trace, traceStep;   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
