@@ -25,8 +25,8 @@ void xb_audio_sink(void *user, const u8 *samples, u32 len, u32 rate);
 // a while, pace on the clock instead).
 int xb_audio_queued_ms(void);
 
-// playedHz: stereo frames the voice really played per second since the last reset.
-struct XbAudioStats { u32 buffers, underruns, fillMs, ratioPermille, playedHz; };
+// playedHz: stereo frames the voice really played per second (QPC) since the last reset.
+struct XbAudioStats { u32 buffers, underruns, fillMs, ratioPermille, playedHz, submittedHz, dropped; };
 void xb_audio_stats(XbAudioStats *out, int reset);
 
 #endif

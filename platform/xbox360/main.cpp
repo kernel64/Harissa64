@@ -134,9 +134,17 @@ static void file_sink(int level, const char *line)
     OutputDebugStringA("\n");
     if (s_log)
     {
+        // Written through the CRT buffer: flushing every line to the USB stick
+        // cost ~120 ms per 2-s period of [perf] lines. Warnings and errors are
+        // flushed at once, the rest by LogFlush (each period, on leaving).
         fprintf(s_log, "%s\n", line);
-        fflush(s_log);
+        if (level <= H64_LOG_WARN) fflush(s_log);
     }
+}
+
+static void LogFlush(void)
+{
+    if (s_log) fflush(s_log);
 }
 
 // ---- Configuration: xb_config.cpp ----
@@ -826,19 +834,24 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
     return result;
 }
 
-// The system clock (the one Aurora and XBDM show), in 100 ns units.
-static u64 WallClock100ns(void)
+// Real time in ms from QueryPerformanceCounter. While the emulator runs, the
+// console's system clock and GetTickCount fall behind real time (measured
+// 2026-10-08 against the PC through XBDM: the system clock counted 96.2 s in
+// 100 s, GetTickCount ~1.4 % less again); QPC stays within 0.3 %.
+static double QpcMs(void)
 {
-    FILETIME ft;
-    GetSystemTimeAsFileTime(&ft);
-    return ((u64)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER t;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart * 1000.0 / (double)freq.QuadPart;
 }
 
 static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
 {
     int result = RG_DASHBOARD, menuRequest = 0;
     u32 fpsFrames = 0;
-    DWORD fpsStart = GetTickCount();
+    double fpsStart = QpcMs();
     char rom[256];
     u8 *data;
     u32 size = 0;
@@ -846,8 +859,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     H64System *sys;
     H64Renderer *renderer = NULL;
     LARGE_INTEGER freq, now, frameStart;
-    DWORD perfStart = GetTickCount();
-    u64 wallStart = WallClock100ns();
+    double perfStart = QpcMs();
     u32 framesSincePerf = 0, presented = 0;
     LARGE_INTEGER t0, t1, t2;
     LONGLONG profRun = 0, profPresent = 0, profWait = 0;
@@ -1008,11 +1020,12 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         framesSincePerf++;
         presented++;
         fpsFrames++;
-        if (GetTickCount() - fpsStart >= 1000)
+        if (QpcMs() - fpsStart >= 1000.0)
         {
-            sprintf(s_fpsText, "%.1f FPS", fpsFrames * 1000.0 / (GetTickCount() - fpsStart));
+            double nowMs = QpcMs();
+            sprintf(s_fpsText, "%.1f FPS", fpsFrames * 1000.0 / (nowMs - fpsStart));
             fpsFrames = 0;
-            fpsStart = GetTickCount();
+            fpsStart = nowMs;
         }
         SavesTick(sys, presented, 0);
         {
@@ -1070,18 +1083,28 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
 
         QueryPerformanceCounter(&t1);
         profWait += t1.QuadPart - t0.QuadPart;
-        if (GetTickCount() - perfStart >= 2000)
+        if (QpcMs() - perfStart >= 2000.0)
         {
-            DWORD ms = GetTickCount() - perfStart;
-            u64 wallNow = WallClock100ns();
+            double perfNow = QpcMs(), ms = perfNow - perfStart;
             H64XenosStats xs;
             XbAudioStats as;
             h64_xenos_stats(renderer, &xs, 1);
             xb_audio_stats(&as, 1);
-            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u (new %u) shaders=%u copyback=%u fbswitch=%u audio=%u buffers %u underruns fill %u ms rate %u.%03u played %u Hz (period %u ms, system clock %u ms)",
+            H64_INFO("[perf] vi/s=%.1f mips=%.1f tris=%u rects=%u fills=%u texup=%u (new %u) shaders=%u copyback=%u fbswitch=%u audio=%u buffers %u underruns fill %u ms rate %u.%03u played %u Hz submitted %u Hz dropped %u",
                      framesSincePerf * 1000.0 / ms, (double)(sys->cpu.instructions - instrAtPerf) / (ms * 1000.0),
                      xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.textureCreates, xs.shaderCompiles, xs.copyBacks, xs.fbSwitches, as.buffers, as.underruns, as.fillMs,
-                     as.ratioPermille / 1000, as.ratioPermille % 1000, as.playedHz, (u32)ms, (u32)((wallNow - wallStart) / 10000));
+                     as.ratioPermille / 1000, as.ratioPermille % 1000, as.playedHz, as.submittedHz, as.dropped);
+            {
+                // Audio the game queued in this period, and what it read back from AI_LEN.
+                static u64 q0, r0, rs0;
+                static u32 b0;
+                u32 nb = sys->ai.statBuffers - b0;
+                u64 nr = sys->ai.statReads - r0;
+                H64_INFO("[ai] %u buffers, %.1f samples each; %llu AI_LEN reads, %.1f samples left on average", nb,
+                         nb ? (sys->ai.statQueued - q0) / 4.0 / nb : 0.0, (unsigned long long)nr,
+                         nr ? (sys->ai.statReadSum - rs0) / 4.0 / nr : 0.0);
+                q0 = sys->ai.statQueued; r0 = sys->ai.statReads; rs0 = sys->ai.statReadSum; b0 = sys->ai.statBuffers;
+            }
             {
                 MEMORYSTATUS ms;
                 GlobalMemoryStatus(&ms);
@@ -1132,14 +1155,15 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;
-            perfStart = GetTickCount();
-            wallStart = wallNow;
+            perfStart = perfNow;   // the next period starts now, the time spent logging included
             framesSincePerf = 0;
+            LogFlush();
             instrAtPerf = sys->cpu.instructions;
         }
     }
     WorkersStop(sys);
     SavesTick(sys, presented, 1);
+    LogFlush();
     sys->renderer = NULL;
     h64_xenos_free(renderer);
     xb_audio_shutdown();

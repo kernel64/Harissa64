@@ -38,6 +38,7 @@ static XbAudioStats s_stats;
 static u64 s_framesSubmitted;
 static int s_playing;
 static float s_ratio, s_ratioApplied;
+static u64 s_periodFrames;   // frames submitted since the last stats reset
 
 int xb_audio_init(void)
 {
@@ -125,7 +126,7 @@ void xb_audio_sink(void *user, const u8 *samples, u32 len, u32 rate)
         s_playing = 0;
         s_stats.underruns++;
     }
-    if (queued >= SLOTS - 1) return;   // full: drop rather than overwrite a queued slot
+    if (queued >= SLOTS - 1) { s_stats.dropped++; return; }   // full: drop rather than overwrite a queued slot
     if (len > SLOT_BYTES) len = SLOT_BYTES;
     len &= ~3u;
     frames = len / 4;
@@ -136,6 +137,7 @@ void xb_audio_sink(void *user, const u8 *samples, u32 len, u32 rate)
     s_voice->SubmitSourceBuffer(&b, NULL);
     s_next = (s_next + 1) % SLOTS;
     s_framesSubmitted += frames;
+    s_periodFrames += frames;
     s_stats.buffers++;
     s_lastSubmit = GetTickCount();
 
@@ -178,8 +180,13 @@ int xb_audio_queued_ms(void)
 void xb_audio_stats(XbAudioStats *out, int reset)
 {
     static u64 lastPlayed;
-    static DWORD lastTick;
-    DWORD now = GetTickCount();
+    static LARGE_INTEGER freq;
+    static u64 lastTick;
+    LARGE_INTEGER t;
+    u64 now;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t);
+    now = (u64)t.QuadPart * 1000 / (u64)freq.QuadPart;   // ms of real time (GetTickCount falls behind on the console)
     u64 played = 0;
     if (s_voice)
     {
@@ -188,8 +195,9 @@ void xb_audio_stats(XbAudioStats *out, int reset)
         played = vs.SamplesPlayed;
     }
     s_stats.playedHz = (lastTick && now != lastTick && played >= lastPlayed) ? (u32)((played - lastPlayed) * 1000 / (now - lastTick)) : 0;
+    s_stats.submittedHz = (lastTick && now != lastTick) ? (u32)(s_periodFrames * 1000 / (now - lastTick)) : 0;
     *out = s_stats;
-    if (reset) { lastPlayed = played; lastTick = now; }
+    if (reset) { lastPlayed = played; lastTick = now; s_periodFrames = 0; }
     if (reset)
     {
         u32 ratio = s_stats.ratioPermille, fill = s_stats.fillMs;

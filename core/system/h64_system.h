@@ -29,7 +29,11 @@ struct H64Pad { u16 buttons; s8 x, y; };
 
 struct H64Mi { u32 mode, version, intr, mask; };
 struct H64Vi { u32 regs[14]; u32 vIntr; u64 frameStart; u64 frameCycles; u32 frames; };
-struct H64Ai { u32 dramAddr, len, control, status, dacrate, bitrate; u32 fifoLen[2]; u32 fifoCount; u64 bufferCycles; };
+struct H64Ai
+{
+    u32 dramAddr, len, control, status, dacrate, bitrate; u32 fifoLen[2]; u32 fifoCount; u64 bufferCycles;
+    u64 statQueued, statReads, statReadSum; u32 statBuffers;   // statistics: bytes queued, AI_LEN reads
+};
 struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; };   // latch: last CPU write to the cartridge bus
 struct H64Ri { u32 regs[8]; };
 struct H64Si { u32 dramAddr, pifAddrRd, pifAddrWr, status; };

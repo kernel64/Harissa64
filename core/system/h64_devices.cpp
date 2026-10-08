@@ -277,7 +277,10 @@ u32 h64_mmio_read(H64System *sys, u32 paddr)
             {
                 u64 end = sys->sched.when[H64_EV_AI];
                 u64 left = end > now(sys) ? end - now(sys) : 0;
-                return (u32)((u64)sys->ai.fifoLen[0] * left / (sys->ai.bufferCycles ? sys->ai.bufferCycles : 1)) & ~7u;
+                u32 v = (u32)((u64)sys->ai.fifoLen[0] * left / (sys->ai.bufferCycles ? sys->ai.bufferCycles : 1)) & ~7u;
+                sys->ai.statReads++;
+                sys->ai.statReadSum += v;
+                return v;
             }
         case 3:
             return (sys->ai.fifoCount >= 2 ? 0x80000001u : 0) | (sys->ai.fifoCount > 0 ? 0x40000000u : 0) |
@@ -368,6 +371,8 @@ void h64_mmio_write(H64System *sys, u32 paddr, u32 value, u32 mask)
                 sys->aiSink(sys->aiUser, sys->rdram + addr, n, clock / ((sys->ai.dacrate & 0x3FFF) + 1));
             }
             sys->ai.fifoLen[sys->ai.fifoCount++] = len;
+            sys->ai.statQueued += len;
+            sys->ai.statBuffers++;
             if (sys->ai.fifoCount == 1) ai_start_next(sys);
             return;
         }

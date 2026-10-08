@@ -519,6 +519,10 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         u32 ch, rh;
         h64_system_state_hash(sys, &ch, &rh);
         printf("[run] state hash cpu=%08X ram=%08X\n", ch, rh);
+        if (sys->ai.statBuffers)
+            printf("[run] AI: %u buffers, %.1f samples each; %llu AI_LEN reads, %.1f samples left on average\n", sys->ai.statBuffers,
+                   sys->ai.statQueued / 4.0 / sys->ai.statBuffers, (unsigned long long)sys->ai.statReads,
+                   sys->ai.statReads ? sys->ai.statReadSum / 4.0 / sys->ai.statReads : 0.0);
     }
     if (sys->jit)
         printf("[jit] %llu instructions executed, %llu skipped in idle loops, %llu blocks run, %llu interpreted\n",
