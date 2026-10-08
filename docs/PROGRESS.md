@@ -16,6 +16,8 @@ Order agreed with the user: (1) texture lookup speed, (2) graphics task ends bef
 | Fixes found on the way | Link missing on OoT's equipment page (deferred rendering read a stale snapshot); boot noise (VI showing RDRAM before the first RDP frame: black instead); white strips on OoT's title logo (texture cache emptied between binding unit 0 and unit 1: unit 0 left on the white dummy texture); OoT's Kokiri paths flickering with the camera (shade/fog interpolated perspective-correctly on the GPU, screen-linearly on the RDP; found from the user's save state with a pixel probe; console pixels now match the software RDP); the in-game menu after a BACK press (now logged and guarded; works on the user's console). |
 | Remote console tests | Scripted runs deployed by FTP and launched with XBDM from this PC (see CLAUDE.md), with screenshots, logs and XBDM captures. |
 
+Next session: OoT's Kokiri paths still cut off and reappear when Link turns (their lighting is fixed); replay the user's save state, probe a pixel where the path is cut (suspects: decal depth/bias, near-camera clipping).
+
 Still open for later milestones: Paper Mario hang, Mario Party 3 boot, Donkey Kong 64 (LLE boot), S2DEX BG_1CYC and object commands, the LLE RSP on a worker, the OoT MQ intro stall on the host, controllers 2-4, zipped ROMs in the browser.
 
 ## M4 — HLE and the Xenos renderer (complete, 2026-10-07)
