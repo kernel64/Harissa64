@@ -17,6 +17,15 @@ void UiText(IDirect3DDevice9 *dev, int x, int y, int scale, D3DCOLOR color, cons
 // Width in pixels of the text's longest line.
 int UiTextWidth(int scale, const char *text);
 void UiRect(IDirect3DDevice9 *dev, int x, int y, int w, int h, D3DCOLOR color);
+void UiCircle(IDirect3DDevice9 *dev, int cx, int cy, int r, D3DCOLOR color);
+
+// Button prompts as in V1's menus: "A:Play|B:Back|LB/RB:Page|DPAD:Change"
+// draws each button's glyph (coloured disc for A/B/X/Y, grey pill for LB, RB,
+// BACK, START, a cross for DPAD) followed by its label, from (x, cy) (cy is
+// the vertical centre). Returns the width drawn.
+int UiFooter(IDirect3DDevice9 *dev, int x, int cy, const char *hints);
+// The usual footer of a full screen: a line, then the prompts.
+void UiScreenFooter(IDirect3DDevice9 *dev, const char *hints);
 
 // Controller 1 for menus: buttons pressed since the last call, with
 // auto-repeat for the D-pad and the left stick (as D-pad directions).

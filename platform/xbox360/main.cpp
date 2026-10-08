@@ -159,7 +159,7 @@ static void MessageScreen(IDirect3DDevice9 *dev, const char *title, const char *
             UiText(dev, 96, 80, 6, D3DCOLOR_XRGB(220, 40, 30), "HARISSA64 V2");
             UiText(dev, 100, 170, 3, D3DCOLOR_XRGB(230, 230, 230), title);
             UiText(dev, 100, 240, 2, color, text);
-            UiText(dev, 100, 640, 2, D3DCOLOR_XRGB(140, 140, 160), "Press BACK to continue");
+            UiScreenFooter(dev, "BACK:Continue");
             dev->Present(NULL, NULL, NULL, NULL);
         }
         if (XInputGetState(0, &in) == ERROR_SUCCESS && (in.Gamepad.wButtons & XINPUT_GAMEPAD_BACK))
@@ -737,7 +737,7 @@ static char s_profilePath[160];     // <drive>:\config\<game>.ini
 static void BuildGameMenu(void)
 {
     char slot[16];
-    UiMenuClear(&s_menu, "Paused", "A: choose   B: resume");
+    UiMenuClear(&s_menu, "Paused", "A:Select|DPAD:Change|B/START:Resume");
     UiMenuAdd(&s_menu, "Resume", "");
     UiMenuAdd(&s_menu, "Save state", "");
     UiMenuAdd(&s_menu, "Load state", "");

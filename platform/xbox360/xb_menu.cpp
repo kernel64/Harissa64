@@ -41,8 +41,8 @@ int UiMenuAdd(UiMenu *m, const char *label, const char *value)
 
 void UiMenuDraw(IDirect3DDevice9 *dev, const UiMenu *m)
 {
-    const int w = 720, rowH = 40, x = (UI_WIDTH - w) / 2;
-    int h = 110 + m->count * rowH + 50, y = (UI_HEIGHT - h) / 2, i;
+    const int w = 760, rowH = 40, x = (UI_WIDTH - w) / 2;
+    int h = 110 + m->count * rowH + 64, y = (UI_HEIGHT - h) / 2, i;
     UiRect(dev, x - 4, y - 4, w + 8, h + 8, COL_EDGE);
     UiRect(dev, x, y, w, h, COL_PANEL);
     UiText(dev, x + 30, y + 24, 4, COL_TEXT, m->title);
@@ -54,7 +54,8 @@ void UiMenuDraw(IDirect3DDevice9 *dev, const UiMenu *m)
         if (m->value[i][0])
             UiText(dev, x + w - 40 - UiTextWidth(3, m->value[i]), ry, 3, COL_VALUE, m->value[i]);
     }
-    UiText(dev, x + 30, y + h - 34, 2, COL_DIM, m->footer);
+    UiRect(dev, x + 16, y + h - 58, w - 32, 2, COL_EDGE);
+    UiFooter(dev, x + 30, y + h - 30, m->footer);
 }
 
 void UiMenuNavigate(UiMenu *m, WORD down)
@@ -78,10 +79,9 @@ static void settings_values(UiMenu *m, const Config *c)
 
 void SettingsBuild(UiMenu *m, const Config *c, int perGame)
 {
-    UiMenuClear(m, perGame ? "Settings" : "Settings: all games",
-                "CPU and RSP apply at the next start.  B: back");
-    UiMenuAdd(m, "CPU", "");
-    UiMenuAdd(m, "RSP", "");
+    UiMenuClear(m, perGame ? "Settings" : "Settings: all games", "A:Select|DPAD:Change|B:Back");
+    UiMenuAdd(m, "CPU (next start)", "");
+    UiMenuAdd(m, "RSP (next start)", "");
     UiMenuAdd(m, "Audio margin", "");
     UiMenuAdd(m, "Edge smoothing", "");
     UiMenuAdd(m, "Show FPS", "");
@@ -217,7 +217,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     UiInput in;
     int sel = 0, top = 0, detailsFor = -1, i;
     char details[160];
-    const int rows = 14, rowH = 30, listY = 150;
+    const int rows = 13, rowH = 30, listY = 140;
     scan_roms(&roms);
     for (i = 0; i < (int)roms.size(); i++)
         if (!_stricmp(roms[i].file.c_str(), c->lastRom)) sel = i;
@@ -268,10 +268,9 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             char count[32];
             sprintf(count, "%d / %d", sel + 1, n);
             UiText(dev, 1184 - UiTextWidth(2, count), 110, 2, COL_DIM, count);
-            UiRect(dev, 80, listY + rows * rowH + 8, 1120, 2, COL_EDGE);
-            UiText(dev, 96, listY + rows * rowH + 24, 2, COL_VALUE, details);
+            UiText(dev, 96, listY + rows * rowH + 16, 2, COL_VALUE, details);
         }
-        UiText(dev, 96, 668, 2, COL_DIM, "A: play   LB/RB: page   Y: settings   BACK: dashboard");
+        UiScreenFooter(dev, n ? "A:Play|LB/RB:Page|Y:Settings|BACK:Dashboard" : "Y:Settings|BACK:Dashboard");
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
     }
