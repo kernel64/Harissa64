@@ -161,6 +161,7 @@ struct Config
     u32 audioCycles;    // audiocycles=N: CPU cycles an asynchronous audio task keeps the RSP busy
     u32 gfxCycles;      // gfxcycles=N: CPU cycles an asynchronous graphics task keeps the RSP busy
     int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
+    int audioMs;        // audioms=N: audio queue target in ms (pacing threshold)
     int stateSlot;      // stateslot=N: save state slot at start (1..9)
     int loadState;      // loadstate=1: load the slot's state at start (scripted runs)
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
@@ -198,6 +199,7 @@ static void LoadConfig(Config *c)
     c->gfxCycles = 400000;
     c->cpi = 1;
     c->exitAfter = 0;
+    c->audioMs = XB_AUDIO_DEFAULT_MS;
     c->stateSlot = 1;
     c->loadState = 0;
     c->saveStateAt = 0;
@@ -214,6 +216,7 @@ static void LoadConfig(Config *c)
         else if (!strcmp(line, "hle")) c->hle = atoi(eq + 1);
         else if (!strcmp(line, "exitafter")) c->exitAfter = (u32)atoi(eq + 1);
         else if (!strcmp(line, "stateslot")) c->stateSlot = atoi(eq + 1);
+        else if (!strcmp(line, "audioms")) c->audioMs = atoi(eq + 1);
         else if (!strcmp(line, "loadstate")) c->loadState = atoi(eq + 1);
         else if (!strcmp(line, "savestateat")) c->saveStateAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");
@@ -886,6 +889,8 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
     sys->padHook = PadHook;
     sys->profClock = ProfClock;
     s_script = c->input.count ? &c->input : NULL;
+    xb_audio_set_target_ms(c->audioMs);
+    H64_INFO("[main] audio queue target %d ms", xb_audio_target_ms());
     if (xb_audio_init() == 0)
     {
         sys->aiSink = xb_audio_sink;
@@ -1033,7 +1038,7 @@ static void RunGame(IDirect3DDevice9 *dev, const Config *c)
         queued = xb_audio_queued_ms();
         if (queued >= 0)
         {
-            while (queued > XB_AUDIO_MAX_QUEUED_MS)
+            while (queued > xb_audio_target_ms())
             {
                 Sleep(1);
                 queued = xb_audio_queued_ms();

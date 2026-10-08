@@ -19,8 +19,9 @@
 
 #define SLOTS 32
 #define SLOT_BYTES 16384
-#define TARGET_MS XB_AUDIO_MAX_QUEUED_MS   // fill the rate control aims for (the pacing threshold)
-#define START_MS 60                        // queued before (re)starting playback
+static int s_targetMs = XB_AUDIO_DEFAULT_MS;   // fill the rate control aims for (the pacing threshold)
+#define TARGET_MS s_targetMs
+#define START_MS (s_targetMs * 3 / 5)          // queued before (re)starting playback
 #define RATE_GAIN 0.10f                    // rate change at an empty queue
 #define RATE_MIN 0.90f
 #define RATE_MAX 1.02f
@@ -185,3 +186,10 @@ void xb_audio_stats(XbAudioStats *out, int reset)
         s_stats.fillMs = fill;
     }
 }
+
+void xb_audio_set_target_ms(int ms)
+{
+    s_targetMs = ms < 40 ? 40 : ms > 500 ? 500 : ms;
+}
+
+int xb_audio_target_ms(void) { return s_targetMs; }
