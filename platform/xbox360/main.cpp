@@ -997,7 +997,13 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         if (s_padValid && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK))
         {
             WORD down = s_pad.Gamepad.wButtons & ~prevButtons;
-            if (!backSince) { backSince = GetTickCount() | 1; backUsed = 0; }
+            if (!backSince)
+            {
+                backSince = GetTickCount() | 1;
+                backUsed = 0;
+                H64_INFO("[pad] BACK down at VI %u", presented);
+                LogFlush();
+            }
             if (down & XINPUT_GAMEPAD_RIGHT_SHOULDER) { s_statePending = 1; backUsed = 1; }
             if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) { LoadStateNow(sys); backUsed = 1; }
             if (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT))
@@ -1011,10 +1017,20 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 Osd(msg);
                 backUsed = 1;
             }
-            if (!backUsed && GetTickCount() - backSince >= 2000) { result = RG_DASHBOARD; break; }
+            if (!backUsed && GetTickCount() - backSince >= 2000)
+            {
+                H64_INFO("[pad] BACK held 2 s: leaving to the dashboard");
+                result = RG_DASHBOARD;
+                break;
+            }
         }
         else
         {
+            if (backSince)
+            {
+                H64_INFO("[pad] BACK up after %u ms%s", GetTickCount() - backSince, backUsed ? " (used with RB/LB/D-pad)" : "");
+                LogFlush();
+            }
             if (backSince && !backUsed && GetTickCount() - backSince < 600) menuRequest = 1;   // a short press
             backSince = 0;
         }
@@ -1192,6 +1208,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     s_samplePc = NULL;
     Sleep(5);
     FreeSystem(sys);
+    H64_INFO("[main] game ended: %s", result == RG_BROWSER ? "ROM list" : "dashboard");
+    LogFlush();
     if (s_crashed) MessageScreen(dev, "The game crashed", s_crashText, D3DCOLOR_XRGB(240, 60, 60));
     return result;
 }
