@@ -23,6 +23,7 @@
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/vi/h64_vi.h"
 #include "../../core/rdp/h64_rdp.h"
+#include "../../core/rdp/h64_rdp_state.h"
 #include "../../core/pif/h64_input_script.h"
 #include "../../core/savestate/h64_state.h"
 #include "../../core/common/h64_fenv.h"
@@ -283,6 +284,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     const char *wavPath = 0;
     const char *saveDir = 0;
     const char *loadState = 0, *saveStatePath = 0;
+    u32 probeX = 0, probeY = 0, probeFrame = 0;
+    int probe = 0;
     u32 saveStateFrame = 0;
     int stateSaved = 0;
     char saveDirSep[512];
@@ -317,6 +320,12 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
         else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) saveDir = argv[++i];
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) loadState = argv[++i];
+        else if (!strcmp(argv[i], "--probe") && i + 1 < argc)
+        {
+            // --probe X,Y,FRAME: log every RDP pixel write at (X, Y) during VI frame FRAME (software RDP).
+            if (sscanf(argv[++i], "%u,%u,%u", &probeX, &probeY, &probeFrame) != 3) { fprintf(stderr, "--probe takes X,Y,FRAME\n"); return 2; }
+            probe = 1;
+        }
         else if (!strcmp(argv[i], "--save-state") && i + 1 < argc)
         {
             char *colon;
@@ -486,6 +495,13 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                     if (h64_vi_render(sys, img, 1024, 1024, &sw, &sh) == 0 && h64_png_write_rgb(shots[k].path, img, sw, sh) == 0)
                         printf("[shot] frame %u: %s\n", sys->vi.frames, shots[k].path);
                 }
+        }
+        if (probe)
+        {
+            H64RdpState *ps = h64_rdp_state(sys);
+            ps->probeOn = sys->vi.frames >= probeFrame && sys->vi.frames <= probeFrame + 1;
+            ps->probeX = probeX;
+            ps->probeY = probeY;
         }
         if (saveStatePath && !stateSaved && sys->vi.frames >= saveStateFrame && h64_state_quiet(sys))
         {

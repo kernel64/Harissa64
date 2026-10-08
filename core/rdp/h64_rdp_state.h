@@ -100,6 +100,9 @@ struct H64RdpState
 
     u16 noise;                   // current noise sample
     u32 primitives;              // statistics
+    // Debug probe (h64test --probe X,Y,FRAME): every pixel write at (x, y) is logged.
+    int probeOn;
+    u32 probeX, probeY;
 };
 
 // Texture unit (h64_rdp_tex.cpp)

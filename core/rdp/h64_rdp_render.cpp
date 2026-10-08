@@ -993,7 +993,25 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         }
         shadeAlpha = (u8)(shade[3] + alphaDith < 0xFF ? shade[3] + alphaDith : 0xFF);
         load_pixel(sys, st, (u32)x, (u32)y, &p);
-        depth_blend(st, d, &p, combined, z, rgbDith, coverageCount, shadeAlpha);
+        if (st->probeOn && (u32)x == st->probeX && (u32)y == st->probeY)
+        {
+            const H64RdpCombiner *c0 = &st->combiner[0], *c1 = &st->combiner[1];
+            u8 before[4];
+            memcpy(before, p.c, 4);
+            depth_blend(st, d, &p, combined, z, rgbDith, coverageCount, shadeAlpha);
+            H64_INFO("[probe] prim %u at %d,%d: comb0 rgb(%u %u %u %u) a(%u %u %u %u) comb1 rgb(%u %u %u %u) a(%u %u %u %u) "
+                     "blend %u%u%u%u/%u%u%u%u raster %08X db %08X cvg %u zmode %u prim %08X env %08X fog %08X blendc %08X "
+                     "tile %u fmt %u size %u | combined %d %d %d %d shadeA %u cvgcount %d z %d | %02X%02X%02X%02X -> %02X%02X%02X%02X",
+                     st->primitives, x, y, c0->rgbMulAdd, c0->rgbMulSub, c0->rgbMul, c0->rgbAdd, c0->aMulAdd, c0->aMulSub, c0->aMul,
+                     c0->aAdd, c1->rgbMulAdd, c1->rgbMulSub, c1->rgbMul, c1->rgbAdd, c1->aMulAdd, c1->aMulSub, c1->aMul, c1->aAdd,
+                     st->blend[0][0], st->blend[0][1], st->blend[0][2], st->blend[0][3], st->blend[1][0], st->blend[1][1],
+                     st->blend[1][2], st->blend[1][3], st->rasterFlags, st->depthBlendFlags, st->coverageMode, st->zMode,
+                     st->primColor, st->envColor, st->fogColor, st->blendColor, pc->ts.tile & 7, st->tiles[pc->ts.tile & 7].fmt,
+                     st->tiles[pc->ts.tile & 7].size, combined[0], combined[1], combined[2], combined[3], shadeAlpha, coverageCount,
+                     z, before[0], before[1], before[2], before[3], p.c[0], p.c[1], p.c[2], p.c[3]);
+        }
+        else
+            depth_blend(st, d, &p, combined, z, rgbDith, coverageCount, shadeAlpha);
         store_pixel(sys, st, &p);
     }
 }

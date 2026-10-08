@@ -181,14 +181,19 @@ static IDirect3DVertexShader9 *compile_vs(IDirect3DDevice9 *dev, const char *src
 }
 
 // Vertex positions arrive in N64 pixels; c0 = (2 / fb width, -2 / fb height).
+// The RDP interpolates shade linearly in screen space, the GPU perspective-
+// correctly: the shade also goes out multiplied by w with w beside it, and the
+// combiner divides, which gives the screen-linear value (texture coordinates
+// stay perspective-correct, as the RDP's are). Fog in the shade alpha on large
+// ground triangles (OoT's Kokiri paths) depends on it.
 static const char s_vsSource[] =
     "float4 scale : register(c0);\n"
     "struct VIN { float4 pos : POSITION; float4 col : COLOR0; float4 tc : TEXCOORD0; };\n"
-    "struct VOUT { float4 pos : POSITION; float4 col : COLOR0; float4 tc : TEXCOORD0; };\n"
+    "struct VOUT { float4 pos : POSITION; float4 col : COLOR0; float4 tc : TEXCOORD0; float4 lcol : TEXCOORD1; float4 lw : TEXCOORD2; };\n"
     "VOUT main(VIN i) {\n"
     "  VOUT o; float w = i.pos.w;\n"
     "  o.pos = float4((i.pos.x * scale.x - 1.0) * w, (i.pos.y * scale.y + 1.0) * w, i.pos.z * w, w);\n"
-    "  o.col = i.col; o.tc = i.tc; return o; }\n";
+    "  o.col = i.col; o.tc = i.tc; o.lcol = i.col * w; o.lw = float4(w, w, w, w); return o; }\n";
 
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
@@ -274,12 +279,24 @@ static const char *a_c(u32 s)
 
 enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2 };
 
-static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c)
+// In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
+// pixel's texel 0 (pipelining; ParaLLEl-RDP's shading follows it): t0 and t1
+// swap there. OoT's Kokiri paths take their alpha from "TEXEL1" in cycle 2,
+// i.e. from the I4 mask in tile 0: with t1 they came out opaque.
+static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int second)
 {
+    char *p;
     sprintf_s(out, len,
               "  comb = float4(float3(saturate((%s - %s) * %s + %s)), saturate((%s - %s) * %s + %s));\n",
               rgb_a(c->rgbMulAdd), rgb_b(c->rgbMulSub), rgb_c(c->rgbMul), rgb_d(c->rgbAdd), a_abd(c->aMulAdd),
               a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
+    if (!second) return;
+    for (p = out; *p; p++)
+        if (p[0] == 't' && (p[1] == '0' || p[1] == '1') && p[2] == '.')
+        {
+            p[1] = p[1] == '0' ? '1' : '0';
+            p += 2;
+        }
 }
 
 static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
@@ -290,8 +307,8 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
     IDirect3DPixelShader9 *ps;
     if (it != x->shaders.end())
         return it->second;
-    combiner_cycle(c0, sizeof(c0), &x->st->combiner[0]);
-    if (flags & KEY_TWO_CYCLE) combiner_cycle(c1, sizeof(c1), &x->st->combiner[1]);
+    combiner_cycle(c0, sizeof(c0), &x->st->combiner[0], 0);
+    if (flags & KEY_TWO_CYCLE) combiner_cycle(c1, sizeof(c1), &x->st->combiner[1], 1);
     else c1[0] = 0;
     if (x->debug == 1) { strcpy(c0, "  comb = float4(1.0, 0.0, 0.0, 1.0);\n"); c1[0] = 0; }
     if (x->debug == 2) { strcpy(c0, "  comb = float4(shade.rgb, 1.0);\n"); c1[0] = 0; }
@@ -306,7 +323,8 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "float4 misc : register(c4);\n"
               "float4 keyc : register(c5);\n"
               "float4 keys : register(c6);\n"
-              "float4 main(float4 shade : COLOR0, float4 tc : TEXCOORD0, float2 vpos : VPOS) : COLOR {\n"
+              "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0, float4 lcol : TEXCOORD1, float4 lw : TEXCOORD2, float2 vpos : VPOS) : COLOR {\n"
+              "  float4 shade = saturate(lcol / lw.x);\n"
               "  float4 t0 = tex2D(s0, tc.xy);\n"
               "  float4 t1 = tex2D(s1, tc.zw);\n"
               "  float4 noise = frac(sin(dot(vpos, float2(12.9898, 78.233))) * 43758.5453);\n"
