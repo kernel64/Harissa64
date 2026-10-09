@@ -636,7 +636,7 @@ void h64_rsp_slice_event(H64System *sys)
         if (rsp->hleDpInterrupt)
         {
             rsp->hleDpInterrupt = 0;
-            h64_mi_raise(sys, MI_INTR_DP);
+            h64_rdp_hle_full_sync(sys);
         }
         return;
     }

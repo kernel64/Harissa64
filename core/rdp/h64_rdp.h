@@ -27,6 +27,9 @@ struct H64RdpRegs
 {
     u32 start, end, current, status;
     u32 clock, bufBusy, pipeBusy, tmemCounter;
+    // An HLE graphics task's SYNC_FULL that the RDP has not reached yet
+    // because DPC_STATUS was frozen when the task ended (h64_rdp_hle_full_sync).
+    u32 hleSyncPending;
 };
 
 struct H64Rdp;
@@ -35,6 +38,9 @@ void h64_rdp_reset(H64System *sys);
 void h64_rdp_free(H64System *sys);
 u32 h64_dp_read(H64System *sys, u32 reg);
 void h64_dp_write(H64System *sys, u32 reg, u32 value);
+// The end of an HLE graphics task whose commands end with SYNC_FULL: raises
+// the DP interrupt now, or once the CPU unfreezes the RDP.
+void h64_rdp_hle_full_sync(H64System *sys);
 
 // One complete command (1 to 22 big-endian 64-bit words), h64_rdp_render.cpp.
 void h64_rdp_command(H64System *sys, const u64 *words, u32 count);

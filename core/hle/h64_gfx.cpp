@@ -1660,10 +1660,9 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync);
 // How long the real microcode would keep the RSP busy, in CPU cycles: 130 RCP
 // cycles per vertex and 230 per triangle, fitted on the LLE RSP's timing
 // (h64test --gfx-cost-log: DK64, SM64, MK64 average 0.5-0.7 M RCP cycles a
-// task). A fixed 0.1 M ran games' frames up to 7 times faster than the
-// console's: DK64's intro then overtook its EEPROM formatting thread, which
-// was started again while it slept, corrupting libultra's timer list (audio
-// and controllers dead after 5 s).
+// task). Experimental (--gfx-timing): DK64's intro running twice as fast
+// with the HLE came from the DP interrupt ignoring DPC_STATUS.FREEZE
+// (h64_rdp_hle_full_sync), not from the task time.
 u32 h64_gfx_cost(const H64Gfx *g)
 {
     return (130u * g->nVerts + 230u * g->nTris) * 3u / 2u;

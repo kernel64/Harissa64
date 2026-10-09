@@ -395,6 +395,8 @@ static void visit(StateIO *io, H64System *sys, u8 *hidden)
     io_u32(io, &sys->dp.bufBusy);
     io_u32(io, &sys->dp.pipeBusy);
     io_u32(io, &sys->dp.tmemCounter);
+    if (io->version >= 3) io_u32(io, &sys->dp.hleSyncPending);
+    else if (io->mode == IO_LOAD) sys->dp.hleSyncPending = 0;
     for (i = 0; i < 22; i++) io_u64(io, &sys->dpCommand[i]);
     io_u32(io, &sys->dpPendingWords);
     io_u64(io, &sys->dpCommands);

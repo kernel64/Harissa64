@@ -74,6 +74,22 @@ static void run_commands(H64System *sys)
     }
 }
 
+// The graphics HLE draws its whole task at once, but the commands it stands
+// for go through the RDP, which processes nothing while DPC_STATUS.FREEZE is
+// set: their SYNC_FULL, and so the DP interrupt, comes only once the CPU
+// clears the freeze. DK64 and Banjo-Tooie freeze the RDP after each DP
+// interrupt and unfreeze it at the next VI: an interrupt raised while frozen
+// let DK64's intro run twice as fast as on the console (its EEPROM thread was
+// then restarted while asleep) and was lost by Banjo-Tooie's scheduler (stuck
+// on its loading screen).
+void h64_rdp_hle_full_sync(H64System *sys)
+{
+    if (sys->dp.status & DPC_FREEZE)
+        sys->dp.hleSyncPending = 1;
+    else
+        h64_mi_raise(sys, MI_INTR_DP);
+}
+
 u32 h64_dp_read(H64System *sys, u32 reg)
 {
     H64RdpRegs *dp = &sys->dp;
@@ -114,7 +130,17 @@ void h64_dp_write(H64System *sys, u32 reg, u32 v)
     case 3:
         if (v & 0x001) dp->status &= ~DPC_XBUS;
         if (v & 0x002) dp->status |= DPC_XBUS;
-        if (v & 0x004) { dp->status &= ~DPC_FREEZE; run_commands(sys); }
+        if (v & 0x004)
+        {
+            dp->status &= ~DPC_FREEZE;
+            run_commands(sys);
+            if (dp->hleSyncPending)
+            {
+                // The HLE task's commands come before anything queued since.
+                dp->hleSyncPending = 0;
+                h64_mi_raise(sys, MI_INTR_DP);
+            }
+        }
         if (v & 0x008) dp->status |= DPC_FREEZE;
         if (v & 0x010) dp->status &= ~DPC_FLUSH;
         if (v & 0x020) dp->status |= DPC_FLUSH;
