@@ -68,3 +68,6 @@ local.cfg
 # Result files the execmem tool writes on the console (copied back here)
 execmem_*.txt
 __pycache__/
+
+# Claude Code worktrees of parallel agents
+.claude/
