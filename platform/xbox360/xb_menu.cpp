@@ -314,8 +314,11 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         }
 
         dev->Clear(0, NULL, D3DCLEAR_TARGET, COL_BG, 1.0f, 0);
-        UiText(dev, 96, 50, 5, COL_EDGE, "HARISSA64 V2");
-        UiText(dev, 96 + UiTextWidth(5, "HARISSA64 V2") + 24, 74, 2, COL_DIM, H64_VERSION_STRING);
+        {
+            int tx = 96 + UiLogo(dev, 96, 38, 4) + 20;   // 64 px pepper, centred on the 40 px title
+            UiText(dev, tx, 50, 5, COL_EDGE, "HARISSA64 V2");
+            UiText(dev, tx + UiTextWidth(5, "HARISSA64 V2") + 24, 74, 2, COL_DIM, H64_VERSION_STRING);
+        }
         if (!n)
             UiText(dev, 96, listY, 3, COL_TEXT, "No ROM found.\n\nCopy .z64, .n64, .v64 or .zip files\ninto game:\\roms\\");
         for (i = 0; i < rows && top + i < n; i++)

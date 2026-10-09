@@ -18,6 +18,9 @@ void UiText(IDirect3DDevice9 *dev, int x, int y, int scale, D3DCOLOR color, cons
 int UiTextWidth(int scale, const char *text);
 void UiRect(IDirect3DDevice9 *dev, int x, int y, int w, int h, D3DCOLOR color);
 void UiCircle(IDirect3DDevice9 *dev, int cx, int cy, int r, D3DCOLOR color);
+// The Harissa red pepper (the README's chili emoji as 16x16 pixel art), each pixel
+// `scale` x `scale`, top-left at (x, y). Returns its width.
+int UiLogo(IDirect3DDevice9 *dev, int x, int y, int scale);
 
 // Button prompts as in V1's menus: "A:Play|B:Back|LB/RB:Page|DPAD:Change"
 // draws each button's glyph (coloured disc for A/B/X/Y, grey pill for LB, RB,

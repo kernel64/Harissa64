@@ -56,6 +56,52 @@ void UiText(IDirect3DDevice9 *dev, int x, int y, int scale, D3DCOLOR color, cons
     if (n) dev->Clear(n, s_rects, D3DCLEAR_TARGET, color, 1.0f, 0);
 }
 
+// Drawn for V2: R red, D its shadow, H highlight, G green, g dark green.
+static const char *s_logo[16] = {
+    "...............g",
+    "..............gg",
+    ".............gg.",
+    "..........gGGgG.",
+    ".........gGGGGgg",
+    "........RHHRGGg.",
+    ".......RHHRRRgD.",
+    "......RHHRRRRRD.",
+    ".....RHRRRRRRDD.",
+    "....RHRRRRRRRD..",
+    "...RRRRRRRRRDD..",
+    "..RRRRRRRRRDD...",
+    ".RRRRRRRRDDD....",
+    "RRRRRRRDDD......",
+    "RRRDDDD.........",
+    ".DD.............",
+};
+
+static D3DCOLOR logo_color(char c)
+{
+    switch (c)
+    {
+    case 'R': return D3DCOLOR_XRGB(220, 40, 30);
+    case 'D': return D3DCOLOR_XRGB(150, 22, 18);
+    case 'H': return D3DCOLOR_XRGB(255, 130, 110);
+    case 'G': return D3DCOLOR_XRGB(70, 180, 60);
+    default:  return D3DCOLOR_XRGB(30, 115, 40);
+    }
+}
+
+int UiLogo(IDirect3DDevice9 *dev, int x, int y, int scale)
+{
+    int row, col;
+    for (row = 0; row < 16; row++)
+        for (col = 0; col < 16;)
+        {
+            char c = s_logo[row][col];
+            int start = col;
+            while (col < 16 && s_logo[row][col] == c) col++;   // one rectangle per run of a colour
+            if (c != '.') UiRect(dev, x + start * scale, y + row * scale, (col - start) * scale, scale, logo_color(c));
+        }
+    return 16 * scale;
+}
+
 void UiCircle(IDirect3DDevice9 *dev, int cx, int cy, int r, D3DCOLOR color)
 {
     D3DRECT rows[64];
