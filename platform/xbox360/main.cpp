@@ -16,6 +16,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
+
+#include <string>
 #include <ppcintrinsics.h>
 
 #include "../../core/common/h64_types.h"
@@ -127,24 +130,54 @@ static void BenchCodeMemory(void)
 static FILE *s_log = NULL;
 static const char *s_logDrive = "game";   // where the log (and screenshots) go
 
-static void file_sink(int level, const char *line)
-{
-    (void)level;
-    OutputDebugStringA(line);
-    OutputDebugStringA("\n");
-    if (s_log)
-    {
-        // Written through the CRT buffer: flushing every line to the USB stick
-        // cost ~120 ms per 2-s period of [perf] lines. Warnings and errors are
-        // flushed at once, the rest by LogFlush (each period, on leaving).
-        fprintf(s_log, "%s\n", line);
-        if (level <= H64_LOG_WARN) fflush(s_log);
-    }
-}
+// The log goes to memory; a low-priority thread writes it every 500 ms.
+// Writing it from the emulation thread stalled it for 100-140 ms every 2-s
+// period of [perf] lines (FATX writes), which clock pacing turned into lost
+// frames. Warnings and errors are written at once (a crash must not lose them).
+static CRITICAL_SECTION s_logLock;
+static std::string s_logBuf;
+static HANDLE s_logThread;
+static volatile LONG s_logQuit;
+
+static CRITICAL_SECTION s_logFileLock;   // the file only: the buffer lock is never held while writing
 
 static void LogFlush(void)
 {
-    if (s_log) fflush(s_log);
+    std::string out;
+    if (!s_log) return;
+    EnterCriticalSection(&s_logFileLock);
+    EnterCriticalSection(&s_logLock);
+    out.swap(s_logBuf);
+    LeaveCriticalSection(&s_logLock);
+    if (!out.empty())
+    {
+        fwrite(out.data(), 1, out.size(), s_log);
+        fflush(s_log);
+    }
+    LeaveCriticalSection(&s_logFileLock);
+}
+
+static DWORD WINAPI LogThread(LPVOID)
+{
+    while (!s_logQuit)
+    {
+        Sleep(500);
+        LogFlush();
+    }
+    return 0;
+}
+
+static void file_sink(int level, const char *line)
+{
+    // No OutputDebugString: with XBDM loaded (DashLaunch plugin) each call goes
+    // to the debug monitor over the network, ~9 ms per line: the [perf] block
+    // stalled the emulation 90-120 ms every 2 s.
+    if (!s_log) return;
+    EnterCriticalSection(&s_logLock);
+    s_logBuf += line;
+    s_logBuf += '\n';
+    LeaveCriticalSection(&s_logLock);
+    if (level <= H64_LOG_WARN || !s_logThread) LogFlush();
 }
 
 // ---- Configuration: xb_config.cpp ----
@@ -340,9 +373,37 @@ static void WorkWaitTicket(void *, u32 ticket) { QueueWaitTicket(&s_gfxQ, ticket
 static void AudioStart(void *, void (*fn)(void *), void *arg) { QueuePush(&s_audioQ, fn, arg); }
 static void AudioWait(void *) { QueueWait(&s_audioQ); }
 
+// Present pacing statistics: intervals between the moments frames reach the
+// screen (QPC), for the [pace] line. Written by the thread that presents.
+static LARGE_INTEGER s_presLast;
+static double s_presSum, s_presSumSq, s_presMax, s_presMin = 1e9;
+static u32 s_presCount, s_presLong;
+// Longest time per loop section in the period (ms), to find stalls.
+static double s_maxRun, s_maxPresent, s_maxSaves, s_maxWait, s_lastPerfBlock;
+
+static void NotePresent(void)
+{
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    if (s_presLast.QuadPart)
+    {
+        double ms = (double)(now.QuadPart - s_presLast.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        s_presSum += ms;
+        s_presSumSq += ms * ms;
+        if (ms > s_presMax) s_presMax = ms;
+        if (ms < s_presMin) s_presMin = ms;
+        if (ms > 25.0) s_presLong++;
+        s_presCount++;
+    }
+    s_presLast = now;
+}
+
 static void PresentJob(void *arg)
 {
     h64_xenos_present_vi(s_workRenderer, (const u32 *)arg);
+    NotePresent();
 }
 
 // The frame's present: on the graphics worker when it runs, with the VI registers of now.
@@ -355,7 +416,10 @@ static void PresentFrame(H64System *sys, H64Renderer *renderer)
         WorkStart(NULL, PresentJob, regs);
     }
     else
+    {
         h64_xenos_present(renderer);
+        NotePresent();
+    }
 }
 
 static void WorkersStart(H64System *sys, IDirect3DDevice9 *dev, H64Renderer *renderer, int gfx, u32 gfxCycles, int audio,
@@ -1061,6 +1125,11 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         QueryPerformanceCounter(&t2);
         profRun += t1.QuadPart - t0.QuadPart;
         profPresent += t2.QuadPart - t1.QuadPart;
+        {
+            double r = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart, pr = (double)(t2.QuadPart - t1.QuadPart) * 1000.0 / freq.QuadPart;
+            if (r > s_maxRun) s_maxRun = r;
+            if (pr > s_maxPresent) s_maxPresent = pr;
+        }
         framesSincePerf++;
         presented++;
         fpsFrames++;
@@ -1071,7 +1140,11 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             fpsFrames = 0;
             fpsStart = nowMs;
         }
-        SavesTick(sys, presented, 0);
+        {
+            double s0 = QpcMs();
+            SavesTick(sys, presented, 0);
+            if (QpcMs() - s0 > s_maxSaves) s_maxSaves = QpcMs() - s0;
+        }
         {
             int i;
             for (i = 0; i < c->shotCount; i++)
@@ -1099,34 +1172,48 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             break;
         }
 
-        // Pacing: on the audio queue, or on the clock when no sound plays.
+        // Pacing on the clock, one VI period per frame, so frames reach the
+        // screen evenly (pacing on the audio queue alone ran several frames
+        // back to back, then waited: Paper Mario's name screen, intervals
+        // from 2 to 130 ms at 60 FPS on average). XAudio2's rate control keeps
+        // the queue near its target; the queue only nudges the period by up
+        // to 1 %, and stops the clock if it ran far over the target.
         QueryPerformanceCounter(&t0);
         queued = xb_audio_queued_ms();
-        if (queued >= 0)
-        {
-            while (queued > xb_audio_target_ms())
-            {
-                Sleep(1);
-                queued = xb_audio_queued_ms();
-                if (queued < 0) break;
-            }
-            QueryPerformanceCounter(&frameStart);
-        }
-        else
         {
             LONGLONG frameTicks = freq.QuadPart * sys->vi.frameCycles / 93750000;
+            int target = xb_audio_target_ms();
+            if (queued >= 0 && target > 0)
+            {
+                double e = (double)(queued - target) / target;   // > 0: too much sound queued, slow down
+                if (e > 1.0) e = 1.0;
+                if (e < -1.0) e = -1.0;
+                frameTicks += (LONGLONG)(frameTicks * 0.01 * e);
+            }
             for (;;)
             {
+                LONGLONG left;
                 QueryPerformanceCounter(&now);
-                if (now.QuadPart - frameStart.QuadPart >= frameTicks) break;
-                if (frameTicks - (now.QuadPart - frameStart.QuadPart) > freq.QuadPart / 1000) Sleep(1);
+                left = frameTicks - (now.QuadPart - frameStart.QuadPart);
+                if (left <= 0) break;
+                if (left > freq.QuadPart / 500) Sleep(1);   // more than 2 ms left: sleep, then spin to the deadline
             }
             frameStart.QuadPart += frameTicks;
             if (now.QuadPart - frameStart.QuadPart > frameTicks * 4) frameStart = now;   // far behind: do not catch up
+            if (queued > 2 * target && target > 0)
+            {
+                // Far too much sound queued (after a pause, a load): let it drain.
+                while (xb_audio_queued_ms() > target) Sleep(1);
+                QueryPerformanceCounter(&frameStart);
+            }
         }
 
         QueryPerformanceCounter(&t1);
         profWait += t1.QuadPart - t0.QuadPart;
+        {
+            double wms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
+            if (wms > s_maxWait) s_maxWait = wms;
+        }
         if (QpcMs() - perfStart >= 2000.0)
         {
             double perfNow = QpcMs(), ms = perfNow - perfStart;
@@ -1138,6 +1225,17 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                      framesSincePerf * 1000.0 / ms, (double)(sys->cpu.instructions - instrAtPerf) / (ms * 1000.0),
                      xs.triangles, xs.rects, xs.fills, xs.textureUploads, xs.textureCreates, xs.shaderCompiles, xs.copyBacks, xs.fbSwitches, as.buffers, as.underruns, as.fillMs,
                      as.ratioPermille / 1000, as.ratioPermille % 1000, as.playedHz, as.submittedHz, as.dropped);
+            if (s_presCount)
+            {
+                double mean = s_presSum / s_presCount, var = s_presSumSq / s_presCount - mean * mean;
+                H64_INFO("[pace] %u presents: interval mean %.1f ms, sd %.1f, min %.1f, max %.1f, %u over 25 ms | longest: run %.1f, present %.1f, saves %.1f, wait %.1f, last stats block %.1f ms",
+                         s_presCount, mean, var > 0 ? sqrt(var) : 0.0, s_presMin, s_presMax, s_presLong, s_maxRun, s_maxPresent, s_maxSaves,
+                         s_maxWait, s_lastPerfBlock);
+                s_maxRun = s_maxPresent = s_maxSaves = s_maxWait = 0;
+                s_presSum = s_presSumSq = s_presMax = 0;
+                s_presMin = 1e9;
+                s_presCount = s_presLong = 0;
+            }
             {
                 // Audio the game queued in this period, and what it read back from AI_LEN.
                 static u64 q0, r0, rs0;
@@ -1200,8 +1298,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;
             perfStart = perfNow;   // the next period starts now, the time spent logging included
+            s_lastPerfBlock = QpcMs() - perfNow;
             framesSincePerf = 0;
-            LogFlush();
             instrAtPerf = sys->cpu.instructions;
         }
     }
@@ -1230,6 +1328,8 @@ int __cdecl main()
     static char jitReport[512];
     Config cfg;
 
+    InitializeCriticalSection(&s_logLock);
+    InitializeCriticalSection(&s_logFileLock);
     s_log = fopen("game:\\harissa64v2.log", "w");
     if (!s_log)
     {
@@ -1237,6 +1337,13 @@ int __cdecl main()
         s_logDrive = "cache";
     }
     h64_log_set_sink(file_sink);
+    s_logThread = CreateThread(NULL, 64 * 1024, LogThread, NULL, CREATE_SUSPENDED, NULL);
+    if (s_logThread)
+    {
+        XSetThreadProcessor(s_logThread, 5);
+        SetThreadPriority(s_logThread, THREAD_PRIORITY_BELOW_NORMAL);
+        ResumeThread(s_logThread);
+    }
     H64_INFO("[main] Harissa64 V2 %s (Xbox 360), %s-endian, %d-bit pointers", H64_VERSION_STRING,
              H64_HOST_BIG_ENDIAN ? "big" : "little", (int)(sizeof(void *) * 8));
     LoadConfig(&cfg);
@@ -1322,6 +1429,14 @@ int __cdecl main()
         }
     }
 
+    if (s_logThread)
+    {
+        s_logQuit = 1;
+        WaitForSingleObject(s_logThread, INFINITE);
+        CloseHandle(s_logThread);
+        s_logThread = NULL;
+    }
+    LogFlush();
     if (s_log)
         fclose(s_log);
     // Back to the dashboard (Aurora on the console). Xenia has none: it looks
