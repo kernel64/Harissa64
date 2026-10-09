@@ -31,6 +31,12 @@ struct Config
     int fullExits;      // fullexits=1: the dynarec's older inline linked exits (A/B check)
     int fastFpu;        // fastfpu=0: exact COP1 (FCR31 cause/flag bits kept); 1 by default
     int smooth;         // smooth=0: no edge smoothing when frames are shown
+    int resScale;       // resolution=1|2|3: internal resolution, native 320x240 x1, x2, x3 (default)
+    int texFilter;      // texfilter=0|1|2: N64 3-point, bilinear (default), nearest
+    int sharpen;        // sharpen=0|1|2: contrast-adaptive sharpening (off, low, high)
+    int blur;           // blur=0|1|2: blur (off, soft, strong)
+    int screen;         // screen=0..4: none, scanlines, CRT, curved CRT, LCD grid (crt=1: curved CRT)
+    int aspect;         // aspect=0|1|2: 4:3, 16:9 widescreen (wider 3D), 16:9 stretched
     int showFps;        // showfps=1: frames shown per second in a corner
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
     int asyncAudio;     // asyncaudio=0: audio HLE tasks on the CPU thread
@@ -52,8 +58,8 @@ struct Config
 void ConfigDefaults(Config *c);
 // Applies the key=value lines of a file over *c. Returns 0 when the file is missing.
 int ConfigParseFile(Config *c, const char *path);
-// Writes the keys the menu edits (cpu, hle, audioms, smooth, showfps, and
-// lastrom when `withLastRom`). Returns 0 on failure.
+// Writes the keys the menu edits (cpu, hle, audioms, showfps, the graphics
+// keys, and lastrom when `withLastRom`). Returns 0 on failure.
 int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom);
 
 #endif

@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "../../core/common/h64_endian.h"
@@ -94,6 +95,14 @@ struct Xenos
     IDirect3DPixelShader9 *psCopy, *psFill, *psFallback;
     IDirect3DPixelShader9 *psSmooth;   // edge smoothing at display (FXAA)
     int smooth;
+    // Graphics settings (h64_xenos_set_options).
+    int scale;          // internal resolution: 1 (320x240 for a 320-wide image), 2, 3 (960x720)
+    u32 rtW, rtH;       // the part of the N64 target drawn at that scale (viewport)
+    float uMax, vMax;   // rtW / RT_WIDTH, rtH / RT_HEIGHT: that part in a frame texture
+    int texFilter;      // 0 the N64's 3-point filter, 1 bilinear, 2 nearest
+    int sharpen, blur, screen;  // display: sharpening 0-2, blur 0-2, screen effect (H64XenosOptions)
+    int aspect;                 // 0 4:3, 1 16:9 widescreen (wider 3D), 2 16:9 stretched
+    std::map<int, IDirect3DPixelShader9 *> psDisplay;   // display pass variants, compiled on use
     IDirect3DTexture9 *dummy;
     IDirect3DTexture9 *cpuFb[2];
     int cpuFbNext;
@@ -304,7 +313,7 @@ static const char *a_c(u32 s)
     return t[s & 7];
 }
 
-enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4 };
+enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8 };
 #define TRI_ZOUT 0x100   // batch flag beside H64_TRI_*: a vertex Z outside the RDP range
 
 // In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
@@ -326,6 +335,23 @@ static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int s
             p += 2;
         }
 }
+
+// The RDP's bilinear filter is a 3-point one: of the 2x2 texels around the
+// sample it blends the 3 of the triangle the sample falls in (the diagonal
+// from the lower-left to the upper-right texel splits the square). Sampled
+// with point filtering; tsize = (width, height, 1/width, 1/height).
+static const char s_ps3PointSource[] =
+    "float4 tex3p(sampler s, float2 uv, float4 tsize) {\n"
+    "  float2 p = uv * tsize.xy - 0.5;\n"
+    "  float2 f = frac(p);\n"
+    "  float2 b = (floor(p) + 0.5) * tsize.zw;\n"
+    "  float4 c00 = tex2D(s, b);\n"
+    "  float4 c10 = tex2D(s, b + float2(tsize.z, 0.0));\n"
+    "  float4 c01 = tex2D(s, b + float2(0.0, tsize.w));\n"
+    "  float4 c11 = tex2D(s, b + tsize.zw);\n"
+    "  return (f.x + f.y < 1.0) ? c00 + f.x * (c10 - c00) + f.y * (c01 - c00)\n"
+    "                           : c11 + (1.0 - f.x) * (c01 - c11) + (1.0 - f.y) * (c10 - c11);\n"
+    "}\n";
 
 static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
 {
@@ -352,12 +378,15 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "float4 keyc : register(c5);\n"
               "float4 keys : register(c6);\n"
               "float4 zbias : register(c7);\n"
+              "float4 tsize0 : register(c8);\n"
+              "float4 tsize1 : register(c9);\n"
+              "%s"
               "struct PSOUT { float4 c : COLOR; %s };\n"
               "PSOUT main(float4 col : COLOR0, float4 tc : TEXCOORD0, float4 lcol : TEXCOORD1, float4 lw : TEXCOORD2, float2 vpos : VPOS) {\n"
               "  PSOUT o;\n"
               "  float4 shade = saturate(lcol / lw.x);\n"
-              "  float4 t0 = tex2D(s0, tc.xy);\n"
-              "  float4 t1 = tex2D(s1, tc.zw);\n"
+              "  float4 t0 = %s;\n"
+              "  float4 t1 = %s;\n"
               "  float4 noise = frac(sin(dot(vpos, float2(12.9898, 78.233))) * 43758.5453);\n"
               "  float4 comb = float4(0.0, 0.0, 0.0, 0.0);\n"
               "%s%s%s"
@@ -365,7 +394,10 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "%s"
               "  return o;\n"
               "}\n",
+              (flags & KEY_3POINT) ? s_ps3PointSource : "",
               (flags & KEY_DEPTH) ? "float d : DEPTH;" : "",
+              (flags & KEY_3POINT) ? "tex3p(s0, tc.xy, tsize0)" : "tex2D(s0, tc.xy)",
+              (flags & KEY_3POINT) ? "tex3p(s1, tc.zw, tsize1)" : "tex2D(s1, tc.zw)",
               c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
               // Xenos computes ddx/ddy with a texture unit: a shader whose
               // combiner reads no texture had no sampler left and failed to
@@ -757,7 +789,14 @@ static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
     u64 t0 = h64_prof_now(x->sys);
     IDirect3DTexture9 *tex = get_texture(x, tile, b);
     x->stats.tTexture += h64_prof_now(x->sys) - t0;
-    DWORD filter = (x->st->rasterFlags & (RS_SAMPLE_QUAD)) && !(x->st->rasterFlags & RS_COPY) ? D3DTEXF_LINEAR : D3DTEXF_POINT;
+    DWORD filter = (x->st->rasterFlags & (RS_SAMPLE_QUAD)) && !(x->st->rasterFlags & RS_COPY) && x->texFilter == 1 ? D3DTEXF_LINEAR
+                                                                                                             : D3DTEXF_POINT;
+    float sz[4];
+    sz[0] = (float)(b->w ? b->w : 1);
+    sz[1] = (float)(b->h ? b->h : 1);
+    sz[2] = 1.0f / sz[0];
+    sz[3] = 1.0f / sz[1];
+    x->dev->SetPixelShaderConstantF(8 + stage, sz, 1);   // tsize0/tsize1 (3-point filter)
     x->dev->SetTexture(stage, tex ? tex : x->dummy);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, b->clampS ? D3DTADDRESS_CLAMP : b->mirrorS ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, b->clampT ? D3DTADDRESS_CLAMP : b->mirrorT ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
@@ -781,9 +820,13 @@ static u32 fb_height(u32 width) { return width <= 320 ? 240 : width * 3 / 4; }
 
 static void bind_n64_target(Xenos *x)
 {
+    D3DVIEWPORT9 vp;
     if (x->targetBound) return;
     x->dev->SetRenderTarget(0, x->n64Color);
     x->dev->SetDepthStencilSurface(x->n64Depth);
+    // The internal resolution: the frame is drawn in the top-left rtW x rtH of the target.
+    vp.X = 0; vp.Y = 0; vp.Width = x->rtW; vp.Height = x->rtH; vp.MinZ = 0.0f; vp.MaxZ = 1.0f;
+    x->dev->SetViewport(&vp);
     x->targetBound = 1;
 }
 
@@ -837,26 +880,173 @@ static void draw_fullscreen(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1
     draw_textured(x, tex, u1, v1, 0, 0, (float)RT_WIDTH, (float)RT_HEIGHT, (float)RT_WIDTH, (float)RT_HEIGHT);
 }
 
-// The N64 picture on the back buffer: 4:3, centred.
-static void draw_display(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1)
+// The display pass: the N64 picture on the back buffer, with the options of
+// the menu's Graphics page, after what modern emulators offer (RetroArch's
+// shader presets, GLideN64, ParaLLEl). One shader per combination, built on
+// first use. Constants: c0 = (1/w, 1/h, w, h) of the frame texture; c1 = (u, v
+// of the drawn part, N64 pixels across, N64 lines); c2 = (scanlines, 0, 0, 0).
+// - Smoothing: FXAA 2 (as s_psSmoothSource).
+// - Blur: a 3x3 Gaussian (1-2-1) over N64 pixels, 0.75 (soft) or 1.5
+//   (strong) pixels apart: the soft picture of a composite cable.
+// - Sharpening: contrast-adaptive, after the idea of AMD FidelityFX CAS (MIT):
+//   the 4 neighbours subtracted with a weight that shrinks where the local
+//   contrast is already high, so edges do not ring.
+// - Screen: 1 scanlines, 5 light scanlines; 2 CRT and 3 curved CRT (without smoothing, blur or
+//   sharpening), after Timothy Lottes's CRT
+//   shader (public domain): each pixel is lit by the two nearest N64 lines
+//   with a Gaussian beam that widens on bright colours, a horizontally soft
+//   beam, a light aperture grille and a glow; 3 adds the tube's curvature, a
+//   vignette and rounded corners; 4 LCD: dark gaps between the N64 pixels.
+// Sampling is kept inside the drawn part (a column of the next frame bled in
+// at the right edge).
+static IDirect3DPixelShader9 *display_shader(Xenos *x)
+{
+    // The CRTs sample the picture itself, 6 times per pixel: smoothing,
+    // sharpening or blur in each sample ran the Xenos microcode compiler out
+    // of registers (20-40 s, then a failure: the console seemed frozen), and
+    // the beam and mask would undo them anyway.
+    int crt = x->screen == 2 || x->screen == 3;
+    int smooth = crt ? 0 : x->smooth, sharpen = crt ? 0 : x->sharpen, blur = crt ? 0 : x->blur;
+    int key = (smooth ? 1 : 0) | (sharpen << 1) | (blur << 3) | (x->screen << 5);
+    std::map<int, IDirect3DPixelShader9 *>::iterator it = x->psDisplay.find(key);
+    char head[160];
+    std::string src;
+    if (it != x->psDisplay.end()) return it->second;
+    sprintf_s(head, sizeof(head), "#define SMOOTH %d\n#define SHARPEN %d\n#define BLUR %d\n#define SCREEN %d\n", smooth ? 1 : 0,
+              sharpen, blur, x->screen);
+    src = head;
+    src +=
+        "sampler t0 : register(s0);\n"
+        "float4 rcp : register(c0);\n"
+        "float4 prm : register(c1);\n"
+        "float4 prm2 : register(c2);\n"
+        "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
+        "float3 tap(float2 uv) { return tex2D(t0, clamp(uv, 0.5 * rcp.xy, prm.xy - 0.5 * rcp.xy)).rgb; }\n"
+        "float3 base(float2 uv) {\n"
+        "#if SMOOTH\n"
+        "  uv = clamp(uv, 0.5 * rcp.xy, prm.xy - 0.5 * rcp.xy);\n"
+        "  float3 rgbM = tex2D(t0, uv).rgb;\n"
+        "  float lNW = luma(tap(uv + float2(-0.5, -0.5) * rcp.xy));\n"
+        "  float lNE = luma(tap(uv + float2( 0.5, -0.5) * rcp.xy));\n"
+        "  float lSW = luma(tap(uv + float2(-0.5,  0.5) * rcp.xy));\n"
+        "  float lSE = luma(tap(uv + float2( 0.5,  0.5) * rcp.xy));\n"
+        "  float lM = luma(rgbM);\n"
+        "  float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));\n"
+        "  float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));\n"
+        "  float2 dir = float2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));\n"
+        "  float reduce = max((lNW + lNE + lSW + lSE) * (0.25 / 8.0), 1.0 / 128.0);\n"
+        "  float rcpMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);\n"
+        "  dir = clamp(dir * rcpMin, -8.0, 8.0) * rcp.xy;\n"
+        "  float3 a = 0.5 * (tap(uv + dir * (1.0 / 3.0 - 0.5)) + tap(uv + dir * (2.0 / 3.0 - 0.5)));\n"
+        "  float3 b = a * 0.5 + 0.25 * (tap(uv - dir * 0.5) + tap(uv + dir * 0.5));\n"
+        "  float lB = luma(b);\n"
+        "  return (lB < lMin || lB > lMax) ? a : b;\n"
+        "#else\n"
+        "  return tap(uv);\n"
+        "#endif\n"
+        "}\n"
+        "float3 picture(float2 uv) {\n"
+        "  float3 c = base(uv);\n"
+        "#if BLUR\n"
+        "  float2 d = prm.xy / prm.zw * (BLUR == 1 ? 0.75 : 1.5);\n"
+        "  c = (4.0 * c + 2.0 * (tap(uv + float2(d.x, 0.0)) + tap(uv - float2(d.x, 0.0)) + tap(uv + float2(0.0, d.y)) + tap(uv - float2(0.0, d.y)))\n"
+        "       + tap(uv + d) + tap(uv - d) + tap(uv + float2(d.x, -d.y)) + tap(uv + float2(-d.x, d.y))) / 16.0;\n"
+        "#elif SHARPEN\n"
+        "  float3 n = tap(uv - float2(0.0, rcp.y)), so = tap(uv + float2(0.0, rcp.y));\n"
+        "  float3 w = tap(uv - float2(rcp.x, 0.0)), e = tap(uv + float2(rcp.x, 0.0));\n"
+        "  float3 mn = min(c, min(min(n, so), min(w, e))), mx = max(c, max(max(n, so), max(w, e)));\n"
+        "  float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 0.0001)));\n"
+        "  float3 wt = amp * (SHARPEN == 1 ? -0.125 : -0.2);\n"
+        "  c = saturate((c + wt * (n + so + w + e)) / (1.0 + 4.0 * wt));\n"
+        "#endif\n"
+        "  return c;\n"
+        "}\n"
+        "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0, float2 vpos : VPOS) : COLOR {\n"
+        "  float2 n = tc.xy / prm.xy;\n"
+        "#if SCREEN == 3\n"
+        "  float2 cc = n * 2.0 - 1.0;\n"
+        "  cc *= 1.0 + float2(0.045, 0.06) * (cc.yx * cc.yx);\n"
+        "  n = cc * 0.5 + 0.5;\n"
+        "  float2 edge = saturate((0.5 - abs(n - 0.5)) * float2(80.0, 60.0));\n"
+        "  if (edge.x * edge.y <= 0.0) return float4(0.0, 0.0, 0.0, 1.0);\n"
+        "#endif\n"
+        "  float2 uv = n * prm.xy;\n"
+        "#if SCREEN == 2 || SCREEN == 3\n"
+        "  float lines = prm2.x;\n"
+        "  float y = n.y * lines - 0.5;\n"
+        "  float y0 = floor(y), f = y - y0;\n"
+        "  float2 px = float2(prm.x / prm.z * 0.5, 0.0);\n"
+        "  float2 uA = float2(uv.x, (y0 + 0.5) / lines * prm.y), uB = float2(uv.x, (y0 + 1.5) / lines * prm.y);\n"
+        "  float3 cA = 0.25 * (tap(uA - px) + tap(uA + px)) + 0.5 * tap(uA);\n"
+        "  float3 cB = 0.25 * (tap(uB - px) + tap(uB + px)) + 0.5 * tap(uB);\n"
+        "  float kA = lerp(18.0, 6.0, luma(cA)), kB = lerp(18.0, 6.0, luma(cB));\n"
+        "  float3 c = cA * exp(-f * f * kA) + cB * exp(-(1.0 - f) * (1.0 - f) * kB);\n"
+        "  float3 glow = 0.25 * (tap(uv + float2(4.0, 0.0) * rcp.xy) + tap(uv - float2(4.0, 0.0) * rcp.xy) + tap(uv + float2(0.0, 4.0) * rcp.xy) + tap(uv - float2(0.0, 4.0) * rcp.xy));\n"
+        "  float m = fmod(vpos.x, 3.0);\n"
+        "  float3 mask = m < 1.0 ? float3(1.0, 0.78, 0.78) : m < 2.0 ? float3(0.78, 1.0, 0.78) : float3(0.78, 0.78, 1.0);\n"
+        "  c = c * mask * 1.45 + glow * 0.12;\n"
+        "#if SCREEN == 3\n"
+        "  float2 v = n * (1.0 - n);\n"
+        "  c *= pow(saturate(v.x * v.y * 24.0), 0.18) * edge.x * edge.y;\n"
+        "#endif\n"
+        "#elif SCREEN == 1\n"
+        "  float3 c = picture(uv);\n"
+        "  float d = frac(n.y * prm2.x) - 0.5;\n"
+        "  c *= exp(-d * d * lerp(10.0, 4.0, luma(c))) * 1.3;\n"
+        "#elif SCREEN == 5\n"
+        "  float3 c = picture(uv);\n"
+        "  float d = frac(n.y * prm2.x) - 0.5;\n"
+        "  c *= lerp(0.78, 1.08, exp(-d * d * 8.0));\n"
+        "#elif SCREEN == 4\n"
+        "  float3 c = picture(uv);\n"
+        "  float2 g = frac(n * prm.zw);\n"
+        "  float2 gap = smoothstep(0.0, 0.18, g) * smoothstep(1.0, 0.82, g);\n"
+        "  c *= lerp(0.55, 1.08, gap.x * gap.y);\n"
+        "#else\n"
+        "  float3 c = picture(uv);\n"
+        "#endif\n"
+        "  return float4(saturate(c), 1.0);\n"
+        "}\n";
+    x->psDisplay[key] = compile_ps(x->dev, src.c_str());
+    return x->psDisplay[key];
+}
+
+// The N64 picture on the back buffer: 4:3 and centred, or the whole width
+// (16:9 widescreen, whose 3D was drawn wider, or stretched). `width`/`lines`:
+// N64 pixels of the picture.
+static void draw_display(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1, u32 width, u32 lines)
 {
     D3DSURFACE_DESC d;
-    float bw, bh, w, h;
+    float bw, bh, w, h, c[4];
+    IDirect3DPixelShader9 *ps;
     x->backBuffer->GetDesc(&d);
     bw = (float)d.Width;
     bh = (float)d.Height;
     h = bh;
-    w = bh * 4.0f / 3.0f;
+    w = x->aspect ? bw : bh * 4.0f / 3.0f;
     if (w > bw) { w = bw; h = bw * 3.0f / 4.0f; }
-    if (x->smooth && x->psSmooth)
-    {
-        float c[4];
-        c[0] = 1.0f / RT_WIDTH; c[1] = 1.0f / RT_HEIGHT; c[2] = c[3] = 0;
-        x->dev->SetPixelShaderConstantF(0, c, 1);
-        draw_textured_ps(x, x->psSmooth, tex, u1, v1, (bw - w) / 2, (bh - h) / 2, w, h, bw, bh);
-    }
-    else
-        draw_textured(x, tex, u1, v1, (bw - w) / 2, (bh - h) / 2, w, h, bw, bh);
+    if (!lines) lines = 240;
+    if (!width) width = 320;
+    ps = display_shader(x);
+    if (!ps) ps = x->smooth && x->psSmooth ? x->psSmooth : x->psCopy;
+    c[0] = 1.0f / RT_WIDTH; c[1] = 1.0f / RT_HEIGHT; c[2] = (float)RT_WIDTH; c[3] = (float)RT_HEIGHT;
+    x->dev->SetPixelShaderConstantF(0, c, 1);
+    c[0] = u1; c[1] = v1; c[2] = (float)width; c[3] = (float)lines;
+    x->dev->SetPixelShaderConstantF(1, c, 1);
+    c[0] = (float)(lines > 300 ? lines / 2 : lines); c[1] = c[2] = c[3] = 0;
+    x->dev->SetPixelShaderConstantF(2, c, 1);
+    draw_textured_ps(x, ps, tex, u1, v1, (bw - w) / 2, (bh - h) / 2, w, h, bw, bh);
+}
+
+// 16:9 widescreen: N64 x coordinates of the 3D and of the small 2D elements
+// move 3/4 of the way towards the centre, so the picture shown across 16:9
+// keeps their proportions and shows more of the scene at the sides (what the
+// game projects beyond the 4:3 screen, within the microcode's clip ratio; as
+// GLideN64's widescreen hack, objects the game itself culls stay missing).
+// Full-width fills, backgrounds and scissors stay full width.
+static float ws_x(const Xenos *x, float px, float fbw)
+{
+    return x->aspect == 1 ? fbw * 0.5f + (px - fbw * 0.5f) * 0.75f : px;
 }
 
 static void resolve_current(Xenos *x)
@@ -960,7 +1150,7 @@ static void copy_back(Xenos *x, int slot)
         x->dev->SetDepthStencilSurface(NULL);
         x->targetBound = 0;     // the N64 target is bound again (its EDRAM content kept) at the next draw
         x->stateDirty = 1;
-        draw_textured(x, s->tex, 1.0f, 1.0f, 0.0f, 0.0f, (float)w, (float)h, (float)RB_WIDTH, (float)RB_HEIGHT);
+        draw_textured(x, s->tex, x->uMax, x->vMax, 0.0f, 0.0f, (float)w, (float)h, (float)RB_WIDTH, (float)RB_HEIGHT);
         r.x1 = 0; r.y1 = 0; r.x2 = (LONG)wa; r.y2 = (LONG)ha;
         x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, &r, x->rbTex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
         x->dev->BlockUntilIdle();
@@ -991,12 +1181,12 @@ static void copy_back(Xenos *x, int slot)
     s->tex->UnlockRect(0);
     for (y = 0; y < hc; y++)
     {
-        const u32 *src = &x->copyBuf[(y * RT_HEIGHT / h) * RT_WIDTH];
+        const u32 *src = &x->copyBuf[(y * x->rtH / h) * RT_WIDTH];
         for (xx = 0; xx < w; xx++)
         {
             u32 a = s->addr + (y * w + xx) * s->bytes;
             if (a + s->bytes > H64_RDRAM_SIZE) break;
-            store_pixel(ram + a, s->fmt, src[xx * RT_WIDTH / w]);
+            store_pixel(ram + a, s->fmt, src[xx * x->rtW / w]);
         }
     }
     }
@@ -1041,13 +1231,16 @@ static void note_drawn(Xenos *x, u32 bottom)
 static void set_scissor(Xenos *x, float sx, float sy)
 {
     RECT r;
+    float xlo = (float)(x->st->scissorXlo >> 2), xhi = (float)(x->st->scissorXhi >> 2);
+    float fbw = (float)(x->st->colorWidth ? x->st->colorWidth : 320);
     note_drawn(x, (x->st->scissorYhi + 3) >> 2);
-    r.left = (LONG)((x->st->scissorXlo >> 2) * sx);
+    if (!(xlo == 0 && xhi >= fbw)) { xlo = ws_x(x, xlo, fbw); xhi = ws_x(x, xhi, fbw); }
+    r.left = (LONG)(xlo * sx);
     r.top = (LONG)((x->st->scissorYlo >> 2) * sy);
-    r.right = (LONG)((x->st->scissorXhi >> 2) * sx);
+    r.right = (LONG)(xhi * sx);
     r.bottom = (LONG)((x->st->scissorYhi >> 2) * sy);
-    if (r.right > RT_WIDTH) r.right = RT_WIDTH;
-    if (r.bottom > RT_HEIGHT) r.bottom = RT_HEIGHT;
+    if (r.right > (LONG)x->rtW) r.right = (LONG)x->rtW;
+    if (r.bottom > (LONG)x->rtH) r.bottom = (LONG)x->rtH;
     if (r.left < 0) r.left = 0;
     if (r.top < 0) r.top = 0;
     if (r.right <= r.left || r.bottom <= r.top) { r.left = r.top = 0; r.right = r.bottom = 1; }
@@ -1183,6 +1376,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     if (two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     if (!two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     if (zOut && hasDepth && (st->depthBlendFlags & (DB_DEPTH_TEST | DB_DEPTH_UPDATE))) flags |= KEY_DEPTH;
+    if (x->texFilter == 0 && (st->rasterFlags & RS_SAMPLE_QUAD) && !(st->rasterFlags & RS_COPY)) flags |= KEY_3POINT;
     ps = combiner_shader(x, flags);
     x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);
@@ -1212,7 +1406,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     set_blend(x, two ? 1 : 0);
     set_depth(x, hasDepth);
     set_alpha_test(x);
-    set_scissor(x, RT_WIDTH / fbw, RT_HEIGHT / fbh);
+    set_scissor(x, x->rtW / fbw, x->rtH / fbh);
     x->dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 }
 
@@ -1243,7 +1437,7 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     const H64RenderVertex *v[3];
     const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[(tile + 1) & 7];
     XVtx q[3];
-    int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0;
+    int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0, wsFull;
     (void)levels;
     if (st->rasterFlags & (RS_FILL | RS_COPY)) return;
     if (!st->usePrimDepth)
@@ -1263,11 +1457,19 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     }
     const TexBinding &tb0 = x->batchTb0, &tb1 = x->batchTb1;
     v[0] = a; v[1] = b; v[2] = c;
+    {
+        // 16:9 widescreen: a triangle from one screen edge exactly to the
+        // other is a 2D background (MK64's sky gradient), stretched like the
+        // full-width rectangles instead of narrowed.
+        float fbw = (float)(st->colorWidth ? st->colorWidth : 320), lo = v[0]->x, hi = v[0]->x;
+        for (i = 1; i < 3; i++) { if (v[i]->x < lo) lo = v[i]->x; if (v[i]->x > hi) hi = v[i]->x; }
+        wsFull = lo > -0.6f && lo < 0.6f && hi > fbw - 0.6f && hi < fbw + 0.6f;
+    }
     for (i = 0; i < 3; i++)
     {
         float w = persp && v[i]->invw > 0 ? 1.0f / v[i]->invw : 1.0f;
         float z = st->usePrimDepth ? (float)(st->primDepth >> 16) : v[i]->z;
-        q[i].x = v[i]->x;
+        q[i].x = wsFull ? v[i]->x : ws_x(x, v[i]->x, (float)(st->colorWidth ? st->colorWidth : 320));
         q[i].y = v[i]->y;
         q[i].z = z / 32767.0f;
         q[i].w = w;
@@ -1287,15 +1489,17 @@ static void fill_rect(Xenos *x, const u32 *w)
 {
     const H64RdpState *st = x->st;
     float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(st->colorWidth);
-    float sx = RT_WIDTH / fbw, sy = RT_HEIGHT / fbh;
+    float sx = x->rtW / fbw, sy = x->rtH / fbh;
     u32 xh = (w[0] >> 12) & 0xFFF, yh = w[0] & 0xFFF, xl = (w[1] >> 12) & 0xFFF, yl = w[1] & 0xFFF;
     D3DRECT r;
-    r.x1 = (LONG)((xl >> 2) * sx);
+    float fx1 = (float)(xl >> 2), fx2 = (float)((xh >> 2) + 1);
+    if (!((xl >> 2) == 0 && fx2 >= fbw)) { fx1 = ws_x(x, fx1, fbw); fx2 = ws_x(x, fx2, fbw); }
+    r.x1 = (LONG)(fx1 * sx);
     r.y1 = (LONG)((yl >> 2) * sy);
-    r.x2 = (LONG)(((xh >> 2) + 1) * sx);
+    r.x2 = (LONG)(fx2 * sx);
     r.y2 = (LONG)(((yh >> 2) + 1) * sy);
-    if (r.x2 > RT_WIDTH) r.x2 = RT_WIDTH;
-    if (r.y2 > RT_HEIGHT) r.y2 = RT_HEIGHT;
+    if (r.x2 > (LONG)x->rtW) r.x2 = (LONG)x->rtW;
+    if (r.y2 > (LONG)x->rtH) r.y2 = (LONG)x->rtH;
     if (r.x1 >= r.x2 || r.y1 >= r.y2) return;
     x->stats.fills++;
     if ((st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF))
@@ -1325,6 +1529,7 @@ static void fill_rect(Xenos *x, const u32 *w)
 
 static void tex_rect(Xenos *x, const u32 *w, int flip)
 {
+    int fullWidth = 0;   // set below: a rectangle across the whole image (a background) stays full width
     const H64RdpState *st = x->st;
     int copy = (st->rasterFlags & RS_COPY) != 0;
     u32 tile = (w[1] >> 24) & 7;
@@ -1381,7 +1586,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         }
         else
             x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-        set_scissor(x, RT_WIDTH / fbw, RT_HEIGHT / fbh);
+        set_scissor(x, x->rtW / fbw, x->rtH / fbh);
     }
     else
     {
@@ -1400,6 +1605,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
                 x->dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         }
     }
+    fullWidth = xl <= 0.5f && xh >= (float)(st->colorWidth ? st->colorWidth : 320) - 1.0f;
     for (i = 0; i < 4; i++)
     {
         // Texture coordinates half a pixel back: the N64 samples a pixel at its
@@ -1410,7 +1616,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         float ss, tt;
         if (flip) { ss = s + (py - yl - 0.5f) * dsdx * 32.0f; tt = t + (px - xl - 0.5f) * dtdy * 32.0f; }
         else { ss = s + ds * 32.0f; tt = t + dt * 32.0f; }
-        q[i].x = px;
+        q[i].x = fullWidth ? px : ws_x(x, px, (float)(st->colorWidth ? st->colorWidth : 320));
         q[i].y = py;
         q[i].z = z;
         q[i].w = 1.0f;
@@ -1538,7 +1744,7 @@ static void show_rdram_frame(Xenos *x, u32 origin, u32 width, int bpp32)
     u32 h = fb_height(width);
     IDirect3DTexture9 *tex = upload_rdram(x, origin, width, bpp32);
     if (!tex) return;
-    draw_display(x, tex, (float)width / RT_WIDTH, (float)h / RT_HEIGHT);
+    draw_display(x, tex, (float)width / RT_WIDTH, (float)h / RT_HEIGHT, width, h);
     x->shown = tex;
     x->shownTiled = 0;
     x->shownU = (float)width / RT_WIDTH;
@@ -1585,9 +1791,10 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         ;
     else if (found >= 0)
     {
-        draw_display(x, x->fb[found].tex, 1.0f, 1.0f);
+        draw_display(x, x->fb[found].tex, x->uMax, x->vMax, x->fb[found].width, x->fb[found].height);
         x->shown = x->fb[found].tex;
-        x->shownU = x->shownV = 1.0f;
+        x->shownU = x->uMax;
+        x->shownV = x->vMax;
         x->shownTiled = 1;
     }
     else if (x->drewFrame || ++x->blankPresents > 300)
@@ -1693,6 +1900,12 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->psCopy = compile_ps(dev, s_psCopySource);
     x->psSmooth = compile_ps(dev, s_psSmoothSource);
     x->smooth = 1;
+    x->scale = 3;
+    x->rtW = RT_WIDTH;
+    x->rtH = RT_HEIGHT;
+    x->uMax = x->vMax = 1.0f;
+    x->texFilter = 1;
+    x->sharpen = x->blur = x->screen = x->aspect = 0;
     x->deferNotify = 0;
     x->pendingLo = x->pendingHi = 0;
     x->psFill = compile_ps(dev, s_psFillSource);
@@ -1766,6 +1979,11 @@ void h64_xenos_free(H64Renderer *r)
     if (x->psFill) x->psFill->Release();
     if (x->psFallback) x->psFallback->Release();
     if (x->psSmooth) x->psSmooth->Release();
+    {
+        std::map<int, IDirect3DPixelShader9 *>::iterator d;
+        for (d = x->psDisplay.begin(); d != x->psDisplay.end(); ++d) if (d->second) d->second->Release();
+        x->psDisplay.clear();
+    }
     if (x->vs) x->vs->Release();
     if (x->decl) x->decl->Release();
     if (x->n64Color) x->n64Color->Release();
@@ -1854,6 +2072,33 @@ void h64_xenos_set_worker(H64Renderer *r, int on)
 void h64_xenos_set_smooth(H64Renderer *r, int on)
 {
     X(r)->smooth = on;
+}
+
+void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
+{
+    Xenos *x = X(r);
+    int scale = o->scale < 1 ? 1 : o->scale > 3 ? 3 : o->scale;
+    x->smooth = o->smooth;
+    x->sharpen = o->sharpen < 0 || o->sharpen > 2 ? 0 : o->sharpen;
+    x->blur = o->blur < 0 || o->blur > 2 ? 0 : o->blur;
+    x->screen = o->screen < 0 || o->screen > 5 ? 0 : o->screen;
+    if (o->aspect != x->aspect) x->stateDirty = 1;   // the scissor moves in widescreen
+    x->aspect = o->aspect < 0 || o->aspect > 2 ? 0 : o->aspect;
+    if (o->texFilter != x->texFilter)
+    {
+        x->texFilter = o->texFilter < 0 || o->texFilter > 2 ? 1 : o->texFilter;
+        x->stateDirty = 1;
+    }
+    if (scale != x->scale)
+    {
+        x->scale = scale;
+        x->rtW = RT_WIDTH * (u32)scale / 3;
+        x->rtH = RT_HEIGHT * (u32)scale / 3;
+        x->uMax = (float)x->rtW / RT_WIDTH;
+        x->vMax = (float)x->rtH / RT_HEIGHT;
+        x->targetBound = 0;   // the viewport is set when the N64 target is bound again
+        x->stateDirty = 1;
+    }
 }
 
 void h64_xenos_set_debug(H64Renderer *r, int mode)

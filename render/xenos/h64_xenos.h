@@ -69,6 +69,18 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *viRegs);
 void h64_xenos_set_worker(H64Renderer *r, int on);
 // Edge smoothing (FXAA) when the frame is shown, in place of the VI's anti-aliasing (on by default).
 void h64_xenos_set_smooth(H64Renderer *r, int on);
+// Graphics settings (the menu's Graphics page).
+struct H64XenosOptions
+{
+    int scale;       // internal resolution: 1 native (320x240), 2 (640x480), 3 (960x720, default)
+    int texFilter;   // 0 the N64's 3-point filter, 1 bilinear (default), 2 nearest
+    int smooth;      // edge smoothing (FXAA) at display
+    int sharpen;     // contrast-adaptive sharpening at display: 0 off, 1 low, 2 high
+    int blur;        // blur at display: 0 off, 1 soft, 2 strong (instead of sharpening)
+    int screen;      // screen effect: 0 none, 1 scanlines, 2 CRT, 3 curved CRT, 4 LCD grid, 5 light scanlines
+    int aspect;      // 0 4:3, 1 16:9 widescreen (3D drawn wider, no distortion), 2 16:9 stretched
+};
+void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);
 
 #endif

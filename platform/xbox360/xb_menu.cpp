@@ -67,37 +67,159 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 }
 
 // ---- Settings ----
-enum { S_CPU = 0, S_HLE, S_AUDIO, S_SMOOTH, S_FPS };
+// Main page: CPU, RSP, audio, FPS, the Graphics page, save, back. The Graphics
+// page (resolution, aspect, texture filter, smoothing, sharpening, blur, screen effect) is
+// shown in the same UiMenu; its Back returns to the main page.
+enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS };
+enum { G_PRESET = 0, G_RES, G_ASPECT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+
+// Graphics presets (the user's table): texture filter, smoothing, sharpening,
+// blur, screen effect. Resolution and aspect stay as they are.
+struct GfxPreset { const char *name; int texFilter, smooth, sharpen, blur, screen; };
+static const GfxPreset s_presets[4] = {
+    { "Original", 2, 0, 0, 0, 0 },        // nearest, nothing added
+    { "N64 Enhanced", 0, 1, 1, 0, 0 },    // 3-point, light sharpening
+    { "N64 Smooth", 0, 1, 1, 0, 5 },      // 3-point, light sharpening, light scanlines
+    { "N64 CRT", 0, 0, 0, 0, 2 },         // 3-point, CRT: scanlines and glow
+};
+
+// The preset the settings match (-1: custom).
+static int current_preset(const Config *c)
+{
+    int i;
+    for (i = 0; i < 4; i++)
+    {
+        const GfxPreset *p = &s_presets[i];
+        if (c->texFilter == p->texFilter && c->smooth == p->smooth && c->sharpen == p->sharpen && c->blur == p->blur &&
+            c->screen == p->screen)
+            return i;
+    }
+    return -1;
+}
+static int s_graphicsPage;
+static int s_perGame;
+
+static const char *onoff(int v) { return v ? "On" : "Off"; }
 
 static void settings_values(UiMenu *m, const Config *c)
 {
+    if (s_graphicsPage)
+    {
+        static const char *res[3] = { "Native 320x240", "x2 640x480", "x3 960x720" };
+        static const char *asp[3] = { "4:3", "16:9 Widescreen", "16:9 Stretched" };
+        static const char *filt[3] = { "N64 3-point", "Bilinear", "Nearest" };
+        static const char *lvl[3] = { "Off", "Low", "High" };
+        static const char *blr[3] = { "Off", "Soft", "Strong" };
+        static const char *scr[6] = { "None", "Scanlines", "CRT", "CRT curved", "LCD grid", "Light scanlines" };
+        int pr = current_preset(c);
+        sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? "Custom" : s_presets[pr].name);
+        sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 3 ? 3 : c->resScale) - 1]);
+        sprintf(m->value[G_ASPECT], "< %s >", asp[c->aspect < 0 || c->aspect > 2 ? 0 : c->aspect]);
+        sprintf(m->value[G_FILTER], "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]);
+        sprintf(m->value[G_SMOOTH], "< %s >", onoff(c->smooth));
+        sprintf(m->value[G_SHARPEN], "< %s >", lvl[c->sharpen < 0 || c->sharpen > 2 ? 0 : c->sharpen]);
+        sprintf(m->value[G_BLUR], "< %s >", blr[c->blur < 0 || c->blur > 2 ? 0 : c->blur]);
+        sprintf(m->value[G_SCREEN], "< %s >", scr[c->screen < 0 || c->screen > 5 ? 0 : c->screen]);
+        return;
+    }
     sprintf(m->value[S_CPU], "< %s >", strcmp(c->cpu, "interp") ? "Recompiler" : "Interpreter");
     sprintf(m->value[S_HLE], "< %s >", c->hle ? "HLE" : "LLE");
     sprintf(m->value[S_AUDIO], "< %d ms >", c->audioMs);
-    sprintf(m->value[S_SMOOTH], "< %s >", c->smooth ? "On" : "Off");
-    sprintf(m->value[S_FPS], "< %s >", c->showFps ? "On" : "Off");
+    sprintf(m->value[S_FPS], "< %s >", onoff(c->showFps));
 }
 
-void SettingsBuild(UiMenu *m, const Config *c, int perGame)
+static void settings_main(UiMenu *m, const Config *c)
 {
-    UiMenuClear(m, perGame ? "Settings" : "Settings: all games", "A:Select|DPAD:Change|B:Back");
+    s_graphicsPage = 0;
+    UiMenuClear(m, s_perGame ? "Settings" : "Settings: all games", "A:Select|DPAD:Change|B:Back");
     UiMenuAdd(m, "CPU (next start)", "");
     UiMenuAdd(m, "RSP (next start)", "");
     UiMenuAdd(m, "Audio margin", "");
-    UiMenuAdd(m, "Edge smoothing", "");
     UiMenuAdd(m, "Show FPS", "");
+    UiMenuAdd(m, "Graphics", "");
     UiMenuAdd(m, "Save for all games", "");
-    if (perGame) UiMenuAdd(m, "Save for this game only", "");
+    if (s_perGame) UiMenuAdd(m, "Save for this game only", "");
     UiMenuAdd(m, "Back", "");
     settings_values(m, c);
 }
 
-int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
+static void settings_graphics(UiMenu *m, const Config *c)
+{
+    s_graphicsPage = 1;
+    UiMenuClear(m, "Graphics", "A:Select|DPAD:Change|B:Back");
+    UiMenuAdd(m, "Preset", "");
+    UiMenuAdd(m, "Resolution", "");
+    UiMenuAdd(m, "Aspect ratio", "");
+    UiMenuAdd(m, "Texture filter", "");
+    UiMenuAdd(m, "Edge smoothing (FXAA)", "");
+    UiMenuAdd(m, "Sharpen", "");
+    UiMenuAdd(m, "Blur", "");
+    UiMenuAdd(m, "Screen effect", "");
+    UiMenuAdd(m, "Back", "");
+    settings_values(m, c);
+}
+
+void SettingsBuild(UiMenu *m, const Config *c, int perGame)
+{
+    s_perGame = perGame;
+    settings_main(m, c);
+}
+
+static int graphics_input(UiMenu *m, Config *c, WORD down)
 {
     int dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
-    int changed = 0;
+    UiMenuNavigate(m, down);
+    if ((down & XINPUT_GAMEPAD_B) || (m->sel == G_BACK && (down & XINPUT_GAMEPAD_A)))
+    {
+        settings_main(m, c);
+        m->sel = S_GRAPHICS;
+        return SET_NONE;
+    }
+    if (m->sel < G_BACK && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        if (!dir) dir = 1;
+        switch (m->sel)
+        {
+        case G_PRESET:
+        {
+            int pr = current_preset(c);
+            const GfxPreset *p;
+            pr = pr < 0 ? (dir > 0 ? 0 : 3) : (pr + dir + 4) % 4;
+            p = &s_presets[pr];
+            c->texFilter = p->texFilter;
+            c->smooth = p->smooth;
+            c->sharpen = p->sharpen;
+            c->blur = p->blur;
+            c->screen = p->screen;
+            break;
+        }
+        case G_RES: c->resScale = (c->resScale - 1 + dir + 3) % 3 + 1; break;
+        case G_ASPECT: c->aspect = (c->aspect + dir + 3) % 3; break;
+        case G_FILTER: c->texFilter = (c->texFilter + dir + 3) % 3; break;
+        case G_SMOOTH: c->smooth = !c->smooth; break;
+        case G_SHARPEN: c->sharpen = (c->sharpen + dir + 3) % 3; if (c->sharpen) c->blur = 0; break;
+        case G_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;
+        case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
+        }
+        settings_values(m, c);
+        return SET_CHANGED;
+    }
+    return SET_NONE;
+}
+
+int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
+{
+    int dir, changed = 0;
+    s_perGame = perGame;
+    if (s_graphicsPage) return graphics_input(m, c, down);
+    dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
     UiMenuNavigate(m, down);
     if (down & XINPUT_GAMEPAD_B) return SET_BACK;
+    if (m->sel == S_GRAPHICS && (down & XINPUT_GAMEPAD_A))
+    {
+        settings_graphics(m, c);
+        return SET_NONE;
+    }
     if (m->sel <= S_FPS && (dir || (down & XINPUT_GAMEPAD_A)))
     {
         if (!dir) dir = 1;
@@ -110,7 +232,6 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
             if (c->audioMs < 50) c->audioMs = 50;
             if (c->audioMs > 500) c->audioMs = 500;
             break;
-        case S_SMOOTH: c->smooth = !c->smooth; break;
         case S_FPS: c->showFps = !c->showFps; break;
         }
         changed = 1;
@@ -121,8 +242,8 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
     {
         int last = m->count - 1;
         if (m->sel == last) return SET_BACK;
-        if (m->sel == S_FPS + 1) return SET_SAVE_ALL;
-        if (perGame && m->sel == S_FPS + 2) return SET_SAVE_GAME;
+        if (m->sel == S_GRAPHICS + 1) return SET_SAVE_ALL;
+        if (perGame && m->sel == S_GRAPHICS + 2) return SET_SAVE_GAME;
     }
     return SET_NONE;
 }

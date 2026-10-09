@@ -39,6 +39,12 @@ void ConfigDefaults(Config *c)
     c->fastFpu = 1;  // host FPU without FCR31 cause/flag tracking, as mupen64plus
     c->fullExits = 0;
     c->smooth = 1;
+    c->resScale = 3;
+    c->texFilter = 1;
+    c->sharpen = 0;
+    c->blur = 0;
+    c->screen = 0;
+    c->aspect = 0;
     c->asyncGfx = 1;
     c->asyncAudio = 1;
     c->audioCycles = 100000;
@@ -86,6 +92,13 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "fastfpu")) c->fastFpu = atoi(eq + 1);
         else if (!strcmp(line, "fullexits")) c->fullExits = atoi(eq + 1);
         else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
+        else if (!strcmp(line, "resolution")) c->resScale = atoi(eq + 1);
+        else if (!strcmp(line, "texfilter")) c->texFilter = atoi(eq + 1);
+        else if (!strcmp(line, "sharpen")) c->sharpen = atoi(eq + 1);
+        else if (!strcmp(line, "crt")) c->screen = atoi(eq + 1) ? 3 : 0;
+        else if (!strcmp(line, "screen")) c->screen = atoi(eq + 1);
+        else if (!strcmp(line, "blur")) c->blur = atoi(eq + 1);
+        else if (!strcmp(line, "aspect")) c->aspect = atoi(eq + 1);
         else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
         else if (!strcmp(line, "asyncaudio")) c->asyncAudio = atoi(eq + 1);
         else if (!strcmp(line, "audiocycles")) c->audioCycles = (u32)atoi(eq + 1);
@@ -115,6 +128,8 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
     if (!f) return 0;
     fprintf(f, "# Written by the Harissa64 V2 menu\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
             c->smooth, c->showFps);
+    fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\naspect=%d\n", c->resScale, c->texFilter, c->sharpen,
+            c->blur, c->screen, c->aspect);
     if (withLastRom && c->lastRom[0]) fprintf(f, "lastrom=%s\n", c->lastRom);
     fclose(f);
     return 1;

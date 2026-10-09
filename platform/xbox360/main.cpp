@@ -630,6 +630,21 @@ static void RunDynarecTest(const Config *c, char *report, size_t len)
     report[len - 1] = 0;
 }
 
+// The menu's Graphics settings on the renderer.
+static void ApplyGraphics(H64Renderer *renderer, const Config *c)
+{
+    H64XenosOptions o;
+    if (!renderer) return;
+    o.scale = c->resScale;
+    o.texFilter = c->texFilter;
+    o.smooth = c->smooth;
+    o.sharpen = c->sharpen;
+    o.blur = c->blur;
+    o.screen = c->screen;
+    o.aspect = c->aspect;
+    h64_xenos_set_options(renderer, &o);
+}
+
 // ---- mode=play ----
 static XINPUT_STATE s_pad;                  // controller 1 (also the front end's shortcuts)
 static int s_padValid;
@@ -882,7 +897,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
             if (r == SET_CHANGED)
             {
                 xb_audio_set_target_ms(c->audioMs);
-                h64_xenos_set_smooth(renderer, c->smooth);
+                ApplyGraphics(renderer, c);
                 s_showFps = c->showFps;
             }
             else if (r == SET_SAVE_ALL || r == SET_SAVE_GAME)
@@ -1019,7 +1034,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     renderer = h64_xenos_create(sys, dev);
     if (!renderer) { MessageScreen(dev, "Renderer initialisation failed", "See harissa64v2.log", D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);
-    h64_xenos_set_smooth(renderer, c->smooth);
+    ApplyGraphics(renderer, c);
     if (c->softRenderer) sys->options.rdpStateOnly = 0;
     else sys->renderer = renderer;
     H64_INFO("[main] running %s: cpu %s, RSP %s, %s renderer", rom, jit ? "recompiler" : "interpreter",
