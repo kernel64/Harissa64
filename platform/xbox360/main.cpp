@@ -480,7 +480,7 @@ static int s_noFpCache;  // fpcache=0
 static int s_fastFpu;    // fastfpu=1
 static int s_fullExits;  // fullexits=1
 
-static u32 s_cpi = 1;    // cpi=N
+static u32 s_cpi = 2;    // cpi=N
 
 // ---- N64 PC sampler (diagnosis): a thread on another hardware thread reads
 // the emulated PC every millisecond; [pc] lines give the hottest addresses
@@ -1396,7 +1396,7 @@ int __cdecl main()
     s_noFpCache = !cfg.fpCache;
     s_fastFpu = cfg.fastFpu;
     s_fullExits = cfg.fullExits;
-    s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 1;
+    s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 2;
     H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s jitfpu=%d cpi=%d regcache=%d", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)",
              cfg.jitFpu, cfg.cpi, cfg.regCache);
 

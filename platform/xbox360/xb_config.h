@@ -29,14 +29,14 @@ struct Config
     int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
     int fpCache;        // fpcache=0: no COP1 registers kept in host FPRs (diagnosis)
     int fullExits;      // fullexits=1: the dynarec's older inline linked exits (A/B check)
-    int fastFpu;        // fastfpu=1: native COP1 without FPSCR reads (FCR31 Inexact bits not kept)
+    int fastFpu;        // fastfpu=0: exact COP1 (FCR31 cause/flag bits kept); 1 by default
     int smooth;         // smooth=0: no edge smoothing when frames are shown
     int showFps;        // showfps=1: frames shown per second in a corner
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
     int asyncAudio;     // asyncaudio=0: audio HLE tasks on the CPU thread
     u32 audioCycles;    // audiocycles=N: CPU cycles an asynchronous audio task keeps the RSP busy
     u32 gfxCycles;      // gfxcycles=N: CPU cycles an asynchronous graphics task keeps the RSP busy
-    int cpi;            // cpi=N: CPU cycles per instruction (1 by default; mupen64plus's CountPerOp N is 2N)
+    int cpi;            // cpi=N: CPU cycles per instruction (2 by default; mupen64plus's CountPerOp N is 2N)
     int audioMs;        // audioms=N: audio queue target in ms (pacing threshold)
     int stateSlot;      // stateslot=N: save state slot at start (1..9)
     int loadState;      // loadstate=1: load the slot's state at start (scripted runs)

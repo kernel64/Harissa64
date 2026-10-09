@@ -36,14 +36,14 @@ void ConfigDefaults(Config *c)
     c->jitFpu = 1;
     c->regCache = 1;
     c->fpCache = 1;
-    c->fastFpu = 0;
+    c->fastFpu = 1;  // host FPU without FCR31 cause/flag tracking, as mupen64plus
     c->fullExits = 0;
     c->smooth = 1;
     c->asyncGfx = 1;
     c->asyncAudio = 1;
     c->audioCycles = 100000;
     c->gfxCycles = 400000;
-    c->cpi = 1;
+    c->cpi = 2;      // mupen64plus's CountPerOp 1 (its exact setting; its default 2 is our 4)
     c->exitAfter = 0;
     c->audioMs = XB_AUDIO_DEFAULT_MS;
     c->stateSlot = 1;
