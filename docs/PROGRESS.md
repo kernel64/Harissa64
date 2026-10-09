@@ -14,7 +14,7 @@ Order agreed with the user: (1) texture lookup speed, (2) graphics task ends bef
 | Audio margin | 250 ms by default (user's choice, `audioms=`); console A/B on OoT: 100 ms gave ~1 underrun per 2 s, 150 ms 3 in 76 s, 200 ms 2. |
 | Timing measurements | The FPS/[perf] rates read 52-54 on OoT PAL although the game ran at 50.0: the log flushed every line to the USB stick (~120 ms per period, left out of the measured period) and GetTickCount and the system clock fall behind while the emulator runs (system clock 96.2 s in 100 s, measured against the PC through XBDM). Now QPC, period start at the measurement, log flushed once per period. Console: 50.0 FPS, XAudio2 plays 31970 Hz for 31995. |
 | Fixes found on the way | Link missing on OoT's equipment page (deferred rendering read a stale snapshot); boot noise (VI showing RDRAM before the first RDP frame: black instead); white strips on OoT's title logo (texture cache emptied between binding unit 0 and unit 1: unit 0 left on the white dummy texture); OoT's Kokiri paths flickering with the camera (shade/fog interpolated perspective-correctly on the GPU, screen-linearly on the RDP; found from the user's save state with a pixel probe; console pixels now match the software RDP); the in-game menu after a BACK press (now logged and guarded; works on the user's console). |
-| Remote console tests | Scripted runs deployed by FTP and launched with XBDM from this PC (see CLAUDE.md), with screenshots, logs and XBDM captures. |
+| Remote console tests | Scripted runs deployed by FTP and launched with XBDM from this PC (see docs/DEVELOPMENT.md), with screenshots, logs and XBDM captures. |
 
 2026-10-09: OoT's Kokiri paths fixed (the graphics HLE clamped Z per vertex with the .NoN microcode; Xenos now writes a clamped per-pixel depth for such triangles; checked against the LLE microcode with the user's save state). Second ROM launched from the browser crashed: the renderer released its shaders/textures while still bound to the device; fixed, 4 games chained on the console. User reports Mario Party 3 and Paper Mario now run (earlier hangs gone); Paper Mario's name-entry screen animated heavily: not slowness (60 FPS) but frame pacing; frames now paced on the clock, and a 100-120 ms stall every 2 s removed (OutputDebugString to XBDM for every log line); console: present intervals sd 11 -> 4 ms, max 130 -> 22 ms, 57.3 -> 60.0 FPS. The transition into it ran at 6 FPS: Paper Mario reads its frame back ~7 times a frame, and each copy-back read the whole 960x720 frame from write-combined memory; frames are now shrunk to the N64 size on the GPU and read from CPU-cached memory (6.7 -> 40 FPS over the transition period, gfx time 137 -> 4 ms per frame).
 
@@ -135,7 +135,7 @@ The six scenarios give the same image and sound hashes on MSVC and gcc; the two 
 | Memory map, MMIO, open bus, ISViewer | Done (`core/memory/h64_bus.cpp`) |
 | PI DMA (ares block model), SI/PIF, CIC (6101–6106, 7102, 8303), MI interrupts and repeat mode | Done |
 | Count/Compare, scheduler, VI/AI timing | Done |
-| HLE boot | Done; DK64 needs an LLE IPL3 boot (deferred, see CLAUDE.md) |
+| HLE boot | Done; DK64 needs an LLE IPL3 boot (deferred, see docs/DEVELOPMENT.md) |
 | RSP | M1 stub: tasks are logged and completed after a fixed delay (real RSP in M2) |
 
 ### Test ROM scores (2026-10-06)
@@ -154,9 +154,9 @@ Commercial ROMs (HLE boot, 5 emulated seconds, RSP stubbed): Super Mario 64 398 
 
 | Step | Status |
 |---|---|
-| 1. Environment discovery | Done (see CLAUDE.md, "Environment") |
-| 2. XDK C++ feature probe | Done (see CLAUDE.md, "Core language subset") |
-| 3. Executable memory proof of concept | **Done on the console (run 3, 2026-10-05): a dynarec is possible.** Code written into an ERW image section (`.jitc`) or into `.text` runs and can be rewritten; dynamically allocated memory is never executable. See CLAUDE.md, "Executable memory". |
+| 1. Environment discovery | Done (see docs/DEVELOPMENT.md, "Environment") |
+| 2. XDK C++ feature probe | Done (see docs/DEVELOPMENT.md, "Core language subset") |
+| 3. Executable memory proof of concept | **Done on the console (run 3, 2026-10-05): a dynarec is possible.** Code written into an ERW image section (`.jitc`) or into `.text` runs and can be rewritten; dynamically allocated memory is never executable. See docs/DEVELOPMENT.md, "Executable memory". |
 | 4. Branch `v2`, skeleton, three builds, test script | Done: MSVC 2026, gcc (LE) and ppc64 (BE, qemu) pass the unit tests; the XDK `.xex` passes them in Xenia and **on the console** (2026-10-05: big-endian, 32-bit pointers, 5 tests / 97 checks, 0 failures) |
 
 ## To test on the console

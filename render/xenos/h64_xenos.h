@@ -14,7 +14,7 @@
 // drawn to the back buffer and presented at each VI interrupt. Frames the
 // CPU wrote itself (no RDP drawing at that address) are shown from RDRAM.
 //
-// Xbox lessons applied (V1 CLAUDE.md): never leave a texture unit empty,
+// Xbox lessons applied (lessons from Harissa64 V1): never leave a texture unit empty,
 // never release a texture the GPU may still read, DrawPrimitiveUP only,
 // linear textures for CPU uploads (0xAARRGGBB words on the big-endian CPU).
 #ifndef H64_XENOS_H

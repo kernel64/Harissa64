@@ -71,3 +71,6 @@ __pycache__/
 
 # Claude Code worktrees of parallel agents
 .claude/
+
+# Local working notes (not published)
+CLAUDE.md

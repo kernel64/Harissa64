@@ -1,7 +1,7 @@
 // Harissa64 V2 - basic types and platform detection.
 //
 // The core is portable C++ restricted to what the Xbox 360 SDK compiler
-// (VS2010, cl 16.00) accepts: see "Core language subset" in CLAUDE.md.
+// (VS2010, cl 16.00) accepts: see "Core language subset" in docs/DEVELOPMENT.md.
 #ifndef H64_TYPES_H
 #define H64_TYPES_H
 
