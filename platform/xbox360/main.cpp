@@ -476,6 +476,7 @@ static void WorkersStop(H64System *sys)
 
 static int s_jitNoFpu;   // jitfpu=0
 static int s_noRegCache; // regcache=0
+static int s_noFpCache;  // fpcache=0
 static int s_fastFpu;    // fastfpu=1
 static int s_fullExits;  // fullexits=1
 
@@ -555,6 +556,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
     }
     if (sys->jit) sys->jit->noFpu = s_jitNoFpu;
     if (sys->jit) sys->jit->noRegCache = s_noRegCache;
+    if (sys->jit) sys->jit->noFpCache = s_noFpCache;
     if (sys->jit && s_fastFpu) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
     if (sys->jit && s_fullExits) { sys->jit->fullExits = 1; h64_jit_reset(sys); }
     sys->cpu.cpi = s_cpi;
@@ -1391,6 +1393,7 @@ int __cdecl main()
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
     s_jitNoFpu = !cfg.jitFpu;
     s_noRegCache = !cfg.regCache;
+    s_noFpCache = !cfg.fpCache;
     s_fastFpu = cfg.fastFpu;
     s_fullExits = cfg.fullExits;
     s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 1;

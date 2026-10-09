@@ -96,6 +96,7 @@ struct H64Jit
     u32 *rtSlow;                    // a slow path's interpreter call (see h64_jit_emit_runtime)
     u32 *rtIndirect;                // a jr/jalr exit: straight into the target's block when known
     u32 *rtLink;                    // a fixed-target exit: counters, then go on (cr0.eq) or leave
+    u32 *rtFcStore, *rtFcLoad;      // slow paths: cached FGRs to/from H64Cpu, from a table after the call
 
 
     // Block linking: exits with a fixed target jump straight into the next
@@ -112,6 +113,7 @@ struct H64Jit
     int noNative;                   // debugging: every instruction through the interpreter
     int noFpu;                      // debugging: COP1 arithmetic through the interpreter
     int noRegCache;                 // debugging: no MIPS registers kept in host registers
+    int noFpCache;                  // debugging: no COP1 registers kept in host FPRs
     int noFpuGuard;                 // debugging: COP1 state checked at every instruction
     void *dumpFile;                 // debugging (h64test --jit-dump): a FILE * receiving each compiled block
     int fastFpu;                    // native COP1 without reading FPSCR: FCR31's Inexact cause/flag not kept

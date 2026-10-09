@@ -134,6 +134,10 @@ static inline void ppc_lfd(H64PpcCode *c, u32 frt, s32 d, u32 ra) { ppc_put(c, p
 static inline void ppc_stfs(H64PpcCode *c, u32 frs, s32 d, u32 ra) { ppc_put(c, ppc_d(52, frs, ra, (u32)d)); }
 static inline void ppc_stfd(H64PpcCode *c, u32 frs, s32 d, u32 ra) { ppc_put(c, ppc_d(54, frs, ra, (u32)d)); }
 static inline void ppc_stfiwx(H64PpcCode *c, u32 frs, u32 ra, u32 rb) { ppc_put(c, ppc_x(frs, ra, rb, 983, 0)); }
+static inline void ppc_lfsx(H64PpcCode *c, u32 frt, u32 ra, u32 rb) { ppc_put(c, ppc_x(frt, ra, rb, 535, 0)); }
+static inline void ppc_lfdx(H64PpcCode *c, u32 frt, u32 ra, u32 rb) { ppc_put(c, ppc_x(frt, ra, rb, 599, 0)); }
+static inline void ppc_stfsx(H64PpcCode *c, u32 frs, u32 ra, u32 rb) { ppc_put(c, ppc_x(frs, ra, rb, 663, 0)); }
+static inline void ppc_stfdx(H64PpcCode *c, u32 frs, u32 ra, u32 rb) { ppc_put(c, ppc_x(frs, ra, rb, 727, 0)); }
 static inline void ppc_fadds(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(59, t, a, b, 0, 21)); }
 static inline void ppc_fsubs(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(59, t, a, b, 0, 20)); }
 static inline void ppc_fmuls(H64PpcCode *c, u32 t, u32 a, u32 b) { ppc_put(c, ppc_a(59, t, a, 0, b, 25)); }

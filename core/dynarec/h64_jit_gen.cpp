@@ -1,9 +1,9 @@
 // Harissa64 V2 - recompiler code generation.
 //
 // Block layout (64-bit PowerPC):
-//   prologue: stdu/stwu r1,-FRAME(r1); mflr r0; save r0 and r24..r31 in the
-//             top of the frame; r31 = sys, r30 = &sys->cpu, r29 = RDRAM,
-//             r28 = the interpreter helper
+//   prologue: stdu/stwu r1,-FRAME(r1); mflr r0; save r0 and r14..r31 in the
+//             top of the frame, f14..f31 below them (152..295); r31 = sys,
+//             r30 = &sys->cpu, r29 = RDRAM, r28 = the interpreter helper
 //   body:     one sequence per MIPS instruction, native or a call to the
 //             reference interpreter for that instruction
 //   exit:     restore and blr
@@ -32,7 +32,10 @@
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
 
-#define FRAME 304
+// 112-byte ELFv1 area, 112..151 rtSlow's saves, 152..295 f14..f31,
+// 296..439 r14..r31, 440 LR.
+#define FRAME 448
+#define FRAME_FPR(r) (152 + 8 * ((s32)(r) - 14))
 
 // Fields generated code reaches with 16-bit displacements.
 static_assert(offsetof(H64System, mi) + 16 < 32768, "sys->mi out of displacement range");
@@ -40,6 +43,8 @@ static_assert(offsetof(H64System, jit) < 32768, "sys->jit out of displacement ra
 static_assert(offsetof(H64Jit, codeMap) < 32768, "jit->codeMap out of displacement range");
 static_assert(offsetof(H64Jit, indBody) < 32768, "jit->indBody out of displacement range");
 #define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 2048)
+// The cold part: each slow path writes back and reloads cached registers.
+#define MAX_COLD_BYTES (H64_JIT_MAX_INSNS * 1024 + 4096)
 
 // Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r27 branch taken, r26 jump target.
 enum { R_COND = 27, R_TARGET = 26 };
@@ -123,15 +128,39 @@ static u64 fn_addr(int (*f)(H64System *, u32, u32, u32)) { return (u64)(uintptr_
 // is evicted inside one MIPS instruction (begin_insn frees slots first): a slow
 // path writes back the dirty set of the instruction's start (pre) and, after
 // the call, reloads every register mapped at the instruction's end (rc).
+//
+// COP1 registers (FGRs, by fgr[] index) are cached the same way in host FPRs
+// once the block knows Status.CU1 and FR (fpu_guard): f14..f31 (saved by the
+// shared prologue) then f6..f13 (volatile: a C call clobbers them, so slow
+// paths write them back and reload them). An entry holds either the whole
+// 64-bit register as a double (lfd/stfd, bit-exact) or its low word as a
+// single (lfs/stfs, bit-exact for every pattern); a single from an arithmetic
+// result also zeroes the high word when written back (fhiz), one from LWC1
+// keeps it. A read in the other format, or any access through memory (moves,
+// CVT from W, odd registers with FR = 0, the interpreter) writes the entry
+// back first.
 #define RC_SLOTS 12
 #define RC_FIRST 14
+#define FC_SLOTS 26
+#define FC_FREE 3           // an instruction maps at most 3 FGRs
+#define FC_T_DBL 0x20       // rtFcStore/rtFcLoad table bytes: FGR | these, 0xFF unused
+#define FC_T_HIZ 0x40
+#define FC_TABLE_WORDS ((FC_SLOTS + 3) / 4)
 struct RegCache
 {
     s8 host[32];            // MIPS register -> slot, or -1
     u8 mips[RC_SLOTS];      // slot -> MIPS register (0: free)
     u32 age[RC_SLOTS];
     u32 dirty;              // MIPS registers newer in the host register
+    s8 fhost[32];           // FGR -> FPR slot, or -1
+    s8 fidx[FC_SLOTS];      // FPR slot -> FGR, or -1
+    u32 fage[FC_SLOTS];
+    u32 fdirty;             // FGRs newer in the host FPR
+    u32 fdbl;               // FGRs held as doubles (else singles: the low word)
+    u32 fhiz;               // singles whose write-back also zeroes the high word
 };
+
+static u32 fc_reg(u32 slot) { return slot < 18 ? 14 + slot : 6 + (slot - 18); }
 
 struct Gen
 {
@@ -156,6 +185,7 @@ struct Gen
     int fpuKnown, rmNearest;
     u32 fpuFr;
     int tailExit;     // the current instruction's slow path leaves the block afterwards (a guard failed)
+    u32 ftouch;       // FGRs the current instruction reads or writes through the FPR cache
 };
 
 static void add_exit(Gen *g, u32 at) { if (g->nExits < H64_JIT_MAX_INSNS * 4) g->exits[g->nExits++] = at; }
@@ -166,10 +196,50 @@ static void rc_reset(RegCache *r)
     memset(r->mips, 0, sizeof(r->mips));
     memset(r->age, 0, sizeof(r->age));
     r->dirty = 0;
+    memset(r->fhost, -1, sizeof(r->fhost));
+    memset(r->fidx, -1, sizeof(r->fidx));
+    memset(r->fage, 0, sizeof(r->fage));
+    r->fdirty = 0;
+    r->fdbl = 0;
+    r->fhiz = 0;
+}
+
+// ---- FPR cache: code for one entry of state r ----
+// *zero: r0 already holds 0 in this sequence (singles zeroing the high word).
+static void fc_store(Gen *g, const RegCache *r, u32 m, int *zero)
+{
+    u32 f = fc_reg((u32)r->fhost[m]);
+    if (r->fdbl & (1u << m)) ppc_stfd(&g->c, f, OFF_FGR(m), JR_CPU);
+    else
+    {
+        if (r->fhiz & (1u << m))
+        {
+            if (!*zero) ppc_li(&g->c, 0, 0);
+            *zero = 1;
+            ppc_stw(&g->c, 0, OFF_FGR(m), JR_CPU);
+        }
+        ppc_stfs(&g->c, f, OFF_FGR(m) + 4, JR_CPU);
+    }
+}
+
+static void fc_load(Gen *g, const RegCache *r, u32 m)
+{
+    u32 f = fc_reg((u32)r->fhost[m]);
+    if (r->fdbl & (1u << m)) ppc_lfd(&g->c, f, OFF_FGR(m), JR_CPU);
+    else ppc_lfs(&g->c, f, OFF_FGR(m) + 4, JR_CPU);
+}
+
+// Stores the dirty FGRs of state r that are in `mask`.
+static void fc_writeback_mask(Gen *g, const RegCache *r, u32 mask)
+{
+    u32 m;
+    int zero = 0;
+    for (m = 0; m < 32; m++)
+        if (r->fhost[m] >= 0 && (r->fdirty & mask & (1u << m))) fc_store(g, r, m, &zero);
 }
 
 // Stores the dirty registers of state r (code only; the generator state is unchanged).
-static void rc_writeback(Gen *g, const RegCache *r)
+static void rc_writeback_gpr(Gen *g, const RegCache *r)
 {
     u32 m;
     for (m = 1; m < 32; m++)
@@ -177,7 +247,13 @@ static void rc_writeback(Gen *g, const RegCache *r)
             ppc_std(&g->c, RC_FIRST + (u32)r->host[m], OFF_GPR(m), JR_CPU);
 }
 
-// Loads every register mapped in state r from H64Cpu (after a helper call).
+static void rc_writeback(Gen *g, const RegCache *r)
+{
+    rc_writeback_gpr(g, r);
+    fc_writeback_mask(g, r, 0xFFFFFFFFu);
+}
+
+// Loads every GPR mapped in state r from H64Cpu (after a helper call).
 static void rc_reload(Gen *g, const RegCache *r)
 {
     u32 m;
@@ -191,6 +267,95 @@ static void rc_flush(Gen *g)
     if (!g->cacheOn) return;
     rc_writeback(g, &g->rc);
     rc_reset(&g->rc);
+}
+
+// ---- FPR cache: generator state ----
+static int fc_on(Gen *g) { return g->cacheOn && g->fpuKnown && !g->sys->jit->noFpCache; }
+
+// Forgets FGR m (no code: the caller overwrites or already stored it).
+static void fc_drop(Gen *g, u32 m)
+{
+    RegCache *r = &g->rc;
+    u32 bit = 1u << m;
+    g->ftouch |= bit;
+    if (r->fhost[m] < 0) return;
+    r->fidx[(u32)r->fhost[m]] = -1;
+    r->fhost[m] = -1;
+    r->fdirty &= ~bit;
+    r->fdbl &= ~bit;
+    r->fhiz &= ~bit;
+}
+
+// H64Cpu gets FGR m's value (the entry stays, clean).
+static void fc_sync(Gen *g, u32 m)
+{
+    RegCache *r = &g->rc;
+    int zero = 0;
+    g->ftouch |= 1u << m;
+    if (r->fhost[m] < 0 || !(r->fdirty & (1u << m))) return;
+    fc_store(g, r, m, &zero);
+    r->fdirty &= ~(1u << m);
+}
+
+static void fc_flush(Gen *g, u32 m)
+{
+    fc_sync(g, m);
+    fc_drop(g, m);
+}
+
+// A slot for FGR m, free now and at the start of the instruction (a slow
+// path writes back the start's state from the host registers: they must
+// still hold it). begin_insn keeps FC_FREE such slots.
+static u32 fc_alloc(Gen *g, u32 m, int dbl)
+{
+    RegCache *r = &g->rc;
+    u32 i, bit = 1u << m;
+    for (i = 0; i < FC_SLOTS; i++)
+        if (r->fidx[i] < 0 && g->pre.fidx[i] < 0) break;
+    if (i == FC_SLOTS) { g->c.overflow = 1; i = 0; }
+    r->fidx[i] = (s8)m;
+    r->fhost[m] = (s8)i;
+    r->fdirty &= ~bit;
+    r->fhiz &= ~bit;
+    if (dbl) r->fdbl |= bit;
+    else r->fdbl &= ~bit;
+    return i;
+}
+
+// The host FPR holding FGR m as a double (dbl) or a single, loaded if needed.
+static u32 fc_src(Gen *g, u32 m, int dbl)
+{
+    RegCache *r = &g->rc;
+    u32 i;
+    if (r->fhost[m] >= 0 && (((r->fdbl >> m) & 1) != (u32)dbl)) fc_flush(g, m);   // the other format
+    if (r->fhost[m] < 0)
+    {
+        fc_alloc(g, m, dbl);
+        fc_load(g, r, m);
+    }
+    i = (u32)r->fhost[m];
+    r->fage[i] = ++g->tick;
+    g->ftouch |= 1u << m;
+    return fc_reg(i);
+}
+
+// The host FPR receiving a whole new value of FGR m (a double, or a single
+// with hiz: the high word becomes 0). Emit it after the instruction's last
+// branch to its slow path.
+static u32 fc_dst(Gen *g, u32 m, int dbl, int hiz)
+{
+    RegCache *r = &g->rc;
+    u32 i, bit = 1u << m;
+    if (r->fhost[m] < 0) fc_alloc(g, m, dbl);
+    i = (u32)r->fhost[m];
+    if (dbl) r->fdbl |= bit;
+    else r->fdbl &= ~bit;
+    if (!dbl && hiz) r->fhiz |= bit;
+    else r->fhiz &= ~bit;
+    r->fdirty |= bit;
+    r->fage[i] = ++g->tick;
+    g->ftouch |= bit;
+    return fc_reg(i);
 }
 
 // At the start of each MIPS instruction: at least 4 free slots (an instruction
@@ -213,9 +378,20 @@ static void begin_insn(Gen *g)
             g->rc.mips[best] = 0;
             free++;
         }
+        free = 0;
+        for (i = 0; i < FC_SLOTS; i++) if (g->rc.fidx[i] < 0) free++;
+        while (free < FC_FREE)
+        {
+            u32 best = 0, bestAge = 0xFFFFFFFFu;
+            for (i = 0; i < FC_SLOTS; i++)
+                if (g->rc.fidx[i] >= 0 && g->rc.fage[i] < bestAge) { bestAge = g->rc.fage[i]; best = i; }
+            fc_flush(g, (u32)g->rc.fidx[best]);
+            free++;
+        }
     }
     g->pre = g->rc;
     g->tailExit = 0;
+    g->ftouch = 0;
 }
 
 static u32 rc_slot(Gen *g, u32 mips, int load)
@@ -541,6 +717,7 @@ static void emit_prologue(Gen *g)
     ppc_mflr(c, 0);
     ppc_std(c, 0, FRAME - 8, 1);
     for (r = RC_FIRST; r < 32; r++) ppc_std(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
+    for (r = 14; r < 32; r++) ppc_stfd(c, r, FRAME_FPR(r), 1);   // the FPR cache's non-volatile registers
     ppc_mr(c, JR_SYS, 3);
     ppc_addi(c, JR_CPU, JR_SYS, (s32)offsetof(H64System, cpu));
 #if defined(H64_JIT_ABI_XBOX)
@@ -562,6 +739,7 @@ static void emit_epilogue(Gen *g)
     ppc_ld(c, 0, FRAME - 8, 1);
     ppc_mtlr(c, 0);
     for (r = RC_FIRST; r < 32; r++) ppc_ld(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
+    for (r = 14; r < 32; r++) ppc_lfd(c, r, FRAME_FPR(r), 1);
     ppc_addi(c, 1, 1, FRAME);
     ppc_blr(c);
 }
@@ -588,7 +766,7 @@ void h64_jit_emit_runtime(H64System *sys)
     start += 32;
 #endif
     g.c.buf = (u32 *)start;
-    g.c.cap = 1024;
+    g.c.cap = 4096;
     emit_prologue(&g);
     ppc_mtctr(&g.c, 4);
     ppc_put(&g.c, 0x4E800420u);   // bctr
@@ -839,6 +1017,52 @@ void h64_jit_emit_runtime(H64System *sys)
         for (k = 0; k < n; k++) ppc_patch_here(c, out[k]);
         ppc_branch_to(c, j->rtExit, 0);
     }
+    // rtFcStore / rtFcLoad (called): the FPR cache's slots to or from H64Cpu,
+    // described by FC_TABLE_WORDS words right after the call (one byte per
+    // slot: 0xFF unused, else the FGR | FC_T_DBL | FC_T_HIZ); they return after
+    // the table. Slow paths use them instead of a store or load per register
+    // (the cold code filled its half of the code memory on DK64).
+    for (st = 0; st < 2; st++)
+    {
+        H64PpcCode *c = &g.c;
+        u32 s;
+        if (st) j->rtFcStore = c->buf + c->pos;
+        else j->rtFcLoad = c->buf + c->pos;
+        ppc_mflr(c, 3);
+        if (st) ppc_li(c, 0, 0);
+        for (s = 0; s < FC_SLOTS; s++)
+        {
+            u32 skip, isDbl, done = 0, f = fc_reg(s);
+            ppc_lbz(c, 5, (s32)s, 3);
+            ppc_cmplwi(c, 0, 5, 0xFF);
+            skip = ppc_bc_fwd(c, 12, 0, PPC_EQ);              // beq: unused
+            ppc_rlwinm(c, 6, 5, 3, 24, 28);               // FGR * 8
+            ppc_add(c, 6, 6, JR_CPU);
+            ppc_andi_(c, 7, 5, FC_T_DBL);
+            isDbl = ppc_bc_fwd(c, 4, 0, PPC_EQ);              // bne: a double
+            if (st)
+            {
+                u32 noHiz;
+                ppc_andi_(c, 7, 5, FC_T_HIZ);
+                noHiz = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+                ppc_stw(c, 0, OFF_FGR(0), 6);
+                ppc_patch_here(c, noHiz);
+                ppc_stfs(c, f, OFF_FGR(0) + 4, 6);
+            }
+            else
+                ppc_lfs(c, f, OFF_FGR(0) + 4, 6);
+            done = ppc_b_fwd(c);
+            ppc_patch_here(c, isDbl);
+            if (st) ppc_stfd(c, f, OFF_FGR(0), 6);
+            else ppc_lfd(c, f, OFF_FGR(0), 6);
+            ppc_patch_here(c, done);
+            ppc_patch_here(c, skip);
+        }
+        ppc_addi(c, 3, 3, FC_TABLE_WORDS * 4);
+        ppc_mtlr(c, 3);
+        ppc_blr(c);
+    }
+    if (g.c.overflow) H64_ERROR("[jit] shared runtime code too large");
 #if defined(H64_JIT_ABI_ELFV1)
     {
         u64 *desc = (u64 *)j->mem;
@@ -1228,6 +1452,68 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
     // Shared check (h64_jit_emit_runtime): r4 = physical address, cr0.eq = fast path.
     ppc_branch_to(c, g->sys->jit->rtCheck[store][size == 1 ? 0 : size == 2 ? 1 : size == 4 ? 2 : 3], 1);
     slow[nSlow++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    if (fpu && fc_on(g))
+    {
+        // Through the FPR cache (FR known). The FGR: LWC1/SWC1 use the low
+        // word of fgr[rt] unless FR = 0 and rt is odd (the high word of
+        // fgr[rt - 1]: through memory); LDC1/SDC1 the whole fgr[rt] (FR = 1)
+        // or fgr[rt & ~1].
+        RegCache *r = &g->rc;
+        int direct = size == 8 || g->fpuFr || !(rt & 1);
+        u32 m = size == 8 && !g->fpuFr ? (rt & ~1u) : rt, bit;
+        if (!direct)
+        {
+            m = rt - 1;
+            if (store) fc_sync(g, m);
+            else
+            {
+                fc_flush(g, m);   // a partial write in memory
+                ppc_lwzx(c, 5, JR_RDRAM, 4);
+            }
+            fpu_access(g, rt, size, store);
+            if (store) ppc_stwx(c, 5, JR_RDRAM, 4);
+            *nSlowOut = nSlow;
+            return 1;
+        }
+        bit = 1u << m;
+        if (store)
+        {
+            int dbl = size == 8;
+            if (r->fhost[m] >= 0 && ((r->fdbl & bit) != 0) == dbl)
+            {
+                u32 f = fc_src(g, m, dbl);
+                if (dbl) ppc_stfdx(c, f, JR_RDRAM, 4);
+                else ppc_stfsx(c, f, JR_RDRAM, 4);
+            }
+            else
+            {
+                // Not cached, or in the other format: the value from H64Cpu.
+                fc_sync(g, m);
+                fpu_access(g, rt, size, 1);
+                if (dbl) ppc_stdx(c, 5, JR_RDRAM, 4);
+                else ppc_stwx(c, 5, JR_RDRAM, 4);
+            }
+        }
+        else if (size == 8)
+            ppc_lfdx(c, fc_dst(g, m, 1, 0), JR_RDRAM, 4);
+        else
+        {
+            // LWC1 replaces the low word only: what a dirty entry holds of the
+            // high word goes to H64Cpu first.
+            if (r->fhost[m] >= 0 && (r->fdirty & bit))
+            {
+                if (r->fdbl & bit) fc_sync(g, m);
+                else if (r->fhiz & bit)
+                {
+                    ppc_li(c, 0, 0);
+                    ppc_stw(c, 0, OFF_FGR(m), JR_CPU);
+                }
+            }
+            ppc_lfsx(c, fc_dst(g, m, 0, 0), JR_RDRAM, 4);
+        }
+        *nSlowOut = nSlow;
+        return 1;
+    }
     if (store)
     {
         if (fpu) fpu_access(g, rt, size, 1);   // the value to store, in r5
@@ -1279,8 +1565,20 @@ struct ColdTail
     u32 veneer;           // hot word: b <the tail in the cold region>
     u32 *coldStart;
     int exitAfter;        // leave the block after the interpreter ran the instruction (a guard failed)
+    u32 ftouch;           // FGRs the instruction may read or write
     RegCache pre, post;
 };
+
+// Every FGR a COP1 instruction or a COP1 load/store may access, whatever FR
+// is (a superset): fs, ft, fd and their even registers.
+static u32 fp_touch(u32 op)
+{
+    u32 opc = op >> 26, ft = (op >> 16) & 31, fs = (op >> 11) & 31, fd = (op >> 6) & 31;
+    if (opc == 0x31 || opc == 0x35 || opc == 0x39 || opc == 0x3D) return (1u << ft) | (1u << (ft & ~1u));
+    if (opc == 0x11)
+        return (1u << ft) | (1u << (ft & ~1u)) | (1u << fs) | (1u << (fs & ~1u)) | (1u << fd) | (1u << (fd & ~1u));
+    return 0;
+}
 static ColdTail s_tails[H64_JIT_MAX_INSNS + 2];   // one block is compiled at a time
 static u32 s_nTails;
 
@@ -1298,6 +1596,7 @@ static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow)
     t->pre = g->pre;
     t->post = g->rc;
     t->exitAfter = g->tailExit;
+    t->ftouch = g->ftouch | fp_touch(h64_load_be32(g->sys->rdram + g->paddr0 + (pc - g->pc0)));
     g->tailExit = 0;
     g->pending++;
 }
@@ -1317,6 +1616,44 @@ static void emit_cold_veneers(Gen *g)
     }
 }
 
+// Slow paths: the FGRs of state r in `mask` to H64Cpu (store) or back from
+// it: inline when that is not longer, else a call to rtFcStore/rtFcLoad
+// followed by their table (one byte per slot, in memory order).
+static void fc_slow_call(Gen *g, const u32 *routine, const RegCache *r, u32 mask, int store)
+{
+    H64PpcCode *c = &g->c;
+    u8 table[FC_TABLE_WORDS * 4];
+    u32 m, words = 0, zeroWord = 0, i;
+    memset(table, 0xFF, sizeof(table));
+    for (m = 0; m < 32; m++)
+        if (r->fhost[m] >= 0 && (mask & (1u << m)))
+        {
+            u32 bit = 1u << m;
+            table[(u32)r->fhost[m]] = (u8)(m | ((r->fdbl & bit) ? FC_T_DBL : 0) | ((r->fhiz & bit) ? FC_T_HIZ : 0));
+            words++;
+            if (store && !(r->fdbl & bit) && (r->fhiz & bit)) { words++; zeroWord = 1; }
+        }
+    if (!words) return;
+    if (words + zeroWord <= 1 + FC_TABLE_WORDS)
+    {
+        int zero = 0;
+        for (m = 0; m < 32; m++)
+            if (r->fhost[m] >= 0 && (mask & (1u << m)))
+            {
+                if (store) fc_store(g, r, m, &zero);
+                else fc_load(g, r, m);
+            }
+        return;
+    }
+    ppc_branch_to(c, routine, 1);
+    for (i = 0; i < FC_TABLE_WORDS; i++)
+    {
+        if (c->pos >= c->cap) { c->overflow = 1; return; }
+        memcpy(c->buf + c->pos, table + 4 * i, 4);   // bytes in memory order on any host
+        c->pos++;
+    }
+}
+
 // Cold side (g->c is the cold buffer here, hot the block's buffer).
 static void emit_cold_tails(Gen *g, H64PpcCode *hot)
 {
@@ -1325,8 +1662,13 @@ static void emit_cold_tails(Gen *g, H64PpcCode *hot)
     for (k = 0; k < s_nTails; k++)
     {
         ColdTail *t = &s_tails[k];
+        u32 m, reload = 0;
         t->coldStart = c->buf + c->pos;
-        if (g->cacheOn) rc_writeback(g, &t->pre);
+        if (g->cacheOn)
+        {
+            rc_writeback_gpr(g, &t->pre);
+            fc_slow_call(g, g->sys->jit->rtFcStore, &t->pre, t->pre.fdirty, 1);
+        }
         ppc_li32u(c, 4, t->pc);
         ppc_li32u(c, 5, h64_load_be32(g->sys->rdram + g->paddr0 + (t->pc - g->pc0)));
         ppc_li(c, 9, (s32)t->pend);
@@ -1344,7 +1686,22 @@ static void emit_cold_tails(Gen *g, H64PpcCode *hot)
             continue;
         }
         add_exit(g, ppc_bc_fwd(c, 4, 0, PPC_EQ));   // bne exit
-        if (g->cacheOn) rc_reload(g, &t->post);
+        if (g->cacheOn)
+        {
+            rc_reload(g, &t->post);
+            // FGRs whose host FPR may not hold the value: in a volatile FPR
+            // (the call clobbers f0-f13), accessed by the instruction, or
+            // mapped or changed in format during it. The others kept theirs.
+            for (m = 0; m < 32; m++)
+            {
+                s8 sl = t->post.fhost[m];
+                if (sl < 0) continue;
+                if (fc_reg((u32)sl) < 14 || (t->ftouch & (1u << m)) || t->pre.fhost[m] != sl ||
+                    ((t->pre.fdbl ^ t->post.fdbl) & (1u << m)))
+                    reload |= 1u << m;
+            }
+            fc_slow_call(g, g->sys->jit->rtFcLoad, &t->post, reload, 0);
+        }
         ppc_branch_to(c, hot->buf + t->back, 0);   // back to the fast path's end
     }
 }
@@ -1433,6 +1790,23 @@ static void fp_store32_zext(Gen *g, u32 fd)
     ppc_stw(&g->c, 8, OFF_FGR(fd), JR_CPU);
 }
 
+// The result in f1 goes to FGR fd: the cached FPR, or H64Cpu (a single
+// zeroes the high word).
+static void fp_result(Gen *g, u32 fd, int dbl)
+{
+    if (fc_on(g))
+    {
+        ppc_fmr(&g->c, fc_dst(g, fd, dbl, 1), 1);
+        return;
+    }
+    if (dbl) ppc_stfd(&g->c, 1, OFF_FGR(fd), JR_CPU);
+    else
+    {
+        fp_store32_zext(g, fd);
+        ppc_stfs(&g->c, 1, OFF_FGR(fd) + 4, JR_CPU);
+    }
+}
+
 static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
 {
     H64PpcCode *c = &g->c;
@@ -1442,8 +1816,8 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     int fromW = fmt == 0x14 && (funct == 0x20 || funct == 0x21);
     // Moves (MFC1 DMFC1 CFC1 MTC1 DMTC1 CTC1) need no host flags.
     int move = fmt == 0 || fmt == 1 || fmt == 2 || fmt == 4 || fmt == 5 || fmt == 6;
-    s32 offS, offT;
-    int fast;
+    u32 a = 1, b = 2;
+    int fast, fc;
     if ((op >> 26) != 0x11) return 0;
     if (!move)
     {
@@ -1484,6 +1858,14 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
             // The GPR is read once, before the FR split: a register cached on
             // one side only would hold garbage on the other.
             if (fmt == 4 || fmt == 5) load_gpr(g, 3, ft);
+            if (fc_on(g))
+            {
+                // FR known (n = 1): these go through H64Cpu.
+                u32 m = first ? fs - 1 : fs;
+                if (fmt <= 1) fc_sync(g, m);
+                else if (fmt == 4) fc_flush(g, m);   // the low or high word only
+                else fc_drop(g, m);
+            }
             for (pass = first; pass < first + n; pass++)
             {
                 s32 off32 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs) + 4, off64 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs);
@@ -1531,8 +1913,26 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
         }
         return 1;
     }
+    fc = fc_on(g);
     if (funct == 0x06)   // MOV: the whole register
     {
+        if (fc)
+        {
+            // Cached as a double, or as a single with a zero high word, or
+            // MOV.D of an uncached register: a copy between host FPRs.
+            RegCache *r = &g->rc;
+            u32 bit = 1u << fs;
+            int mapped = r->fhost[fs] >= 0;
+            if ((mapped && ((r->fdbl & bit) || (r->fhiz & bit))) || (!mapped && dbl))
+            {
+                int asDbl = mapped ? (r->fdbl & bit) != 0 : 1;
+                u32 src = fc_src(g, fs, asDbl), dst = fc_dst(g, fd, asDbl, 1);
+                if (dst != src) ppc_fmr(c, dst, src);
+                return 1;
+            }
+            fc_sync(g, fs);
+            fc_drop(g, fd);
+        }
         ppc_ld(c, 5, OFF_FGR(fs), JR_CPU);
         ppc_std(c, 5, OFF_FGR(fd), JR_CPU);
         return 1;
@@ -1550,6 +1950,7 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     {
         // CVT.S.W, CVT.D.W: the integer through memory (fcfid converts a
         // doubleword), exact as a double; rounded once to single.
+        if (fc) fc_sync(g, fs);
         ppc_lwa(c, 6, OFF_FGR(fs) + 4, JR_CPU);
         ppc_std(c, 6, OFF_JITSCRATCH, JR_CPU);
         ppc_lfd(c, 1, OFF_JITSCRATCH, JR_CPU);
@@ -1561,14 +1962,13 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
                 ppc_rlwinm(c, 5, 5, 0, 20, 13);
                 ppc_stw(c, 5, OFF_FCR31, JR_CPU);
             }
-            ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
+            fp_result(g, fd, 1);
             return 1;
         }
         rm_guard(g, slow, nSlow);   // rounding mode nearest
         ppc_frsp(c, 1, 1);
         if (!fast) fp_call(g, g->sys->jit->rtFpFinish[0], slow, nSlow);
-        fp_store32_zext(g, fd);
-        ppc_stfs(c, 1, OFF_FGR(fd) + 4, JR_CPU);
+        fp_result(g, fd, 0);
         return 1;
     }
     if (arith || cvts) rm_guard(g, slow, nSlow);   // rounding mode nearest
@@ -1578,18 +1978,31 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
         ppc_andi_(c, 6, 5, 2);
         slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
     }
-    offS = dbl ? OFF_FGR(fs) : OFF_FGR(fs) + 4;
-    offT = dbl ? OFF_FGR(ft) : OFF_FGR(ft) + 4;
-    if (dbl) ppc_lfd(c, 1, offS, JR_CPU);
-    else ppc_lfs(c, 1, offS, JR_CPU);
+    // The operands: cached host FPRs, or f1 and f2 loaded from H64Cpu.
+    if (fc)
+    {
+        a = fc_src(g, fs, dbl);
+        if (arith || cmp) b = fc_src(g, ft, dbl);
+    }
+    else
+    {
+        s32 offS = dbl ? OFF_FGR(fs) : OFF_FGR(fs) + 4, offT = dbl ? OFF_FGR(ft) : OFF_FGR(ft) + 4;
+        a = 1;
+        if (dbl) ppc_lfd(c, 1, offS, JR_CPU);
+        else ppc_lfs(c, 1, offS, JR_CPU);
+        if (arith || cmp)
+        {
+            b = 2;
+            if (dbl) ppc_lfd(c, 2, offT, JR_CPU);
+            else ppc_lfs(c, 2, offT, JR_CPU);
+        }
+    }
 
     if (cmp)
     {
         // No NaN: no exception, cause cleared, C = the condition.
         u32 cond = funct & 15, set[2], nSet = 0, over, i;
-        if (dbl) ppc_lfd(c, 2, offT, JR_CPU);
-        else ppc_lfs(c, 2, offT, JR_CPU);
-        ppc_fcmpu(c, 0, 1, 2);
+        ppc_fcmpu(c, 0, a, b);
         slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_UN);
         ppc_rlwinm(c, 5, 5, 0, 20, 13);   // cause
         ppc_rlwinm(c, 5, 5, 0, 9, 7);     // C
@@ -1606,82 +2019,82 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
         return 1;
     }
 
-    // Operand checks (shared routine): normal, zero or infinite.
-    if (arith)
+    // Operand checks (shared routine, f1 and f2): normal, zero or infinite.
+    if (!fast)
     {
-        if (dbl) ppc_lfd(c, 2, offT, JR_CPU);
-        else ppc_lfs(c, 2, offT, JR_CPU);
+        if (a != 1) ppc_fmr(c, 1, a);
+        if (arith && b != 2) ppc_fmr(c, 2, b);
+        fp_call(g, g->sys->jit->rtFpCheck[dbl][arith ? 1 : 0], slow, nSlow);
     }
-    if (!fast) fp_call(g, g->sys->jit->rtFpCheck[dbl][arith ? 1 : 0], slow, nSlow);
     if (funct == 0x05 || funct == 0x07)
     {
         // ABS, NEG: no exception for these operands; the cause is cleared.
-        if (funct == 0x05) ppc_fabs(c, 1, 1);
-        else ppc_fneg(c, 1, 1);
+        u32 d = fc ? fc_dst(g, fd, dbl, 1) : 1;
+        if (funct == 0x05) ppc_fabs(c, d, a);
+        else ppc_fneg(c, d, a);
         if (!fast)
         {
             ppc_rlwinm(c, 5, 5, 0, 20, 13);
             ppc_stw(c, 5, OFF_FCR31, JR_CPU);
         }
-        if (dbl) ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
-        else
-        {
-            fp_store32_zext(g, fd);
-            ppc_stfs(c, 1, OFF_FGR(fd) + 4, JR_CPU);
-        }
+        if (!fc) fp_result(g, fd, dbl);
         return 1;
     }
     if (cvtd)
     {
         // Exact: a normal single is a normal double, no flag.
+        u32 d = fc ? fc_dst(g, fd, 1, 1) : 1;
         if (!fast)
         {
             ppc_rlwinm(c, 5, 5, 0, 20, 13);
             ppc_stw(c, 5, OFF_FCR31, JR_CPU);
         }
-        ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
+        if (d != a) ppc_fmr(c, d, a);
+        if (!fc) fp_result(g, fd, 1);
         return 1;
     }
     if (toint)
     {
-        if (funct == 0x0D) ppc_fctiwz(c, 1, 1);
-        else if (g->rmNearest) ppc_fctiw(c, 1, 1);
+        if (funct == 0x0D) ppc_fctiwz(c, 1, a);
+        else if (g->rmNearest) ppc_fctiw(c, 1, a);
         else
         {
             u32 nearest, join;
             ppc_andi_(c, 6, 5, 1);   // cr0.eq = nearest
             nearest = ppc_bc_fwd(c, 12, 0, PPC_EQ);
-            ppc_fctiwz(c, 1, 1);
+            ppc_fctiwz(c, 1, a);
             join = ppc_b_fwd(c);
             ppc_patch_here(c, nearest);
-            ppc_fctiw(c, 1, 1);
+            ppc_fctiw(c, 1, a);
             ppc_patch_here(c, join);
         }
         if (!fast) fp_call(g, g->sys->jit->rtFpFinish[0], slow, nSlow);   // NaN, infinite or out of range: VXCVI
+        if (fc) fc_drop(g, fd);   // an integer: through H64Cpu
         fp_store32_zext(g, fd);
         ppc_addi(c, 8, JR_CPU, OFF_FGR(fd) + 4);
         ppc_stfiwx(c, 1, 0, 8);
         return 1;
     }
-    if (arith)
     {
-        switch (funct)
+        // Arithmetic or CVT.S.D; with fastFpu nothing follows the operation,
+        // which then writes the cached destination directly.
+        int dblOut = dbl && !cvts;
+        u32 d = (fc && fast) ? fc_dst(g, fd, dblOut, 1) : 1;
+        if (arith)
         {
-        case 0: if (dbl) ppc_fadd(c, 1, 1, 2); else ppc_fadds(c, 1, 1, 2); break;
-        case 1: if (dbl) ppc_fsub(c, 1, 1, 2); else ppc_fsubs(c, 1, 1, 2); break;
-        case 2: if (dbl) ppc_fmul(c, 1, 1, 2); else ppc_fmuls(c, 1, 1, 2); break;
-        default: if (dbl) ppc_fdiv(c, 1, 1, 2); else ppc_fdivs(c, 1, 1, 2); break;
+            switch (funct)
+            {
+            case 0: if (dbl) ppc_fadd(c, d, a, b); else ppc_fadds(c, d, a, b); break;
+            case 1: if (dbl) ppc_fsub(c, d, a, b); else ppc_fsubs(c, d, a, b); break;
+            case 2: if (dbl) ppc_fmul(c, d, a, b); else ppc_fmuls(c, d, a, b); break;
+            default: if (dbl) ppc_fdiv(c, d, a, b); else ppc_fdivs(c, d, a, b); break;
+            }
         }
-    }
-    else
-        ppc_frsp(c, 1, 1);   // CVT.S.D
-    // Flags, a denormal result, Inexact and FCR31 (shared routine).
-    if (!fast) fp_call(g, g->sys->jit->rtFpFinish[dbl && !cvts ? 2 : 1], slow, nSlow);
-    if (dbl && !cvts) ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
-    else
-    {
-        fp_store32_zext(g, fd);
-        ppc_stfs(c, 1, OFF_FGR(fd) + 4, JR_CPU);
+        else
+            ppc_frsp(c, d, a);   // CVT.S.D
+        // Flags, a denormal result, Inexact and FCR31 (shared routine).
+        if (!fast) fp_call(g, g->sys->jit->rtFpFinish[dblOut ? 2 : 1], slow, nSlow);
+        if (d == 1) fp_result(g, fd, dblOut);
     }
     return 1;
 }
@@ -2017,7 +2430,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     if (n == 0) return 0;
 
     if (j->blockCount >= j->blockCap || j->memUsed + MAX_BLOCK_BYTES + 64 > j->coldBase ||
-        j->coldUsed + MAX_BLOCK_BYTES + 64 > j->memSize)
+        j->coldUsed + MAX_COLD_BYTES + 64 > j->memSize)
     {
         H64_INFO("[jit] code cache full (%u blocks, hot %u KB, cold %u KB): flushed", j->blockCount, j->memUsed >> 10,
                  (j->coldUsed - j->coldBase) >> 10);
@@ -2094,7 +2507,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         H64PpcCode hot = g.c;
         g.c.buf = (u32 *)(j->mem + j->coldUsed);
         g.c.pos = 0;
-        g.c.cap = MAX_BLOCK_BYTES / 4;
+        g.c.cap = MAX_COLD_BYTES / 4;
         g.c.overflow = 0;
         g.nExits = 0;
         emit_cold_tails(&g, &hot);

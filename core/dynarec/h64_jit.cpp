@@ -30,7 +30,9 @@ void h64_jit_reset(H64System *sys)
     j->freeLink = -1;
     j->lastExit = 0;
     j->memUsed = 0;
-    j->coldBase = (j->memSize / 2) & ~63u;   // slow paths take about as much as the hot code
+    // Slow paths take about 1.4 times the hot code (DK64: 48 hot and 69 cold
+    // bytes per MIPS instruction; with half each the cold half filled first).
+    j->coldBase = (j->memSize / 12 * 5) & ~63u;
     j->coldUsed = j->coldBase;
     h64_jit_emit_runtime(sys);   // sets memUsed past the shared code
     j->curInvalidated = 1;

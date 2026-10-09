@@ -35,6 +35,7 @@ void ConfigDefaults(Config *c)
     c->fpuFlags = 1;
     c->jitFpu = 1;
     c->regCache = 1;
+    c->fpCache = 1;
     c->fastFpu = 0;
     c->fullExits = 0;
     c->smooth = 1;
@@ -81,6 +82,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
         else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
         else if (!strcmp(line, "regcache")) c->regCache = atoi(eq + 1);
+        else if (!strcmp(line, "fpcache")) c->fpCache = atoi(eq + 1);
         else if (!strcmp(line, "fastfpu")) c->fastFpu = atoi(eq + 1);
         else if (!strcmp(line, "fullexits")) c->fullExits = atoi(eq + 1);
         else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
