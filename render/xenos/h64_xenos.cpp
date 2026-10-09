@@ -33,8 +33,15 @@
 #define RB_WIDTH 640
 #define RB_HEIGHT 480
 #define FB_SLOTS 8
-#define MAX_TEXTURES 1500
+#define MAX_TEXTURES 8000   // arena textures (4 KB each at least) are bounded by the arena
 #define MAX_TEXTURE_BYTES (40u * 1024u * 1024u)
+// Texture arena: small textures get their D3D header (XGSetTextureHeader) over
+// this physical memory instead of CreateTexture (~400 us each on the console:
+// GoldenEye's gun-barrel intro made ~300 new small textures a frame, 110 ms).
+// Used in chunks; re-entering a chunk evicts its textures after a GPU fence.
+#define ARENA_BYTES (24u * 1024u * 1024u)
+#define ARENA_CHUNK (1024u * 1024u)
+#define ARENA_CHUNKS (ARENA_BYTES / ARENA_CHUNK)
 #define MAX_POOL_BYTES (24u * 1024u * 1024u)
 #define BATCH_VERTICES 3000
 
@@ -63,6 +70,7 @@ struct TexEntry
 {
     IDirect3DTexture9 *tex;
     u32 w, h;
+    int chunk;         // arena chunk (-1: a CreateTexture texture)
 };
 
 struct TexBinding
@@ -96,6 +104,10 @@ struct Xenos
     // Free textures by size (w << 16 | h), for reuse: CreateTexture is slow on
     // the console, and OoT's backgrounds (S2DEX, LLE) load ~90 strips a frame.
     std::map<u32, std::vector<IDirect3DTexture9 *> > pool;
+    u8 *arena;                              // ARENA_BYTES of physical memory (NULL: CreateTexture only)
+    u32 arenaHead;                          // next free byte
+    std::vector<u64> arenaKeys[ARENA_CHUNKS];          // cache keys of the textures in each chunk
+    std::vector<IDirect3DTexture9 *> arenaHeaders[ARENA_CHUNKS];
     u32 poolBytes;
     u32 retires;        // times the texture cache was emptied (it unbinds both texture units)
     u64 combineRaw;
@@ -378,7 +390,7 @@ static void retire_all_textures(Xenos *x)
     for (it = x->textures.begin(); it != x->textures.end(); ++it)
     {
         TexEntry *e = &it->second;
-        if (!e->tex) continue;
+        if (!e->tex || e->chunk >= 0) continue;   // arena headers: freed below
         if (x->poolBytes + e->w * e->h * 4 <= MAX_POOL_BYTES)
         {
             x->pool[(e->w << 16) | e->h].push_back(e->tex);
@@ -389,6 +401,16 @@ static void retire_all_textures(Xenos *x)
     }
     x->textures.clear();
     x->textureBytes = 0;
+    {
+        u32 c, k;
+        for (c = 0; c < ARENA_CHUNKS; c++)
+        {
+            for (k = 0; k < x->arenaHeaders[c].size(); k++) delete x->arenaHeaders[c][k];
+            x->arenaHeaders[c].clear();
+            x->arenaKeys[c].clear();
+        }
+        x->arenaHead = 0;
+    }
     x->tmemGen++;   // the memos point at released textures
     x->retires++;
 }
@@ -506,6 +528,45 @@ static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     return x->memo[t].tex;
 }
 
+// Makes room for `size` bytes at arenaHead (moving to the next chunk when it
+// does not fit), evicting what an earlier lap left in a chunk entered.
+static int arena_alloc(Xenos *x, u32 size, u32 *offset)
+{
+    u32 c;
+    if (!x->arena || size > ARENA_CHUNK) return 0;
+    if (x->arenaHead / ARENA_CHUNK != (x->arenaHead + size - 1) / ARENA_CHUNK || x->arenaHead % ARENA_CHUNK == 0)
+    {
+        u32 next = x->arenaHead % ARENA_CHUNK == 0 ? x->arenaHead : (x->arenaHead / ARENA_CHUNK + 1) * ARENA_CHUNK;
+        if (next >= ARENA_BYTES) next = 0;
+        x->arenaHead = next;
+        c = next / ARENA_CHUNK;
+        if (!x->arenaKeys[c].empty())
+        {
+            // The GPU may still read this chunk's textures: unbind, wait for
+            // everything issued so far, then drop them.
+            u32 k;
+            x->dev->SetTexture(0, x->dummy);
+            x->dev->SetTexture(1, x->dummy);
+            x->dev->BlockOnFence(x->dev->InsertFence());
+            for (k = 0; k < x->arenaKeys[c].size(); k++)
+            {
+                std::map<u64, TexEntry>::iterator it = x->textures.find(x->arenaKeys[c][k]);
+                if (it != x->textures.end() && it->second.chunk == (int)c) x->textures.erase(it);
+            }
+            for (k = 0; k < x->arenaHeaders[c].size(); k++) delete x->arenaHeaders[c][k];
+            x->arenaKeys[c].clear();
+            x->arenaHeaders[c].clear();
+            x->dev->InvalidateGpuCache(x->arena + (size_t)c * ARENA_CHUNK, ARENA_CHUNK, 0);
+            x->tmemGen++;      // memos may point at the dropped textures
+            x->retires++;      // both units now hold the dummy: rebind (setup_combined)
+            x->stats.arenaEvictions++;
+        }
+    }
+    *offset = x->arenaHead;
+    x->arenaHead += (size + 4095) & ~4095u;
+    return 1;
+}
+
 static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
     const H64RdpState *st = x->st;
@@ -606,25 +667,11 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     e.tex = NULL;
     e.w = b->w;
     e.h = b->h;
-    {
-        std::map<u32, std::vector<IDirect3DTexture9 *> >::iterator pit = x->pool.find((b->w << 16) | b->h);
-        if (pit != x->pool.end() && !pit->second.empty())
-        {
-            e.tex = pit->second.back();
-            pit->second.pop_back();
-            x->poolBytes -= b->w * b->h * 4;
-        }
-        else
-        {
-            if (FAILED(x->dev->CreateTexture(b->w, b->h, 1, 0, D3DFMT_LIN_A8R8G8B8, D3DPOOL_DEFAULT, &e.tex, NULL)) || !e.tex)
-                return x->dummy;
-            x->stats.textureCreates++;
-        }
-    }
-    if (SUCCEEDED(e.tex->LockRect(0, &lr, NULL, 0)))
+    e.chunk = -1;
     {
         // Decode into a cached buffer first: texture memory is write-combined.
         u32 count = b->w * b->h, xx;
+        u64 f0 = h64_prof_now(x->sys);
         if (x->decodeBuf.size() < count) x->decodeBuf.resize(count);
         for (y = 0; y < b->h; y++)
         {
@@ -639,12 +686,58 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
                                              ((u32)(tx.c[1] & 0xFF) << 8) | (u32)(tx.c[2] & 0xFF);
             }
         }
-        for (y = 0; y < b->h; y++)
-            memcpy((u8 *)lr.pBits + y * lr.Pitch, &x->decodeBuf[y * b->w], b->w * 4);
-        e.tex->UnlockRect(0);
+        x->stats.tFill += h64_prof_now(x->sys) - f0;
+    }
+    {
+        // Linear textures: rows 256-byte aligned, data 4 KB aligned.
+        u32 pitch = (b->w * 4 + 255) & ~255u, offset;
+        if (arena_alloc(x, pitch * b->h, &offset))
+        {
+            u64 c0 = h64_prof_now(x->sys);
+            IDirect3DTexture9 *t9 = new D3DTexture;
+            u8 *dst = x->arena + offset;
+            XGSetTextureHeader(b->w, b->h, 1, 0, D3DFMT_LIN_A8R8G8B8, (D3DPOOL)0, 0, XGHEADER_CONTIGUOUS_MIP_OFFSET, pitch, t9, NULL, NULL);
+            XGOffsetResourceAddress(t9, dst);
+            for (y = 0; y < b->h; y++) memcpy(dst + y * pitch, &x->decodeBuf[y * b->w], b->w * 4);
+            __sync();   // out of the write-combining buffers before the GPU reads it
+            e.tex = t9;
+            e.chunk = (int)(offset / ARENA_CHUNK);
+            x->arenaKeys[e.chunk].push_back(key);
+            x->arenaHeaders[e.chunk].push_back(t9);
+            x->stats.arenaTextures++;
+            x->stats.tCreate += h64_prof_now(x->sys) - c0;
+        }
+    }
+    if (!e.tex)
+    {
+        std::map<u32, std::vector<IDirect3DTexture9 *> >::iterator pit = x->pool.find((b->w << 16) | b->h);
+        if (pit != x->pool.end() && !pit->second.empty())
+        {
+            e.tex = pit->second.back();
+            pit->second.pop_back();
+            x->poolBytes -= b->w * b->h * 4;
+        }
+        else
+        {
+            u64 c0 = h64_prof_now(x->sys);
+            if (FAILED(x->dev->CreateTexture(b->w, b->h, 1, 0, D3DFMT_LIN_A8R8G8B8, D3DPOOL_DEFAULT, &e.tex, NULL)) || !e.tex)
+                return x->dummy;
+            x->stats.textureCreates++;
+            x->stats.tCreate += h64_prof_now(x->sys) - c0;
+        }
+        {
+            u64 l0 = h64_prof_now(x->sys);
+            if (SUCCEEDED(e.tex->LockRect(0, &lr, NULL, 0)))
+            {
+                for (y = 0; y < b->h; y++)
+                    memcpy((u8 *)lr.pBits + y * lr.Pitch, &x->decodeBuf[y * b->w], b->w * 4);
+                e.tex->UnlockRect(0);
+            }
+            x->stats.tLock += h64_prof_now(x->sys) - l0;
+        }
+        x->textureBytes += e.w * e.h * 4;
     }
     x->textures[key] = e;
-    x->textureBytes += e.w * e.h * 4;
     x->stats.tDecode += h64_prof_now(x->sys) - d0;
     x->stats.textureUploads++;
     x->stats.texelsDecoded += b->w * b->h;
@@ -1544,6 +1637,9 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->poolBytes = 0;
     x->retires = 0;
     x->presentCount = 0;
+    x->arenaHead = 0;
+    x->arena = (u8 *)XPhysicalAlloc(ARENA_BYTES, MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
+    if (!x->arena) H64_WARN("[xenos] no texture arena (%u MB): CreateTexture for every texture", ARENA_BYTES >> 20);
     x->stateDirty = 1;
     x->batchFlags = x->batchTile = 0xFFFFFFFF;
     x->tmemGen = 1;
@@ -1639,6 +1735,13 @@ void h64_xenos_free(H64Renderer *r)
         for (pit = x->pool.begin(); pit != x->pool.end(); ++pit)
             for (k = 0; k < pit->second.size(); k++) pit->second[k]->Release();
         x->pool.clear();
+    }
+    {
+        u32 c, k;
+        for (c = 0; c < ARENA_CHUNKS; c++)
+            for (k = 0; k < x->arenaHeaders[c].size(); k++) delete x->arenaHeaders[c][k];
+        if (x->arena) XPhysicalFree(x->arena);
+        x->arena = NULL;
     }
     for (it = x->shaders.begin(); it != x->shaders.end(); ++it)
         if (it->second) it->second->Release();
