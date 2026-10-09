@@ -20,6 +20,7 @@ void test_rdp_tri(H64TestContext *ctx);
 void test_save(H64TestContext *ctx);
 void test_state(H64TestContext *ctx);
 void test_zip(H64TestContext *ctx);
+void test_pif(H64TestContext *ctx);
 
 static const H64TestCase s_tests[] = {
     { "types", test_types },
@@ -40,6 +41,7 @@ static const H64TestCase s_tests[] = {
     { "save", test_save },
     { "state", test_state },
     { "zip", test_zip },
+    { "pif", test_pif },
 };
 
 int h64_run_all_unit_tests(int *testsOut, int *checksOut)

@@ -320,7 +320,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u8 *file;
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
-    int logPc = 0, gfxCostLog = 0, gfxTiming = 0;
+    int logPc = 0, gfxCostLog = 0, gfxTiming = 0, padCount = 1;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0;
@@ -378,6 +378,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             saveStatePath = colon + 1;
         }
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) { if (parse_input(argv[++i])) return 2; }
+        else if (!strcmp(argv[i], "--pads") && i + 1 < argc) padCount = atoi(argv[++i]);
         else if ((!strcmp(argv[i], "--shot") || !strcmp(argv[i], "--raw-shot")) && i + 1 < argc && shotCount < 128)
         {
             char *colon;
@@ -444,6 +445,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         ref->options.hleAudio = hleAudio == 1;
         ref->options.hleGfx = hleGfx;
         ref->padHook = apply_input;
+        ref->padMask = padCount >= 1 && padCount <= 4 ? (1u << padCount) - 1u : 1u;
         ref->cpu.cpi = (u32)(cpi > 0 ? cpi : 1);
         useJit = 1;
     }
@@ -488,6 +490,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.hleAudio = hleAudio == 1;
     sys->options.hleAudioCheck = hleAudio == 2;
     sys->options.gfxCostLog = gfxCostLog;
+    sys->padMask = padCount >= 1 && padCount <= 4 ? (1u << padCount) - 1u : 1u;   // --pads N: ports 1..N plugged in
     sys->options.gfxTiming = gfxTiming;
     sys->options.hleGfx = hleGfx;
     if (asyncCycles)

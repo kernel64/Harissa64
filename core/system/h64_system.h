@@ -114,7 +114,8 @@ struct H64System
     u8 *rdramHidden;     // RDRAM's 9th bits: 2 per 16-bit halfword, one byte each (coverage, dz)
 
     int tvType;          // 0 PAL, 1 NTSC, 2 MPAL
-    H64Pad pad[4];       // controller state
+    H64Pad pad[4];       // controller state, ports 1-4
+    u32 padMask;         // bit n: a controller on port n + 1 (0 counts as 1: port 1 only)
     void (*padHook)(H64System *sys);   // optional: called just before the PIF reads the controllers
 
     // ISViewer debug output (cartridge 0x13FF0000).

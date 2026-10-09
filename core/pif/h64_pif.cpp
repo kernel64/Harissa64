@@ -77,34 +77,39 @@ static void pif_challenge(H64System *sys)
 }
 
 // ---- JoyBus devices ----
-// A standard controller on port 1 (state in sys->pad[0]) with a Controller
-// Pak when the game uses one, nothing on ports 2-4, and the cartridge EEPROM
-// on channel 4 (h64_save.cpp). Absent devices answer with the "no response" bit.
+// Standard controllers on the ports in sys->padMask (port 1 at least; state
+// in sys->pad[]), a Controller Pak on port 1 when the game uses one, and the
+// cartridge EEPROM on channel 4 (h64_save.cpp). Absent devices answer with the
+// "no response" bit, as an empty port does: games count their players from it.
 static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen, u8 *rx, int rxLen, u8 *rxLenByte)
 {
-    if (channel == 0 && txLen >= 1)
+    u32 mask = sys->padMask ? sys->padMask : 1u;
+    if (channel < 4 && (mask & (1u << channel)) && txLen >= 1)
     {
+        const H64Pad *p = &sys->pad[channel];
+        int pak = channel == 0 && sys->save->pak;
         switch (tx[0])
         {
         case 0x00:   // info
         case 0xFF:   // reset + info
             // controller; status bit 0: a pak is plugged in (0x02 would mean "pak removed")
-            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = sys->save->pak ? 0x01 : 0x00; }
+            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = pak ? 0x01 : 0x00; }
             return;
         case 0x02:   // pak read
         case 0x03:   // pak write
-            if (h64_save_pak_command(sys->save, tx, txLen, rx, rxLen) >= 0) return;
+            if (pak && h64_save_pak_command(sys->save, tx, txLen, rx, rxLen) >= 0) return;
             break;
         case 0x01:   // buttons and stick
             if (rxLen >= 4)
             {
-                if (sys->padHook) sys->padHook(sys);
-                rx[0] = (u8)(sys->pad[0].buttons >> 8);
-                rx[1] = (u8)sys->pad[0].buttons;
-                rx[2] = (u8)sys->pad[0].x;
-                rx[3] = (u8)sys->pad[0].y;
-                if (sys->pad[0].buttons)
-                    H64_DEBUG("[pif] f%u controller 1 read: buttons %04X", sys->vi.frames, sys->pad[0].buttons);
+                // One hook call per controller read cycle: on the first port read.
+                if (sys->padHook && !(mask & ((1u << channel) - 1u))) sys->padHook(sys);
+                rx[0] = (u8)(p->buttons >> 8);
+                rx[1] = (u8)p->buttons;
+                rx[2] = (u8)p->x;
+                rx[3] = (u8)p->y;
+                if (p->buttons)
+                    H64_DEBUG("[pif] f%u controller %d read: buttons %04X", sys->vi.frames, channel + 1, p->buttons);
             }
             return;
         }

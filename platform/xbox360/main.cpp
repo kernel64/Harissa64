@@ -629,8 +629,10 @@ static void RunDynarecTest(const Config *c, char *report, size_t len)
 }
 
 // ---- mode=play ----
-static XINPUT_STATE s_pad;
+static XINPUT_STATE s_pad;                  // controller 1 (also the front end's shortcuts)
 static int s_padValid;
+static XINPUT_STATE s_padsMore[3];          // controllers 2-4: N64 ports 2-4
+static int s_padsMoreValid[3];
 static const H64InputScript *s_script;   // scripted input (input=), NULL: the controller
 
 static s8 StickAxis(SHORT v)
@@ -642,14 +644,10 @@ static s8 StickAxis(SHORT v)
     return (s8)(x > 80 ? 80 : x < -80 ? -80 : x);
 }
 
-// Called by the PIF just before the game reads the controllers.
-static void PadHook(H64System *sys)
+// An Xbox 360 controller as an N64 one (mapping as V1).
+static void PadFromXInput(const XINPUT_GAMEPAD *g, H64Pad *pad)
 {
-    const XINPUT_GAMEPAD *g = &s_pad.Gamepad;
     u16 b = 0;
-    if (s_script) { h64_input_script_apply(s_script, sys); return; }
-    // BACK held: the buttons are front-end shortcuts, not the game's.
-    if (!s_padValid || (g->wButtons & XINPUT_GAMEPAD_BACK)) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; return; }
     if (g->wButtons & XINPUT_GAMEPAD_A) b |= 0x8000;
     if (g->wButtons & XINPUT_GAMEPAD_B) b |= 0x4000;
     if ((g->wButtons & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y)) || g->bLeftTrigger > 64 || g->bRightTrigger > 64) b |= 0x2000;
@@ -664,9 +662,35 @@ static void PadHook(H64System *sys)
     if (g->sThumbRY < -16000) b |= 0x0004;
     if (g->sThumbRX < -16000) b |= 0x0002;
     if (g->sThumbRX > 16000) b |= 0x0001;
-    sys->pad[0].buttons = b;
-    sys->pad[0].x = StickAxis(g->sThumbLX);
-    sys->pad[0].y = StickAxis(g->sThumbLY);
+    pad->buttons = b;
+    pad->x = StickAxis(g->sThumbLX);
+    pad->y = StickAxis(g->sThumbLY);
+}
+
+// Called by the PIF just before the game reads the controllers. Controller n
+// (XInput user n) is N64 port n + 1; port 1 is always plugged in, ports 2-4
+// while their controller is connected.
+static void PadHook(H64System *sys)
+{
+    int i;
+    if (s_script) { h64_input_script_apply(s_script, sys); return; }
+    sys->padMask = 1;
+    // BACK held: the buttons are front-end shortcuts, not the game's.
+    if (!s_padValid || (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK)) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; }
+    else PadFromXInput(&s_pad.Gamepad, &sys->pad[0]);
+    for (i = 0; i < 3; i++)
+    {
+        if (s_padsMoreValid[i])
+        {
+            sys->padMask |= 2u << i;
+            PadFromXInput(&s_padsMore[i].Gamepad, &sys->pad[i + 1]);
+        }
+        else
+        {
+            sys->pad[i + 1].buttons = 0;
+            sys->pad[i + 1].x = sys->pad[i + 1].y = 0;
+        }
+    }
 }
 
 static u64 ProfClock(void)
@@ -1063,6 +1087,14 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         int queued;
         if (XInputGetState(0, &s_pad) == ERROR_SUCCESS) s_padValid = 1;
         else s_padValid = 0;
+        {
+            int k;
+            for (k = 0; k < 3; k++) s_padsMoreValid[k] = XInputGetState(k + 1, &s_padsMore[k]) == ERROR_SUCCESS;
+            // The plugged ports, for the games' controller probes (osContInit).
+            sys->padMask = 1;
+            if (!s_script)
+                for (k = 0; k < 3; k++) if (s_padsMoreValid[k]) sys->padMask |= 2u << k;
+        }
         // BACK held for 2 s returns to the dashboard (BACK + START is the
         // dashboard's screenshot); with BACK held, RB/LB save/load a state and
         // the D-pad changes the slot.
