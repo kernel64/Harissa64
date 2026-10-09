@@ -895,7 +895,11 @@ static void draw_fullscreen(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1
 //   sharpening), after Timothy Lottes's CRT
 //   shader (public domain): each pixel is lit by the two nearest N64 lines
 //   with a Gaussian beam that widens on bright colours, a horizontally soft
-//   beam, a light aperture grille and a glow; 3 adds the tube's curvature, a
+//   beam and a glow. No phosphor mask: the 1280x720 picture reaches the TV
+//   scaled by the console (x1.5 for 1080p), and any mask finer than a few
+//   pixels beat into coloured vertical bands (moire: the user saw them; 1-pixel
+//   R/G/B columns and a smooth triad per N64 pixel alike, measured on the
+//   console's front buffer), as modern CRT shaders advise at non-integer scales; 3 adds the tube's curvature, a
 //   vignette and rounded corners; 4 LCD: dark gaps between the N64 pixels.
 // Sampling is kept inside the drawn part (a column of the next frame bled in
 // at the right edge).
@@ -982,9 +986,7 @@ static IDirect3DPixelShader9 *display_shader(Xenos *x)
         "  float kA = lerp(18.0, 6.0, luma(cA)), kB = lerp(18.0, 6.0, luma(cB));\n"
         "  float3 c = cA * exp(-f * f * kA) + cB * exp(-(1.0 - f) * (1.0 - f) * kB);\n"
         "  float3 glow = 0.25 * (tap(uv + float2(4.0, 0.0) * rcp.xy) + tap(uv - float2(4.0, 0.0) * rcp.xy) + tap(uv + float2(0.0, 4.0) * rcp.xy) + tap(uv - float2(0.0, 4.0) * rcp.xy));\n"
-        "  float m = fmod(vpos.x, 3.0);\n"
-        "  float3 mask = m < 1.0 ? float3(1.0, 0.78, 0.78) : m < 2.0 ? float3(0.78, 1.0, 0.78) : float3(0.78, 0.78, 1.0);\n"
-        "  c = c * mask * 1.45 + glow * 0.12;\n"
+        "  c = c * 1.3 + glow * 0.12;\n"
         "#if SCREEN == 3\n"
         "  float2 v = n * (1.0 - n);\n"
         "  c *= pow(saturate(v.x * v.y * 24.0), 0.18) * edge.x * edge.y;\n"

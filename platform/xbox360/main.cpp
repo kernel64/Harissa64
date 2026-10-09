@@ -792,12 +792,14 @@ static int s_showFps;               // showfps=1: frames shown per second in the
 static char s_fpsText[16];
 static UiMenu s_menu;
 static int s_menuOpen;              // the in-game menu is drawn over the frozen frame
+static int s_aboutOpen;             // ... showing the About panel
 
 // Drawn by the renderer just before each present (on the graphics worker when it runs).
 static void OverlayHook(void *, IDirect3DDevice9 *dev)
 {
     if (s_showFps && s_fpsText[0]) UiText(dev, 1180 - UiTextWidth(2, s_fpsText), 40, 2, D3DCOLOR_XRGB(255, 220, 60), s_fpsText);
-    if (s_menuOpen) UiMenuDraw(dev, &s_menu);
+    if (s_menuOpen && s_aboutOpen) AboutDraw(dev);
+    else if (s_menuOpen) UiMenuDraw(dev, &s_menu);
     if (s_osd[0] && (s32)(GetTickCount() - s_osdUntil) <= 0) UiText(dev, 64, 620, 3, D3DCOLOR_XRGB(255, 220, 60), s_osd);
 }
 
@@ -851,7 +853,7 @@ static void LoadStateNow(H64System *sys)
 // margin, smoothing, FPS) or at the next start (CPU, RSP); they are saved
 // for all games (config\settings.ini) or for this game (config\<game>.ini).
 enum { RG_DASHBOARD = 0, RG_BROWSER, RG_CONTINUE };
-enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_SETTINGS, M_RESET, M_ROMS, M_DASHBOARD };
+enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_SETTINGS, M_ABOUT, M_RESET, M_ROMS, M_DASHBOARD };
 static char s_settingsPath[160];    // <drive>:\config\settings.ini ("" when the menu files are not used)
 static char s_profilePath[160];     // <drive>:\config\<game>.ini
 
@@ -865,6 +867,7 @@ static void BuildGameMenu(void)
     sprintf(slot, "< %d >", s_stateSlot);
     UiMenuAdd(&s_menu, "State slot", slot);
     UiMenuAdd(&s_menu, "Settings", "");
+    UiMenuAdd(&s_menu, "About Harissa64", "");
     UiMenuAdd(&s_menu, "Reset the game", "");
     UiMenuAdd(&s_menu, "Back to the ROM list", "");
     UiMenuAdd(&s_menu, "Quit to the dashboard", "");
@@ -891,7 +894,11 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
     while (result < 0)
     {
         WORD down = UiInputPoll(&in);
-        if (settings)
+        if (s_aboutOpen)
+        {
+            if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START)) s_aboutOpen = 0;
+        }
+        else if (settings)
         {
             int r = SettingsInput(&s_menu, c, s_settingsPath[0] != 0, down);
             if (r == SET_CHANGED)
@@ -934,6 +941,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
                 case M_SAVE: s_statePending = 1; result = RG_CONTINUE; break;   // at the next quiet point
                 case M_LOAD: LoadStateNow(sys); result = RG_CONTINUE; break;
                 case M_SETTINGS: settings = 1; SettingsBuild(&s_menu, c, s_profilePath[0] != 0); break;
+                case M_ABOUT: s_aboutOpen = 1; break;
                 case M_RESET: ResetGame(sys); result = RG_CONTINUE; break;
                 case M_ROMS: result = RG_BROWSER; break;
                 case M_DASHBOARD: result = RG_DASHBOARD; break;
@@ -944,6 +952,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
         Sleep(16);
     }
     s_menuOpen = 0;
+    s_aboutOpen = 0;
     return result;
 }
 
@@ -1158,6 +1167,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         prevButtons = s_padValid ? s_pad.Gamepad.wButtons : 0;
         if (c->saveStateAt && presented == c->saveStateAt) s_statePending = 1;
         if (c->menuAt && presented == c->menuAt) menuRequest = 1;
+        if (c->aboutAt && presented == c->aboutAt) { menuRequest = 1; s_aboutOpen = 1; }   // remote check of the About panel
         if (c->browserAt && presented == c->browserAt)
         {
             H64_INFO("[main] browserat reached: back to the ROM list");

@@ -48,6 +48,7 @@ struct Config
     int loadState;      // loadstate=1: load the slot's state at start (scripted runs)
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
     u32 menuAt;         // menuat=N: open the in-game menu at VI N (remote checks; does not skip the ROM browser)
+    u32 aboutAt;        // aboutat=N: the same, showing the About panel
     int autoStart;      // autostart=N: the ROM browser starts N games by itself, the last selection then the
                         // next ones in the list (remote checks of game changes)
     int autoIndex;      // games the browser started by itself so far

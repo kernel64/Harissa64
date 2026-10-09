@@ -40,6 +40,11 @@ u8 *RomFileLoad(const char *path, u32 *size);
 // file's header. Returns 0 when the file is not an N64 ROM.
 int RomFolderName(const char *path, char *out, size_t size);
 
+// ---- About ----
+// The credits panel (centred, opaque), and a full screen showing it until B.
+void AboutDraw(IDirect3DDevice9 *dev);
+void AboutScreen(IDirect3DDevice9 *dev);
+
 // ---- ROM browser ----
 // Lists game:\roms\ (.z64 .n64 .v64 .zip). Returns 1 with the chosen path, 0 when
 // the user leaves to the dashboard. Y opens the settings for all games,

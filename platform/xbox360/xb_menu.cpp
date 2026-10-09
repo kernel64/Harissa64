@@ -248,6 +248,55 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
     return SET_NONE;
 }
 
+// ---- About ----
+// The credits panel: from the ROM browser (X) and the in-game menu.
+void AboutDraw(IDirect3DDevice9 *dev)
+{
+    const int x = 140, y = 40, w = 1000, h = 640;
+    int tx, ty;
+    UiRect(dev, x - 4, y - 4, w + 8, h + 8, COL_EDGE);
+    UiRect(dev, x, y, w, h, COL_BG);
+    tx = x + 40 + UiLogo(dev, x + 40, y + 30, 4) + 20;
+    UiText(dev, tx, y + 42, 5, COL_EDGE, "HARISSA64 V2");
+    UiText(dev, tx + UiTextWidth(5, "HARISSA64 V2") + 24, y + 66, 2, COL_DIM, H64_VERSION_STRING);
+    ty = y + 120;
+    UiText(dev, x + 40, ty, 2, COL_TEXT, "A Nintendo 64 emulator for the Xbox 360");
+    UiText(dev, x + 40, ty + 28, 2, COL_VALUE, "Created by Mohamed Aymen (kernel64)");
+    UiText(dev, x + 40, ty + 56, 2, COL_DIM, "github.com/kernel64/Harissa64   -   built " __DATE__);
+    ty += 104;
+    UiText(dev, x + 40, ty, 2, COL_EDGE, "ENGINE");
+    UiText(dev, x + 40, ty + 26, 2, COL_TEXT, "MIPS R4300i to PowerPC dynamic recompiler");
+    UiText(dev, x + 40, ty + 50, 2, COL_TEXT, "RSP: high-level graphics and audio, low-level interpreter");
+    UiText(dev, x + 40, ty + 74, 2, COL_TEXT, "RDP on the Xenos GPU, software RDP for reference");
+    ty += 112;
+    UiText(dev, x + 40, ty, 2, COL_EDGE, "BUILT ON THE WORK OF");
+    UiText(dev, x + 40, ty + 26, 2, COL_TEXT, "ares (RSP, PI)  -  ParaLLEl-RDP  -  libdragon");
+    UiText(dev, x + 40, ty + 50, 2, COL_TEXT, "mupen64plus (audio HLE, PIF, saves)  -  zlib");
+    UiText(dev, x + 40, ty + 74, 2, COL_TEXT, "GLideN64 (microcodes)");
+    UiText(dev, x + 40, ty + 98, 2, COL_DIM, "Display filters after T. Lottes and AMD CAS");
+    ty += 136;
+    UiText(dev, x + 40, ty, 2, COL_DIM, "Free software under the GNU GPL v2.");
+    UiText(dev, x + 40, ty + 24, 2, COL_DIM, "Nintendo 64 is a trademark of Nintendo; this");
+    UiText(dev, x + 40, ty + 48, 2, COL_DIM, "project is not affiliated with Nintendo. Play");
+    UiText(dev, x + 40, ty + 72, 2, COL_DIM, "only games dumped from cartridges you own.");
+    UiFooter(dev, x + 40, y + h - 30, "B:Back");
+}
+
+void AboutScreen(IDirect3DDevice9 *dev)
+{
+    UiInput in;
+    UiInputInit(&in);
+    for (;;)
+    {
+        WORD down = UiInputPoll(&in);
+        if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_BACK)) return;
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(8, 9, 16), 1.0f, 0);
+        AboutDraw(dev);
+        dev->Present(NULL, NULL, NULL, NULL);
+        Sleep(16);
+    }
+}
+
 // ---- ROM browser ----
 struct RomEntry { std::string file, shown; };
 static bool rom_less(const RomEntry &a, const RomEntry &b) { return _stricmp(a.shown.c_str(), b.shown.c_str()) < 0; }
@@ -433,6 +482,11 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             settings_loop(dev, c, settingsPath);
             UiInputInit(&in);
         }
+        if (down & XINPUT_GAMEPAD_X)
+        {
+            AboutScreen(dev);
+            UiInputInit(&in);
+        }
 
         dev->Clear(0, NULL, D3DCLEAR_TARGET, COL_BG, 1.0f, 0);
         {
@@ -455,7 +509,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             UiText(dev, 1184 - UiTextWidth(2, count), 110, 2, COL_DIM, count);
             UiText(dev, 96, listY + rows * rowH + 16, 2, COL_VALUE, details);
         }
-        UiScreenFooter(dev, n ? "A:Play|LB/RB:Page|Y:Settings|BACK:Dashboard" : "Y:Settings|BACK:Dashboard");
+        UiScreenFooter(dev, n ? "A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard" : "Y:Settings|X:About|BACK:Dashboard");
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
     }
