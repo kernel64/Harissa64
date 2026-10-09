@@ -269,11 +269,11 @@ void AboutDraw(IDirect3DDevice9 *dev)
     UiText(dev, x + 40, ty + 50, 2, COL_TEXT, "RSP: high-level graphics and audio, low-level interpreter");
     UiText(dev, x + 40, ty + 74, 2, COL_TEXT, "RDP on the Xenos GPU, software RDP for reference");
     ty += 112;
-    UiText(dev, x + 40, ty, 2, COL_EDGE, "BUILT ON THE WORK OF");
-    UiText(dev, x + 40, ty + 26, 2, COL_TEXT, "ares (RSP, PI)  -  ParaLLEl-RDP  -  libdragon");
-    UiText(dev, x + 40, ty + 50, 2, COL_TEXT, "mupen64plus (audio HLE, PIF, saves)  -  zlib");
-    UiText(dev, x + 40, ty + 74, 2, COL_TEXT, "GLideN64 (microcodes)");
-    UiText(dev, x + 40, ty + 98, 2, COL_DIM, "Display filters after T. Lottes and AMD CAS");
+    UiText(dev, x + 40, ty, 2, COL_EDGE, "ACKNOWLEDGEMENTS");
+    UiText(dev, x + 40, ty + 26, 2, COL_TEXT, "Thanks to the ares, ParaLLEl-RDP, mupen64plus,");
+    UiText(dev, x + 40, ty + 50, 2, COL_TEXT, "GLideN64, libdragon and zlib projects, and to");
+    UiText(dev, x + 40, ty + 74, 2, COL_TEXT, "Timothy Lottes and AMD for their display filters.");
+    UiText(dev, x + 40, ty + 98, 2, COL_DIM, "Details and licences: THIRD_PARTY.md");
     ty += 136;
     UiText(dev, x + 40, ty, 2, COL_DIM, "Free software under the GNU GPL v2.");
     UiText(dev, x + 40, ty + 24, 2, COL_DIM, "Nintendo 64 is a trademark of Nintendo; this");
