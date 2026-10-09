@@ -130,10 +130,12 @@ static int s_jumpStop = 0;
 static int s_logPcCount;
 static u32 s_logPcA0;   // --log-pc PC:A0: only when a0 matches
 static u32 s_logWord;   // --log-word ADDR: that RDRAM word on each --log-pc line
+static u32 s_logFrom;   // --log-from FRAME: --log-pc lines from that VI frame
 static void log_pc_hook(void *user)
 {
     H64System *sys = (H64System *)user;
     H64Cpu *c = &sys->cpu;
+    if (sys->vi.frames < s_logFrom) return;
     if (s_logPcA0 && (u32)c->gpr[4] != s_logPcA0) return;
     if (s_logPcCount++ >= 400) return;
     printf("[logpc] %08X #%llu frame %u ra %08X a0 %08X a1 %08X a2 %08X a3 %08X sp %08X [%08X]\n", (u32)c->curPc, (unsigned long long)c->instructions,
@@ -344,6 +346,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--gfx-cost-log")) gfxCostLog = 1;
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "--log-from") && i + 1 < argc) s_logFrom = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch-word") && i + 1 < argc) watchWord = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--log-pc") && i + 1 < argc)
         {
