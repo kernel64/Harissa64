@@ -365,10 +365,19 @@ void h64_sp_write(H64System *sys, u32 reg, u32 v)
                 // The HLE ran the whole task; the RSP looks busy until then.
                 rsp->hleBusy = 1;
                 rsp->hleTasks++;
+                rsp->hleStart = sys->cpu.cycles;
                 h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + busy);
             }
             else
+            {
+                if (sys->options.gfxCostLog &&
+                    h64_hle_gfx_measure(sys, &rsp->gfxVerts, &rsp->gfxTris, &rsp->gfxCommands))
+                {
+                    rsp->gfxMeasure = 1;
+                    rsp->gfxClocks0 = rsp->clocks;
+                }
                 h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);
+            }
         }
         return;
     }
@@ -535,6 +544,7 @@ u32 h64_rsp_issue(H64System *sys)
     pipe_branch_epilogue(rsp, &g);
     if (rsp->status & ST_SSTEP)
         rsp->status |= ST_HALT;
+    rsp->clocks += g.clocks;
     return g.clocks;
 }
 
@@ -550,6 +560,12 @@ void h64_rsp_advance(H64System *sys, u32 cpuCycles)
         if (rsp->status & ST_HALT)
         {
             rsp->cycleFrac = 0;
+            if (rsp->gfxMeasure)
+            {
+                rsp->gfxMeasure = 0;
+                H64_INFO("[gfxcost] rcp %llu verts %u tris %u commands %u", (unsigned long long)(rsp->clocks - rsp->gfxClocks0),
+                         rsp->gfxVerts, rsp->gfxTris, rsp->gfxCommands);
+            }
             if (sys->options.hleAudioCheck) h64_hle_check_end(sys);
             return;
         }
@@ -600,6 +616,17 @@ void h64_rsp_slice_event(H64System *sys)
             }
             rsp->hleDpInterrupt = fullSync;
             if (kind == 2) rsp->hleStatus = bits;
+            if (kind == 1)
+            {
+                // A graphics task on the worker: it ends once the real
+                // microcode would have (h64_gfx_cost), not before.
+                u64 end = rsp->hleStart + h64_hle_gfx_cost(sys);
+                if (end > sys->cpu.cycles)
+                {
+                    h64_sched_set(&sys->sched, H64_EV_RSP, end);
+                    return;
+                }
+            }
         }
         // End of an HLE task: halt with the bits the microcode would set.
         rsp->hleBusy = 0;

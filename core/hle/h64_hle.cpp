@@ -384,6 +384,22 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
     return 1;
 }
 
+u32 h64_hle_gfx_cost(H64System *sys)
+{
+    struct hle_t *hle = sys->hle;
+    if (!hle || !hle->gfx || !sys->options.gfxTiming) return 0;
+    return h64_gfx_cost(hle->gfx);
+}
+
+int h64_hle_gfx_measure(H64System *sys, u32 *verts, u32 *tris, u32 *commands)
+{
+    struct hle_t *hle = sys->hle;
+    if (!hle || !is_task(hle) || *dmem_u32(hle, TASK_TYPE) != 1) return 0;
+    if (!hle->gfx) hle->gfx = h64_gfx_create(sys);
+    if (!h64_gfx_task_known(sys, hle->gfx)) return 0;
+    return h64_gfx_measure(sys, hle->gfx, verts, tris, commands);
+}
+
 int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpInterrupt)
 {
     struct hle_t *hle = sys->hle;
@@ -428,6 +444,7 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             return 0;
         *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
         *busyCycles = H64_HLE_GFX_CYCLES;
+        if (h64_hle_gfx_cost(sys) > *busyCycles) *busyCycles = h64_hle_gfx_cost(sys);
         *dpInterrupt = fullSync;
         return 1;
     }

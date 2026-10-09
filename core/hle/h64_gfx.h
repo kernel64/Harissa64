@@ -27,6 +27,11 @@ void h64_gfx_free(H64Gfx *gfx);
 // whether the display list ended with an RDP full sync), 0 to leave the
 // task to the LLE RSP.
 int h64_gfx_run_task(H64System *sys, H64Gfx *gfx, int *fullSync);
+// Calibration (h64test --gfx-cost-log): parses the task in DMEM without
+// rendering it and returns what it would do.
+int h64_gfx_measure(H64System *sys, H64Gfx *gfx, u32 *verts, u32 *tris, u32 *commands);
+// The last parsed task's estimated RSP time, in CPU cycles.
+u32 h64_gfx_cost(const H64Gfx *gfx);
 // The same in two steps, for deferred rendering: h64_gfx_parse_task runs the
 // display list (reads RDRAM) and copies the RDRAM the task's texture loads
 // read into a snapshot; h64_gfx_render then sends the result to the renderer

@@ -85,6 +85,11 @@ struct H64Rsp
     u32 hleStatus;             // SP_STATUS bits the HLE task sets when it ends
     int hleDpInterrupt;        // the HLE task ended with an RDP full sync: raise the DP interrupt too
     u32 hleTasks;              // tasks run by the HLE (statistics)
+    u64 hleStart;              // CPU cycle the HLE task started
+    u64 clocks;                // RCP cycles run by the LLE RSP
+    int gfxMeasure;            // --gfx-cost-log: this LLE graphics task's HLE counts below
+    u64 gfxClocks0;
+    u32 gfxVerts, gfxTris, gfxCommands;
 };
 
 // Decoded instructions, one per IMEM word (checked against the word; not

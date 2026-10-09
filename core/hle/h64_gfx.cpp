@@ -120,6 +120,7 @@ struct H64Gfx
     int pci, halt, abort;
     int fullSync;
     u32 commands;
+    u32 nVerts, nTris;      // this task's vertices and triangles (cost estimate)
     u32 warned;
 
     std::vector<u64> words;
@@ -489,6 +490,7 @@ static void load_vertices_fmt(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
 {
     u32 i, stride = fmt == VF_PD ? 12 : fmt == VF_DKR ? 10 : 16;
     u32 gm = geom(g);
+    g->nVerts += n;
     float ldir[10][3], look[2][3];
     int l;
     if (v0 >= GFX_VTX_MAX) return;
@@ -706,6 +708,7 @@ static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     u32 gm = geom(g), flags = 0;
     int n = 3, cur = 0, k, needClip = 0;
     float area = 0;
+    g->nTris++;
     if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || i2 >= GFX_VTX_MAX) return;
     v[0] = &g->vtx[i0];
     v[1] = &g->vtx[i1];
@@ -1597,6 +1600,7 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->halt = g->abort = 0;
     g->fullSync = 0;
     g->commands = 0;
+    g->nVerts = g->nTris = 0;
     g->warned = 0;
     g->timgAddr = g->timgWidth = g->timgSize = 0;
     memset(g->cimg, 0, sizeof(g->cimg));
@@ -1653,6 +1657,31 @@ int h64_gfx_task_known(H64System *sys, H64Gfx *g)
 
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync);
 
+// How long the real microcode would keep the RSP busy, in CPU cycles: 130 RCP
+// cycles per vertex and 230 per triangle, fitted on the LLE RSP's timing
+// (h64test --gfx-cost-log: DK64, SM64, MK64 average 0.5-0.7 M RCP cycles a
+// task). A fixed 0.1 M ran games' frames up to 7 times faster than the
+// console's: DK64's intro then overtook its EEPROM formatting thread, which
+// was started again while it slept, corrupting libultra's timer list (audio
+// and controllers dead after 5 s).
+u32 h64_gfx_cost(const H64Gfx *g)
+{
+    return (130u * g->nVerts + 230u * g->nTris) * 3u / 2u;
+}
+
+int h64_gfx_measure(H64System *sys, H64Gfx *g, u32 *verts, u32 *tris, u32 *commands)
+{
+    int fullSync;
+    if (!parse_task(sys, g, &fullSync)) return 0;
+    *verts = g->nVerts;
+    *tris = g->nTris;
+    *commands = g->commands;
+    g->words.clear();
+    g->tris.clear();
+    g->ops.clear();
+    return 1;
+}
+
 int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
     if (!parse_task(sys, g, fullSync)) return 0;
@@ -1702,6 +1731,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     g->halt = g->abort = 0;
     g->fullSync = 0;
     g->commands = 0;
+    g->nVerts = g->nTris = 0;
     g->stackSize = stack == 0 || stack > GFX_STACK_MAX ? GFX_STACK_MAX : (int)stack;
     g->mvi = 0;
     g->combinedValid = 0;
