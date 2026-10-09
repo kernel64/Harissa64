@@ -186,14 +186,20 @@ static IDirect3DVertexShader9 *compile_vs(IDirect3DDevice9 *dev, const char *src
 // combiner divides, which gives the screen-linear value (texture coordinates
 // stay perspective-correct, as the RDP's are). Fog in the shade alpha on large
 // ground triangles (OoT's Kokiri paths) depends on it.
+// Depth: the RDP clamps Z per pixel, the GPU clips a triangle at z = 0 and 1.
+// The position's z is clamped here (nothing is clipped) and the real z goes
+// along (lw.y / lw.x, screen-linear); triangles with a vertex out of range get
+// a combiner variant (KEY_DEPTH) that writes the clamped per-pixel depth, with
+// the decal bias of set_depth (c7) applied there.
 static const char s_vsSource[] =
     "float4 scale : register(c0);\n"
     "struct VIN { float4 pos : POSITION; float4 col : COLOR0; float4 tc : TEXCOORD0; };\n"
     "struct VOUT { float4 pos : POSITION; float4 col : COLOR0; float4 tc : TEXCOORD0; float4 lcol : TEXCOORD1; float4 lw : TEXCOORD2; };\n"
     "VOUT main(VIN i) {\n"
     "  VOUT o; float w = i.pos.w;\n"
-    "  o.pos = float4((i.pos.x * scale.x - 1.0) * w, (i.pos.y * scale.y + 1.0) * w, i.pos.z * w, w);\n"
-    "  o.col = i.col; o.tc = i.tc; o.lcol = i.col * w; o.lw = float4(w, w, w, w); return o; }\n";
+    "  o.pos = float4((i.pos.x * scale.x - 1.0) * w, (i.pos.y * scale.y + 1.0) * w, 0.0, w);\n"
+    "  o.pos.z = saturate(i.pos.z) * w;\n"
+    "  o.col = i.col; o.tc = i.tc; o.lcol = i.col * w; o.lw = float4(w, i.pos.z * w, 0.0, 0.0); return o; }\n";
 
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
@@ -277,7 +283,8 @@ static const char *a_c(u32 s)
     return t[s & 7];
 }
 
-enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2 };
+enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4 };
+#define TRI_ZOUT 0x100   // batch flag beside H64_TRI_*: a vertex Z outside the RDP range
 
 // In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
 // pixel's texel 0 (pipelining; ParaLLEl-RDP's shading follows it): t0 and t1
@@ -323,16 +330,24 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "float4 misc : register(c4);\n"
               "float4 keyc : register(c5);\n"
               "float4 keys : register(c6);\n"
-              "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0, float4 lcol : TEXCOORD1, float4 lw : TEXCOORD2, float2 vpos : VPOS) : COLOR {\n"
+              "float4 zbias : register(c7);\n"
+              "struct PSOUT { float4 c : COLOR; %s };\n"
+              "PSOUT main(float4 col : COLOR0, float4 tc : TEXCOORD0, float4 lcol : TEXCOORD1, float4 lw : TEXCOORD2, float2 vpos : VPOS) {\n"
+              "  PSOUT o;\n"
               "  float4 shade = saturate(lcol / lw.x);\n"
               "  float4 t0 = tex2D(s0, tc.xy);\n"
               "  float4 t1 = tex2D(s1, tc.zw);\n"
               "  float4 noise = frac(sin(dot(vpos, float2(12.9898, 78.233))) * 43758.5453);\n"
               "  float4 comb = float4(0.0, 0.0, 0.0, 0.0);\n"
               "%s%s%s"
-              "  return comb;\n"
+              "  o.c = comb;\n"
+              "%s"
+              "  return o;\n"
               "}\n",
-              c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "");
+              (flags & KEY_DEPTH) ? "float d : DEPTH;" : "",
+              c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
+              (flags & KEY_DEPTH) ? "  float z = lw.y / lw.x;\n"
+                                    "  o.d = saturate(z + zbias.x + zbias.y * max(abs(ddx(z)), abs(ddy(z))));\n" : "");
     ps = compile_ps(x->dev, src);
     x->shaders[key] = ps;
     x->stats.shaderCompiles++;
@@ -904,14 +919,17 @@ static void set_depth(Xenos *x, int hasDepth)
         // N64 pixel is 3 render-target pixels wide) plus a constant keeps
         // them on their surface instead of fighting with it (Mario's shadow,
         // the paths appearing and vanishing as the camera moved).
-        float bias = -0.0001f, slope = -6.0f;
+        float bias = -0.0001f, slope = -6.0f, c[4] = { -0.0001f, -6.0f, 0.0f, 0.0f };
         x->dev->SetRenderState(D3DRS_DEPTHBIAS, *(DWORD *)&bias);
         x->dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *(DWORD *)&slope);
+        x->dev->SetPixelShaderConstantF(7, c, 1);   // the same bias where the shader writes the depth (KEY_DEPTH)
     }
     else
     {
+        float c[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         x->dev->SetRenderState(D3DRS_DEPTHBIAS, 0);
         x->dev->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, 0);
+        x->dev->SetPixelShaderConstantF(7, c, 1);
     }
 }
 
@@ -959,7 +977,7 @@ static void log_mode(Xenos *x, int hasDepth, u32 tile)
              v[1], v[0], v[2], v[3], st->zMode, hasDepth, tile, v[5], v[6], v[7], st->primColor, st->envColor, st->primLodFrac);
 }
 
-static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *tb1, u32 tile)
+static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *tb1, u32 tile, int zOut)
 {
     if (x->debug == 4) log_mode(x, hasDepth, tile);
     const H64RdpState *st = x->st;
@@ -970,6 +988,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     IDirect3DPixelShader9 *ps;
     if (two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     if (!two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
+    if (zOut && hasDepth && (st->depthBlendFlags & (DB_DEPTH_TEST | DB_DEPTH_UPDATE))) flags |= KEY_DEPTH;
     ps = combiner_shader(x, flags);
     x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);
@@ -1033,11 +1052,17 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0;
     (void)levels;
     if (st->rasterFlags & (RS_FILL | RS_COPY)) return;
+    if (!st->usePrimDepth)
+        for (i = 0; i < 3; i++)
+        {
+            const H64RenderVertex *vv = i == 0 ? a : i == 1 ? b : c;
+            if (vv->z < 0.0f || vv->z > 32767.0f) flags |= TRI_ZOUT;
+        }
     if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || x->batch.size() + 3 > BATCH_VERTICES)
     {
         flush_batch(x);
         select_framebuffer(x);
-        setup_combined(x, (flags & H64_TRI_ZBUFFER) != 0, &x->batchTb0, &x->batchTb1, tile);
+        setup_combined(x, (flags & H64_TRI_ZBUFFER) != 0, &x->batchTb0, &x->batchTb1, tile, (flags & TRI_ZOUT) != 0);
         x->batchFlags = flags;
         x->batchTile = tile;
         x->stateDirty = 0;
@@ -1162,7 +1187,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     }
     else
     {
-        setup_combined(x, 1, &tb0, &tb1, tile);
+        setup_combined(x, 1, &tb0, &tb1, tile, 0);
         if ((st->rasterFlags & RS_SAMPLE_QUAD) && !flip && !t0->shiftS && !t0->shiftT)
         {
             // Bilinear rectangles that stay inside their tile (MK64's title is

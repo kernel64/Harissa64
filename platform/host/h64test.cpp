@@ -279,12 +279,12 @@ static int wav_write(const char *path, const WavCapture *w)
 static int run_rom(const char *path, int argc, char **argv, int first)
 {
     static WavCapture wav;
-    static struct { u32 frame; const char *path; int done; } shots[32];
+    static struct { u32 frame; const char *path; int done, raw; } shots[128];
     int shotCount = 0;
     const char *wavPath = 0;
     const char *saveDir = 0;
     const char *loadState = 0, *saveStatePath = 0;
-    u32 probeX = 0, probeY = 0, probeFrame = 0;
+    u32 probeX = 0, probeY = 0, probeFrame = 0, probeCount = 2;
     int probe = 0;
     u32 saveStateFrame = 0;
     int stateSaved = 0;
@@ -322,8 +322,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) loadState = argv[++i];
         else if (!strcmp(argv[i], "--probe") && i + 1 < argc)
         {
-            // --probe X,Y,FRAME: log every RDP pixel write at (X, Y) during VI frame FRAME (software RDP).
-            if (sscanf(argv[++i], "%u,%u,%u", &probeX, &probeY, &probeFrame) != 3) { fprintf(stderr, "--probe takes X,Y,FRAME\n"); return 2; }
+            // --probe X,Y,FRAME[,COUNT]: log every RDP pixel write at (X, Y) during COUNT VI frames from FRAME (default 2; software RDP).
+            if (sscanf(argv[++i], "%u,%u,%u,%u", &probeX, &probeY, &probeFrame, &probeCount) < 3) { fprintf(stderr, "--probe takes X,Y,FRAME\n"); return 2; }
             probe = 1;
         }
         else if (!strcmp(argv[i], "--save-state") && i + 1 < argc)
@@ -334,12 +334,13 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             saveStatePath = colon + 1;
         }
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) { if (parse_input(argv[++i])) return 2; }
-        else if (!strcmp(argv[i], "--shot") && i + 1 < argc && shotCount < 32)
+        else if ((!strcmp(argv[i], "--shot") || !strcmp(argv[i], "--raw-shot")) && i + 1 < argc && shotCount < 128)
         {
             char *colon;
             shots[shotCount].frame = (u32)strtoul(argv[++i], &colon, 10);
             shots[shotCount].path = *colon == ':' ? colon + 1 : 0;
             shots[shotCount].done = 0;
+            shots[shotCount].raw = argv[i - 1][2] == 'r';   // --raw-shot: the framebuffer the VI points at
             if (!shots[shotCount].path) { fprintf(stderr, "--shot takes FRAME:file.png\n"); return 2; }
             shotCount++;
         }
@@ -492,14 +493,15 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                     static u8 img[1024 * 1024 * 3];
                     int sw, sh;
                     shots[k].done = 1;
-                    if (h64_vi_render(sys, img, 1024, 1024, &sw, &sh) == 0 && h64_png_write_rgb(shots[k].path, img, sw, sh) == 0)
+                    if ((shots[k].raw ? h64_vi_capture(sys, img, 1024, 1024, &sw, &sh) : h64_vi_render(sys, img, 1024, 1024, &sw, &sh)) == 0 &&
+                        h64_png_write_rgb(shots[k].path, img, sw, sh) == 0)
                         printf("[shot] frame %u: %s\n", sys->vi.frames, shots[k].path);
                 }
         }
         if (probe)
         {
             H64RdpState *ps = h64_rdp_state(sys);
-            ps->probeOn = sys->vi.frames >= probeFrame && sys->vi.frames <= probeFrame + 1;
+            ps->probeOn = sys->vi.frames >= probeFrame && sys->vi.frames < probeFrame + probeCount;
             ps->probeX = probeX;
             ps->probeY = probeY;
         }

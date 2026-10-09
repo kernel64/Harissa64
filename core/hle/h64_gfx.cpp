@@ -540,8 +540,13 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
     float iw = 1.0f / c->w, z;
     o->x = g->vtrans[0] + g->vscale[0] * c->x * iw;
     o->y = g->vtrans[1] - g->vscale[1] * c->y * iw;
+    // Not clamped per vertex: the RDP clamps Z per pixel. With the ".NoN"
+    // microcodes (no near clipping) a vertex just in front of the eye gets a Z
+    // out of range, and clamping it skewed the whole triangle's depth (OoT's
+    // Kokiri paths, decals on the ground, failed their depth test at some
+    // camera angles). The triangle setup saturates to its s15.16 range.
     z = (g->vtrans[2] + g->vscale[2] * c->z * iw) * 32.0f;
-    o->z = z < 0 ? 0.0f : z > 32767.0f ? 32767.0f : z;
+    o->z = z;
     o->invw = iw;
     o->r = c->r;
     o->g = c->g;
