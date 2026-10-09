@@ -41,7 +41,10 @@
 // writable + executable runs generated code; /SECTION:.jitc,ERW in the project) ----
 extern "C" VOID NTAPI KeSweepIcacheRange(PVOID Address, SIZE_T Size);
 
-#define JIT_BYTES (16u * 1024u * 1024u)
+// 32 MB (the most a relative branch reaches: hot code in the first half,
+// slow paths in the second); 16 MB filled up every ~40 s on DK64 and Conker,
+// and each flush recompiled ~6000 blocks.
+#define JIT_BYTES (32u * 1024u * 1024u)
 #pragma section(".jitc", read, write, execute)
 __declspec(allocate(".jitc")) static unsigned int s_jitMem[JIT_BYTES / 4] = { 1 };
 
@@ -473,6 +476,9 @@ static void WorkersStop(H64System *sys)
 
 static int s_jitNoFpu;   // jitfpu=0
 static int s_noRegCache; // regcache=0
+static int s_fastFpu;    // fastfpu=1
+static int s_fullExits;  // fullexits=1
+
 static u32 s_cpi = 1;    // cpi=N
 
 // ---- N64 PC sampler (diagnosis): a thread on another hardware thread reads
@@ -549,6 +555,8 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
     }
     if (sys->jit) sys->jit->noFpu = s_jitNoFpu;
     if (sys->jit) sys->jit->noRegCache = s_noRegCache;
+    if (sys->jit && s_fastFpu) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
+    if (sys->jit && s_fullExits) { sys->jit->fullExits = 1; h64_jit_reset(sys); }
     sys->cpu.cpi = s_cpi;
     return sys;
 }
@@ -1289,8 +1297,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                              xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
                              xs.bigRect ? "rectangle" : "triangle");
                 PcSamplerReport();
-                H64_INFO("[cprof] ms/frame inside cpu: interpreter helper %.1f, scheduler events %.1f; waiting for the graphics worker %.1f%s",
-                         pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_ASYNC_WAIT] * k,
+                H64_INFO("[cprof] ms/frame inside cpu: generated code %.1f (helper %.1f), scheduler events %.1f; waiting for the graphics worker %.1f%s",
+                         pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          s_gfxQ.thread ? " (graphics and audio HLE run on workers, beside cpu)" : "");
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses) draw calls %.1f",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
@@ -1351,6 +1359,8 @@ int __cdecl main()
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
     s_jitNoFpu = !cfg.jitFpu;
     s_noRegCache = !cfg.regCache;
+    s_fastFpu = cfg.fastFpu;
+    s_fullExits = cfg.fullExits;
     s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 1;
     H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s jitfpu=%d cpi=%d regcache=%d", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)",
              cfg.jitFpu, cfg.cpi, cfg.regCache);

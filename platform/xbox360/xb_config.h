@@ -27,6 +27,8 @@ struct Config
     int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
     int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
+    int fullExits;      // fullexits=1: the dynarec's older inline linked exits (A/B check)
+    int fastFpu;        // fastfpu=1: native COP1 without FPSCR reads (FCR31 Inexact bits not kept)
     int smooth;         // smooth=0: no edge smoothing when frames are shown
     int showFps;        // showfps=1: frames shown per second in a corner
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread

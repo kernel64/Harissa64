@@ -53,8 +53,11 @@ struct H64JitLink
 {
     u32 *patch;                     // the branch word in the source block
     u32 orig;                       // its unlinked value
-    int next;                       // next link into the same target (-1: none)
+    int next;                       // next link into the same target (-1: none); free: next free record
     int tlb;                        // the target is TLB-mapped: undone when its TLB entry changes
+    int target;                     // index of the target block
+    int tlbEntry;                   // TLB-mapped target: the TLB entry it went through (-1: none)
+    int tlbPrev, tlbNext;           // the other links through that entry (H64Jit.tlbHead)
 };
 
 struct H64Jit
@@ -92,6 +95,7 @@ struct H64Jit
     u32 *rtFpFinish[3];             // [result: none, single, double]: FPSCR and FCR31 after an operation -> cr0.eq
     u32 *rtSlow;                    // a slow path's interpreter call (see h64_jit_emit_runtime)
     u32 *rtIndirect;                // a jr/jalr exit: straight into the target's block when known
+    u32 *rtLink;                    // a fixed-target exit: counters, then go on (cr0.eq) or leave
 
 
     // Block linking: exits with a fixed target jump straight into the next
@@ -99,6 +103,7 @@ struct H64Jit
     H64JitLink *links;
     u32 linkCount, linkCap;
     int noLink;                     // debugging: every block returns to the dispatcher
+    int fullExits;                  // debugging: linked exits without rtLink (the inline form)
 
     H64JitStats stats;
     u32 *opHist;          // optional (debug, 232 entries): instructions run through the interpreter helper,
@@ -107,6 +112,10 @@ struct H64Jit
     int noNative;                   // debugging: every instruction through the interpreter
     int noFpu;                      // debugging: COP1 arithmetic through the interpreter
     int noRegCache;                 // debugging: no MIPS registers kept in host registers
+    int noFpuGuard;                 // debugging: COP1 state checked at every instruction
+    void *dumpFile;                 // debugging (h64test --jit-dump): a FILE * receiving each compiled block
+    int fastFpu;                    // native COP1 without reading FPSCR: FCR31's Inexact cause/flag not kept
+                                    // (values unchanged); set before h64_jit_reset, which emits the runtime
 
     // Translations of TLB-mapped instruction pages for the dispatcher
     // (Perfect Dark, GoldenEye and Conker run code at 0x70000000/0x7F000000):
@@ -115,9 +124,11 @@ struct H64Jit
     struct { u32 key, ppage, gen, asid; int entry; } fetch[256];
     u32 linkTlbGen;                 // cpu.tlbGen last seen by the dispatcher
     u32 seenEntryGen[32], seenAsidGen;
-    // Links into TLB-mapped code: link index and the TLB entry of the target.
-    struct { u32 link; int entry; } tlbLinks[4096];
+    // Links into TLB-mapped code, one list per TLB entry (-1: empty).
+    int tlbHead[32];
     u32 tlbLinkCount;
+    int freeLink;                   // first free link record (-1: none)
+    u32 rtCpi;                      // cpu.cpi the runtime and the blocks were generated for
 };
 
 // Takes executable memory (and its icache flush) from the platform.

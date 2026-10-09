@@ -12,6 +12,8 @@
 
 static int compare_cpu(const H64System *a, const H64System *b, char *why, size_t whyLen)
 {
+    // fastFpu: FCR31's cause and flag bits are not kept by the recompiler.
+    u32 fcrMask = (b->jit && b->jit->fastFpu) ? ~0x0003F07Cu : ~0u;
     const H64Cpu *x = &a->cpu, *y = &b->cpu;
     int i;
     for (i = 0; i < 32; i++)
@@ -40,7 +42,7 @@ static int compare_cpu(const H64System *a, const H64System *b, char *why, size_t
                  y->branchPending);
         return 1;
     }
-    if (x->fcr31 != y->fcr31 || x->llbit != y->llbit) { snprintf(why, whyLen, "fcr31/llbit"); return 1; }
+    if (((x->fcr31 ^ y->fcr31) & fcrMask) || x->llbit != y->llbit) { snprintf(why, whyLen, "fcr31/llbit"); return 1; }
     if (x->instructions != y->instructions)
     {
         snprintf(why, whyLen, "instruction count interp %llu jit %llu", (unsigned long long)x->instructions,

@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "../../core/common/h64_types.h"
+#include "../../core/common/h64_endian.h"
 #include "../../core/cart/h64_zip.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
@@ -125,6 +126,21 @@ static H64System *s_sysForStop = 0;
 static int s_jumpStop = 0;
 
 // --watch-pc: prints GPRs and 0x40 bytes at k0+0x100 the first 6 times PC is reached.
+// --log-pc: one line per execution of that pc (ra, a0..a3), up to 400.
+static int s_logPcCount;
+static u32 s_logPcA0;   // --log-pc PC:A0: only when a0 matches
+static u32 s_logWord;   // --log-word ADDR: that RDRAM word on each --log-pc line
+static void log_pc_hook(void *user)
+{
+    H64System *sys = (H64System *)user;
+    H64Cpu *c = &sys->cpu;
+    if (s_logPcA0 && (u32)c->gpr[4] != s_logPcA0) return;
+    if (s_logPcCount++ >= 400) return;
+    printf("[logpc] %08X #%llu frame %u ra %08X a0 %08X a1 %08X a2 %08X a3 %08X sp %08X [%08X]\n", (u32)c->curPc, (unsigned long long)c->instructions,
+           sys->vi.frames, (u32)c->gpr[31], (u32)c->gpr[4], (u32)c->gpr[5], (u32)c->gpr[6], (u32)c->gpr[7], (u32)c->gpr[29],
+           s_logWord ? h64_load_be32(sys->rdram + (s_logWord & 0x7FFFFC)) : 0);
+}
+
 static void watch_hook(void *user)
 {
     H64System *sys = (H64System *)user;
@@ -302,12 +318,14 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u8 *file;
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
+    int logPc = 0;
+    u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
-    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0;
+    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 asyncCycles = 0;
     u32 traceFrames = 0, traceStep = 0;
-    int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0;
+    int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0, fastFpu = 0, fullExits = 0;
     H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
@@ -323,11 +341,21 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--state")) state = 1;
         else if (!strcmp(argv[i], "--trace-exc") && i + 1 < argc) s_traceExc = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch-pc") && i + 1 < argc) watchPc = (u32)strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "--watch-word") && i + 1 < argc) watchWord = (u32)strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "--log-pc") && i + 1 < argc)
+        {
+            char *colon;
+            watchPc = (u32)strtoul(argv[++i], &colon, 16);
+            if (*colon == ':') s_logPcA0 = (u32)strtoul(colon + 1, 0, 16);
+            logPc = 1;
+        }
         else if (!strcmp(argv[i], "--jump-limit") && i + 1 < argc) jumpLimit = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--stop-on-nops")) stopOnNops = 1;
         else if (!strcmp(argv[i], "--fb-png") && i + 1 < argc) fbPng = argv[++i];
         else if (!strcmp(argv[i], "--raw-png") && i + 1 < argc) rawPng = argv[++i];
         else if (!strcmp(argv[i], "--dump-ram") && i + 1 < argc) dumpRam = argv[++i];
+        else if (!strcmp(argv[i], "--jit-dump") && i + 1 < argc) jitDump = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
         else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) saveDir = argv[++i];
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) loadState = argv[++i];
@@ -368,6 +396,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--no-jit-fpu")) noJitFpu = 1;
         else if (!strcmp(argv[i], "--no-link")) noLink = 1;
         else if (!strcmp(argv[i], "--no-regcache")) noRegCache = 1;
+        else if (!strcmp(argv[i], "--fast-fpu")) fastFpu = 1;
+        else if (!strcmp(argv[i], "--full-exits")) fullExits = 1;
         else if (!strcmp(argv[i], "--cpi") && i + 1 < argc) cpi = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
@@ -437,11 +467,14 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (noJitFpu && sys->jit) sys->jit->noFpu = 1;
     if (noLink && sys->jit) sys->jit->noLink = 1;
     if (noRegCache && sys->jit) sys->jit->noRegCache = 1;
+    if (fastFpu && sys->jit) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
+    if (fullExits && sys->jit) sys->jit->fullExits = 1;
+    if (jitDump && sys->jit) sys->jit->dumpFile = fopen(jitDump, "wb");
     sys->isvSink = isv_sink;
     sys->isvUser = sys;
     sys->cpu.excHook = exc_hook;
     sys->cpu.excUser = sys;
-    if (watchPc) { sys->cpu.watchPc = watchPc; sys->cpu.watchHook = watch_hook; }
+    if (watchPc) { sys->cpu.watchPc = watchPc; sys->cpu.watchHook = logPc ? log_pc_hook : watch_hook; }
     if (jumpLimit) { sys->cpu.jumpLimit = jumpLimit; sys->cpu.jumpHook = jump_hook; }
     s_sysForStop = sys;
     if (stopOnNops) sys->cpu.nopHook = nop_hook;
@@ -559,7 +592,19 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             if (f) fclose(f);
             stateSaved = 1;
         }
-        h64_system_run_cycles(sys, dillon ? 10000 : 1000000);
+        h64_system_run_cycles(sys, dillon ? 10000 : watchWord ? (sys->vi.frames >= 284 ? 2 : 200) : 1000000);
+        if (watchWord)
+        {
+            // --watch-word: report every change of that RDRAM word (200-cycle steps).
+            u32 v = h64_load_be32(sys->rdram + (watchWord & 0x7FFFFC));
+            if (v != watchLast && watchReports < 200)
+            {
+                watchReports++;
+                printf("[watchword] %08X: %08X -> %08X at pc %08X #%llu frame %u, %u RSP tasks (%u HLE)\n", watchWord, watchLast, v,
+                       (u32)sys->cpu.pc, (unsigned long long)sys->cpu.instructions, sys->vi.frames, sys->rsp.tasks, sys->rsp.hleTasks);
+            }
+            watchLast = v;
+        }
         if (dillon && sys->cpu.gpr[30] != 0)
             break;
     }
@@ -597,6 +642,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                sys->jit->memUsed, sys->jit->blockCount,
                (unsigned long long)(sys->jit->stats.nativeInsns + sys->jit->stats.helperInsns),
                (unsigned long long)sys->jit->stats.nativeInsns, (unsigned long long)sys->jit->stats.flushes);
+    if (sys->jit)
+        printf("[jit] links: %u of %u records used, %u through the TLB\n", sys->jit->linkCount, sys->jit->linkCap, sys->jit->tlbLinkCount);
     if (sys->jit && sys->jit->opHist)
     {
         // The most frequent instructions that ran through the interpreter helper.

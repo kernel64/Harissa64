@@ -449,8 +449,7 @@ static void tlb_read(H64Cpu *cpu)
 static void tlb_write(H64Cpu *cpu, int index)
 {
     H64TlbEntry *e = &cpu->tlb[index & 31];
-    cpu->tlbGen++;
-    cpu->tlbEntryGen[index & 31]++;
+    H64TlbEntry old = *e;
     // The TLB keeps one bit per PageMask pair (the upper one) and a 20-bit PFN.
     e->pageMask = (u32)cpu->cop0[CP0_PAGEMASK] & 0x01554000u;
     e->pageMask |= e->pageMask >> 1;
@@ -462,6 +461,14 @@ static void tlb_write(H64Cpu *cpu, int index)
     {
         e->entryLo0 &= ~1u;
         e->entryLo1 &= ~1u;
+    }
+    // The dynarec's links and fetch cache follow these: only a real change
+    // counts (Conker rewrites entries with what they hold, which undid its
+    // links into mapped code all the time).
+    if (old.pageMask != e->pageMask || old.entryHi != e->entryHi || old.entryLo0 != e->entryLo0 || old.entryLo1 != e->entryLo1)
+    {
+        cpu->tlbGen++;
+        cpu->tlbEntryGen[index & 31]++;
     }
 }
 

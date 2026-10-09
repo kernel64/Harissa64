@@ -21,11 +21,13 @@ void h64_jit_reset(H64System *sys)
     memset(j->pageHead, 0, sizeof(j->pageHead));
     memset(j->fetch, 0xFF, sizeof(j->fetch));
     j->tlbLinkCount = 0;
+    memset(j->tlbHead, 0xFF, sizeof(j->tlbHead));
     memset(j->indPc, 0, 1024 * sizeof(u32));
     memset(j->indBody, 0, 1024 * sizeof(u32 *));
     memset(j->codeMap, 0, (H64_RDRAM_SIZE >> 6) * sizeof(u16));
     j->blockCount = 0;
     j->linkCount = 0;
+    j->freeLink = -1;
     j->lastExit = 0;
     j->memUsed = 0;
     j->coldBase = (j->memSize / 2) & ~63u;   // slow paths take about as much as the hot code
@@ -89,6 +91,40 @@ void h64_jit_code_map(H64Jit *j, const H64JitBlock *b, int delta)
     for (; a <= e && a < (H64_RDRAM_SIZE >> 6); a++) j->codeMap[a] = (u16)(j->codeMap[a] + delta);
 }
 
+// Link records are reused: Conker relinks tens of thousands of exits a frame
+// (its TLB refills keep remapping code pages), and records never given back
+// filled the table within seconds, after which nothing was linked any more.
+static void tlb_list_add(H64Jit *j, int i, int e)
+{
+    H64JitLink *l = &j->links[i];
+    l->tlbEntry = e;
+    l->tlbPrev = -1;
+    l->tlbNext = j->tlbHead[e];
+    if (l->tlbNext >= 0) j->links[l->tlbNext].tlbPrev = i;
+    j->tlbHead[e] = i;
+    j->tlbLinkCount++;
+}
+
+static void tlb_list_remove(H64Jit *j, int i)
+{
+    H64JitLink *l = &j->links[i];
+    if (l->tlbEntry < 0) return;
+    if (l->tlbPrev >= 0) j->links[l->tlbPrev].tlbNext = l->tlbNext;
+    else j->tlbHead[l->tlbEntry] = l->tlbNext;
+    if (l->tlbNext >= 0) j->links[l->tlbNext].tlbPrev = l->tlbPrev;
+    l->tlbEntry = -1;
+    j->tlbLinkCount--;
+}
+
+static void free_link(H64Jit *j, int i)
+{
+    H64JitLink *l = &j->links[i];
+    tlb_list_remove(j, i);
+    l->patch = 0;
+    l->next = j->freeLink;
+    j->freeLink = i;
+}
+
 // Puts back the exits linked into b (it is being invalidated).
 static void unlink_block(H64Jit *j, H64JitBlock *b)
 {
@@ -96,9 +132,11 @@ static void unlink_block(H64Jit *j, H64JitBlock *b)
     while (i >= 0)
     {
         H64JitLink *l = &j->links[i];
+        int next = l->next;
         *l->patch = l->orig;
         if (j->flushIcache) j->flushIcache(l->patch, 4);
-        i = l->next;
+        free_link(j, i);
+        i = next;
     }
     b->linkHead = -1;
     {
@@ -185,49 +223,76 @@ static void process_events(H64System *sys)
     h64_prof_add_outer(sys, H64_PROF_EVENTS, t0, nested);
 }
 
-// Links the exit the previous block left by to b (the block it leads to).
-// Undoes the links into TLB-mapped code that went through TLB entry `entry`
-// (-2: all of them, the ASID changed).
-static void unlink_tlb(H64Jit *j, int entry)
+// Checks the links into TLB-mapped code that went through TLB entry `entry`
+// (-2: all of them, the ASID changed): a link stays while its target's virtual
+// pc still maps to the block's physical address (an entry maps two pages and
+// Conker often rewrites only one of them), otherwise it is undone.
+static void unlink_tlb_entry(H64System *sys, int entry)
 {
-    u32 i, n = 0;
-    for (i = 0; i < j->tlbLinkCount; i++)
+    H64Jit *j = sys->jit;
+    int i = j->tlbHead[entry];
+    while (i >= 0)
     {
-        if (entry == -2 || j->tlbLinks[i].entry == entry)
+        H64JitLink *l = &j->links[i];
+        H64JitBlock *b = &j->blocks[l->target];
+        int next = l->tlbNext, e;
+        u32 paddr;
+        if (b->valid && h64_cpu_probe_fetch(&sys->cpu, b->vpc, &paddr, &e) && e >= 0 && paddr == b->paddr)
         {
-            H64JitLink *l = &j->links[j->tlbLinks[i].link];
-            if (*l->patch != l->orig)
+            if (e != entry)
             {
-                *l->patch = l->orig;
-                if (j->flushIcache) j->flushIcache(l->patch, 4);
+                tlb_list_remove(j, i);
+                tlb_list_add(j, i, e);
             }
         }
         else
-            j->tlbLinks[n++] = j->tlbLinks[i];
+        {
+            int *p = &b->linkHead;   // out of the target's list
+            *l->patch = l->orig;
+            if (j->flushIcache) j->flushIcache(l->patch, 4);
+            while (*p >= 0 && *p != i) p = &j->links[*p].next;
+            if (*p == i) *p = l->next;
+            free_link(j, i);
+        }
+        i = next;
     }
-    j->tlbLinkCount = n;
 }
 
+static void unlink_tlb(H64System *sys, int entry)
+{
+    int e;
+    if (entry >= 0) { unlink_tlb_entry(sys, entry); return; }
+    for (e = 0; e < 32; e++) unlink_tlb_entry(sys, e);
+}
+
+// Links the exit the previous block left by to b (the block it leads to).
 static void link_exit(H64Jit *j, u32 *patch, H64JitBlock *b, int tlb)
 {
     H64JitLink *l;
     s32 off;
-    if (j->linkCount >= j->linkCap || !b->body) return;
+    int i;
+    if (!b->body) return;
     off = (s32)((u8 *)b->body - (u8 *)patch);
     if (off < -0x2000000 || off >= 0x2000000) return;
-    l = &j->links[j->linkCount];
-    if (tlb >= 0 && j->tlbLinkCount >= sizeof(j->tlbLinks) / sizeof(j->tlbLinks[0])) return;
+    if (*patch == (0x48000000u | ((u32)off & 0x03FFFFFCu))) return;   // linked already: no second record
+    if (j->freeLink >= 0)
+    {
+        i = j->freeLink;
+        j->freeLink = j->links[i].next;
+    }
+    else if (j->linkCount < j->linkCap)
+        i = (int)j->linkCount++;
+    else
+        return;
+    l = &j->links[i];
     l->patch = patch;
     l->orig = *patch;
     l->tlb = tlb >= 0;
-    if (tlb >= 0)
-    {
-        j->tlbLinks[j->tlbLinkCount].link = j->linkCount;
-        j->tlbLinks[j->tlbLinkCount].entry = tlb;
-        j->tlbLinkCount++;
-    }
+    l->target = (int)(b - j->blocks);
+    l->tlbEntry = -1;
+    if (tlb >= 0) tlb_list_add(j, i, tlb);
     l->next = b->linkHead;
-    b->linkHead = (int)j->linkCount++;
+    b->linkHead = i;
     *patch = 0x48000000u | ((u32)off & 0x03FFFFFCu);
     if (j->flushIcache) j->flushIcache(patch, 4);
 }
@@ -240,8 +305,13 @@ void h64_jit_run_one(H64System *sys)
     u32 pc32, paddr;
     u32 *lastExit = j->lastExit, lastTarget = j->lastExitTarget;
     int tlbEntry = -1;   // the TLB entry pc32 goes through (-1: KSEG0/1)
-    u64 flushes = j->stats.flushes;
+    u64 flushes;
 
+    // The shared routines (rtLink, rtIndirect) and the blocks were made for
+    // one cycles-per-instruction value: the front end sets cpi after init.
+    if (cpu->cpi != j->rtCpi) h64_jit_reset(sys);
+    flushes = j->stats.flushes;
+    lastExit = j->lastExit;
     j->lastExit = 0;
     process_events(sys);
     if (cpu->tlbGen != j->linkTlbGen)
@@ -249,11 +319,11 @@ void h64_jit_run_one(H64System *sys)
         // Only the links through the entries that changed (Conker refills
         // its TLB all the time; undoing every link each time ran it at 1 FPS).
         int e;
-        if (cpu->asidGen != j->seenAsidGen) { unlink_tlb(j, -2); j->seenAsidGen = cpu->asidGen; }
+        if (cpu->asidGen != j->seenAsidGen) { unlink_tlb(sys, -2); j->seenAsidGen = cpu->asidGen; }
         for (e = 0; e < 32; e++)
             if (cpu->tlbEntryGen[e] != j->seenEntryGen[e])
             {
-                unlink_tlb(j, e);
+                unlink_tlb(sys, e);
                 j->seenEntryGen[e] = cpu->tlbEntryGen[e];
             }
         j->linkTlbGen = cpu->tlbGen;
@@ -336,7 +406,11 @@ void h64_jit_run_one(H64System *sys)
     j->curPage = b->paddr >> 12;
     j->curInvalidated = 0;
     j->stats.blocksRun++;
-    j->enter(sys, b->body);
+    {
+        u64 t0 = h64_prof_now(sys);
+        j->enter(sys, b->body);
+        sys->prof[H64_PROF_BLOCKS] += h64_prof_now(sys) - t0;
+    }
 
     // Idle loop: skip whole iterations up to the next event. Nothing can
     // change the loop's outcome before an event (interrupts, DMA, the RSP

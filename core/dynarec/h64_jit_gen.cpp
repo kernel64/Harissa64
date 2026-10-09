@@ -24,6 +24,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "../common/h64_endian.h"
@@ -150,6 +151,11 @@ struct Gen
     RegCache rc, pre; // the current state; the state at the start of the current instruction
     RegCache bc1Pre;  // the state at the branch (BC1 fallback)
     u32 tick;
+    // COP1 state checked once per block (fpu_guard): Status.CU1 set and FR =
+    // fpuFr for the rest of the block; FCR31's rounding mode nearest until a CTC1.
+    int fpuKnown, rmNearest;
+    u32 fpuFr;
+    int tailExit;     // the current instruction's slow path leaves the block afterwards (a guard failed)
 };
 
 static void add_exit(Gen *g, u32 at) { if (g->nExits < H64_JIT_MAX_INSNS * 4) g->exits[g->nExits++] = at; }
@@ -209,6 +215,7 @@ static void begin_insn(Gen *g)
         }
     }
     g->pre = g->rc;
+    g->tailExit = 0;
 }
 
 static u32 rc_slot(Gen *g, u32 mips, int load)
@@ -326,6 +333,7 @@ static void load_ptr(Gen *g, u32 rt, s32 off, u32 ra)
 
 static struct { u32 patchAt, target; } s_linkTails[H64_JIT_MAX_INSNS * 2];
 static u32 s_nLinkTails;
+static int s_tailSetsPc[H64_JIT_MAX_INSNS * 2];   // the tail also writes pc, nextPc, branchPending (compact exits)
 
 static void link_exit(Gen *g, u32 targetPc)
 {
@@ -353,10 +361,46 @@ static void link_exit(Gen *g, u32 targetPc)
     {
         s_linkTails[s_nLinkTails].patchAt = patchAt;
         s_linkTails[s_nLinkTails].target = targetPc;
+        s_tailSetsPc[s_nLinkTails] = 0;
         s_nLinkTails++;
     }
     else
         c->overflow = 1;
+}
+
+// The compact form, for an exit whose instructions are all done: rtLink adds
+// `pending` to the counters and checks events and the run's end; pc, nextPc
+// and branchPending are written only by the cold tail (the dispatcher needs
+// them; a linked next block does not). About 5 words instead of ~25: DK64's
+// and Conker's code did not fit the caches (115 bytes per MIPS instruction).
+static void link_exit_n(Gen *g, u32 pending, u32 targetPc)
+{
+    H64PpcCode *c = &g->c;
+    u32 patchAt;
+    if (!g->native || g->sys->jit->noLink || s_nLinkTails >= sizeof(s_linkTails) / sizeof(s_linkTails[0]))
+    {
+        sync_to(g, pending, targetPc);
+        exit_block(g);
+        return;
+    }
+    if (g->sys->jit->fullExits)
+    {
+        sync_to(g, pending, targetPc);
+        link_exit(g, targetPc);
+        return;
+    }
+    if (g->cacheOn) rc_writeback(g, &g->rc);
+    ppc_li(c, 3, (s32)(pending * g->cpi));
+    ppc_li(c, 4, (s32)pending);
+    ppc_branch_to(c, g->sys->jit->rtLink, 1);
+    ppc_put(c, 0x41820008u);       // beq +8: go on
+    ppc_put(c, 0x48000000u);       // an event or the run's end: to the cold tail (patched below)
+    patchAt = c->pos;
+    ppc_put(c, 0x48000000u);       // to the cold tail; linked: b <next block's body>
+    s_linkTails[s_nLinkTails].patchAt = patchAt;
+    s_linkTails[s_nLinkTails].target = targetPc;
+    s_tailSetsPc[s_nLinkTails] = 1;
+    s_nLinkTails++;
 }
 
 // Not linked yet (cold, after the body): tell the dispatcher where the exit is
@@ -370,6 +414,33 @@ static void emit_cold_links(Gen *g, H64PpcCode *hot)
         u32 patchAt = s_linkTails[k].patchAt;
         s32 off = (s32)((const u8 *)(c->buf + c->pos) - (const u8 *)(hot->buf + patchAt));
         if (patchAt < hot->cap) hot->buf[patchAt] = 0x48000000u | ((u32)off & 0x03FFFFFCu);
+        if (s_tailSetsPc[k])
+        {
+            // Compact exits: on an event or the run's end (rtLink said ne) the
+            // exit leaves without offering itself for linking: it may be
+            // linked already, and offering it again added a link record each
+            // time until the table was full (DK64 with the graphics worker:
+            // 147000 dispatcher round trips a frame instead of 2000).
+            s32 off2 = (s32)((const u8 *)(c->buf + c->pos) - (const u8 *)(hot->buf + patchAt - 1));
+            if (patchAt >= 1 && patchAt - 1 < hot->cap) hot->buf[patchAt - 1] = 0x48000000u | ((u32)off2 & 0x03FFFFFCu);
+            ppc_li64(c, 3, sext32(s_linkTails[k].target));
+            ppc_std(c, 3, OFF_PC, JR_CPU);
+            ppc_addi(c, 3, 3, 4);
+            ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
+            ppc_li(c, 3, 0);
+            ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+            add_exit(g, ppc_b_fwd(c));
+            off = (s32)((const u8 *)(c->buf + c->pos) - (const u8 *)(hot->buf + patchAt));
+            if (patchAt < hot->cap) hot->buf[patchAt] = 0x48000000u | ((u32)off & 0x03FFFFFCu);
+            ppc_li64(c, 3, sext32(s_linkTails[k].target));
+            ppc_std(c, 3, OFF_PC, JR_CPU);
+            ppc_addi(c, 3, 3, 4);
+            ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
+            ppc_li(c, 3, 0);
+            ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+            s_tailSetsPc[k] = 0;
+            load_ptr(g, 5, (s32)offsetof(H64System, jit), JR_SYS);
+        }
 #if defined(H64_JIT_ABI_XBOX)
         ppc_li32u(c, 3, (u32)(uintptr_t)(hot->buf + patchAt));
         ppc_stw(c, 3, (s32)offsetof(H64Jit, lastExit), 5);
@@ -431,6 +502,7 @@ static void call_interp_raw(Gen *g)
 static void call_interp_nc(Gen *g, u32 pc);
 static void call_interp(Gen *g, u32 pc)
 {
+    g->rmNearest = 0;
     rc_flush(g);
     call_interp_nc(g, pc);
 }
@@ -509,6 +581,7 @@ void h64_jit_emit_runtime(H64System *sys)
     Gen g;
     u8 *start = j->mem;
     u32 st, sz;
+    j->rtCpi = sys->cpu.cpi;
     memset(&g, 0, sizeof(g));
     g.sys = sys;
 #if defined(H64_JIT_ABI_ELFV1)
@@ -645,12 +718,23 @@ void h64_jit_emit_runtime(H64System *sys)
         {
             u32 fail[4], nFail = 0, k;
             j->rtFpFinish[dbl] = c->buf + c->pos;
-            ppc_mffs(c, 0);
-            ppc_stfd(c, 0, OFF_JITSCRATCH, JR_CPU);
-            ppc_lwz(c, 6, OFF_JITSCRATCH + 4, JR_CPU);
-            ppc_andis_(c, 7, 6, 0x3C00);
-            ppc_put(c, 0x4C820020u);              // bnelr
-            ppc_rlwinm(c, 7, 6, 15, 31, 31);      // FI
+            if (j->fastFpu)
+            {
+                // No FPSCR read (mffs serialises, and the store/load is a
+                // load-hit-store: ~100 cycles a COP1 operation; DK64 ran its
+                // code at 24 MIPS). Overflow gives the same infinity; NaN and
+                // denormal results still take the slow path below.
+                ppc_li(c, 7, 0);                  // FI = 0: no Inexact cause
+            }
+            else
+            {
+                ppc_mffs(c, 0);
+                ppc_stfd(c, 0, OFF_JITSCRATCH, JR_CPU);
+                ppc_lwz(c, 6, OFF_JITSCRATCH + 4, JR_CPU);
+                ppc_andis_(c, 7, 6, 0x3C00);
+                ppc_put(c, 0x4C820020u);          // bnelr
+                ppc_rlwinm(c, 7, 6, 15, 31, 31);  // FI
+            }
             if (dbl)
             {
                 u32 ok;
@@ -680,6 +764,36 @@ void h64_jit_emit_runtime(H64System *sys)
             ppc_cmpwi(c, 0, 6, 0);
             ppc_blr(c);
         }
+    }
+    // rtLink (called; r3 = cycles, r4 = instructions of the exit's block): adds
+    // them, then cr0.eq if no event and not the run's end fall within the next
+    // block (blockEndCycles set), else cr0.ne. Registers only: no reload of
+    // what was just stored.
+    {
+        H64PpcCode *c = &g.c;
+        u32 out[2], k;
+        j->rtLink = c->buf + c->pos;
+        ppc_ld(c, 5, OFF_CYCLES, JR_CPU);
+        ppc_ld(c, 6, OFF_INSNS, JR_CPU);
+        ppc_add(c, 5, 5, 3);
+        ppc_add(c, 6, 6, 4);
+        ppc_std(c, 5, OFF_CYCLES, JR_CPU);
+        ppc_std(c, 6, OFF_INSNS, JR_CPU);
+        ppc_addi(c, 5, 5, (s32)(H64_JIT_MAX_INSNS * sys->cpu.cpi));
+        ppc_ld(c, 7, (s32)(offsetof(H64System, sched) + offsetof(H64Scheduler, next)), JR_SYS);
+        ppc_cmpld(c, 0, 5, 7);
+        out[0] = ppc_bc_fwd(c, 12, 0, PPC_GT);
+        load_ptr(&g, 8, (s32)offsetof(H64System, jit), JR_SYS);
+        ppc_ld(c, 7, (s32)offsetof(H64Jit, runEnd), 8);
+        ppc_cmpld(c, 0, 5, 7);
+        out[1] = ppc_bc_fwd(c, 12, 0, PPC_GT);
+        ppc_std(c, 5, (s32)offsetof(H64Jit, blockEndCycles), 8);
+        ppc_cmpw(c, 0, 5, 5);   // eq
+        ppc_blr(c);
+        for (k = 0; k < 2; k++) ppc_patch_here(c, out[k]);
+        ppc_li(c, 6, 1);
+        ppc_cmpwi(c, 0, 6, 0);  // ne
+        ppc_blr(c);
     }
     // rtIndirect (branched to, not called): cpu->pc is a jr/jalr target.
     // Like a linked exit: no event and not the run's end within the next
@@ -1006,8 +1120,13 @@ static int emit_alu(Gen *g, u32 op)
 static void fpu_access(Gen *g, u32 ft, u32 size, int store)
 {
     H64PpcCode *c = &g->c;
-    u32 alt = 0, done = 0, pass, n = (ft & 1) ? 2 : 1;
-    for (pass = 0; pass < n; pass++)
+    u32 alt = 0, done = 0, pass, n = (ft & 1) ? 2 : 1, first = 0;
+    if (g->fpuKnown && n == 2)
+    {
+        n = 1;                        // FR known: one side only
+        first = g->fpuFr ? 0 : 1;
+    }
+    for (pass = first; pass < first + n; pass++)
     {
         // pass 0: FR = 1 (or an even register); pass 1: FR = 0 with an odd register.
         s32 off;
@@ -1016,7 +1135,7 @@ static void fpu_access(Gen *g, u32 ft, u32 size, int store)
             ppc_cmpdi(c, 0, 7, 0);
             alt = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // beq: FR = 0
         }
-        if (pass == 1) ppc_patch_here(c, alt);
+        if (pass == 1 && n == 2) ppc_patch_here(c, alt);
         if (size == 4) off = pass == 0 ? OFF_FGR(ft) + 4 : OFF_FGR(ft - 1);
         else off = pass == 0 ? OFF_FGR(ft) : OFF_FGR(ft - 1);
         if (store)
@@ -1032,6 +1151,45 @@ static void fpu_access(Gen *g, u32 ft, u32 size, int store)
         if (pass == 0 && n == 2) done = ppc_b_fwd(c);
     }
     if (n == 2) ppc_patch_here(c, done);
+}
+
+// The first COP1 instruction of a block checks Status.CU1 and FR against the
+// values when the block was compiled; the following ones rely on them (Status
+// only changes through COP0 instructions, which end blocks). DK64's matrix
+// code spent most of its time re-reading Status and FCR31 for every operation.
+// A failed guard sends the instruction to the interpreter and leaves the block.
+// Returns 0 when nothing is known (COP1 unusable at compile time): the caller
+// then checks at run time as before.
+static int fpu_guard(Gen *g, u32 *slow, u32 *nSlow)
+{
+    H64PpcCode *c = &g->c;
+    u32 sr = (u32)g->sys->cpu.cop0[CP0_STATUS];
+    if (g->fpuKnown) return 1;
+    if (!(sr & 0x20000000u) || g->sys->jit->noFpuGuard) return 0;
+    ppc_ld(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
+    ppc_rlwinm(c, 6, 5, 16, 16, 31);          // Status >> 16
+    ppc_andi_(c, 6, 6, 0x2400);               // CU1 | FR
+    ppc_cmplwi(c, 0, 6, (sr & 0x24000000u) >> 16);
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    g->tailExit = 1;
+    g->fpuKnown = 1;
+    g->fpuFr = (sr >> 26) & 1;
+    return 1;
+}
+
+// FCR31's rounding mode is nearest (the host's): checked once until a CTC1
+// or an instruction run by the interpreter.
+static void rm_guard(Gen *g, u32 *slow, u32 *nSlow)
+{
+    H64PpcCode *c = &g->c;
+    if (g->rmNearest) return;
+    ppc_andi_(c, 6, 5, 3);   // r5 = FCR31
+    slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+    if (!g->sys->jit->noFpuGuard && !((u32)g->sys->cpu.fcr31 & 3))
+    {
+        g->tailExit = 1;
+        g->rmNearest = 1;
+    }
 }
 
 // emit_mem_fast emits the fast path only and appends the branches to the
@@ -1057,7 +1215,7 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
     case 0x3F: size = 8; store = 1; break;    // SD
     default: return 0;
     }
-    if (fpu)
+    if (fpu && !fpu_guard(g, slow, &nSlow))
     {
         // COP1 must be usable (else the slow path raises the exception). r7
         // keeps Status.FR for the register selection below.
@@ -1120,6 +1278,7 @@ struct ColdTail
     u32 pc, pend, back;
     u32 veneer;           // hot word: b <the tail in the cold region>
     u32 *coldStart;
+    int exitAfter;        // leave the block after the interpreter ran the instruction (a guard failed)
     RegCache pre, post;
 };
 static ColdTail s_tails[H64_JIT_MAX_INSNS + 2];   // one block is compiled at a time
@@ -1138,6 +1297,8 @@ static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow)
     t->back = g->c.pos;
     t->pre = g->pre;
     t->post = g->rc;
+    t->exitAfter = g->tailExit;
+    g->tailExit = 0;
     g->pending++;
 }
 
@@ -1172,6 +1333,16 @@ static void emit_cold_tails(Gen *g, H64PpcCode *hot)
         ppc_li(c, 10, (s32)(t->pend * g->cpi));
         ppc_li(c, 11, (s32)g->cpi);
         ppc_branch_to(c, g->sys->jit->rtSlow, 1);
+        if (t->exitAfter)
+        {
+            // What the rest of the block assumed about COP1 does not hold:
+            // leave, with the counters rtSlow took back counted again.
+            add_exit(g, ppc_bc_fwd(c, 4, 0, PPC_EQ));
+            add_to(g, OFF_CYCLES, (s32)((t->pend + 1) * g->cpi));
+            add_to(g, OFF_INSNS, (s32)(t->pend + 1));
+            add_exit(g, ppc_b_fwd(c));
+            continue;
+        }
         add_exit(g, ppc_bc_fwd(c, 4, 0, PPC_EQ));   // bne exit
         if (g->cacheOn) rc_reload(g, &t->post);
         ppc_branch_to(c, hot->buf + t->back, 0);   // back to the fast path's end
@@ -1272,6 +1443,7 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     // Moves (MFC1 DMFC1 CFC1 MTC1 DMTC1 CTC1) need no host flags.
     int move = fmt == 0 || fmt == 1 || fmt == 2 || fmt == 4 || fmt == 5 || fmt == 6;
     s32 offS, offT;
+    int fast;
     if ((op >> 26) != 0x11) return 0;
     if (!move)
     {
@@ -1280,25 +1452,39 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     }
 
     // COP1 usable; an odd fs register needs FR = 1 (FR = 0 would use fs - 1).
-    ppc_ld(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
-    ppc_andis_(c, 6, 5, 0x2000);
-    slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
-    if ((fs & 1) && fmt != 2 && fmt != 6 && !move)
     {
-        ppc_andis_(c, 6, 5, 0x0400);
+        u32 sr = (u32)g->sys->cpu.cop0[CP0_STATUS];
+        int guarded = g->fpuKnown || ((sr & 0x20000000u) && !g->sys->jit->noFpuGuard);
+        u32 fr = g->fpuKnown ? g->fpuFr : (sr >> 26) & 1;
+        if (guarded && (fs & 1) && fmt != 2 && fmt != 6 && !move && !fr) return 0;   // the interpreter
+    }
+    if (!fpu_guard(g, slow, nSlow))
+    {
+        ppc_ld(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
+        ppc_andis_(c, 6, 5, 0x2000);
         slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+        if ((fs & 1) && fmt != 2 && fmt != 6 && !move)
+        {
+            ppc_andis_(c, 6, 5, 0x0400);
+            slow[(*nSlow)++] = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+        }
     }
     if (move)
     {
         // With FR = 0 an odd register is the high word of the even one (32-bit
         // moves) or the even register itself (64-bit moves).
-        u32 pass, n = ((fs & 1) && fmt != 2 && fmt != 6) ? 2 : 1, alt = 0, done = 0;
+        u32 pass, n = ((fs & 1) && fmt != 2 && fmt != 6) ? 2 : 1, alt = 0, done = 0, first = 0;
+        if (g->fpuKnown && n == 2)
+        {
+            n = 1;
+            first = g->fpuFr ? 0 : 1;
+        }
         if (fmt == 0 || fmt == 1 || fmt == 4 || fmt == 5)
         {
             // The GPR is read once, before the FR split: a register cached on
             // one side only would hold garbage on the other.
             if (fmt == 4 || fmt == 5) load_gpr(g, 3, ft);
-            for (pass = 0; pass < n; pass++)
+            for (pass = first; pass < first + n; pass++)
             {
                 s32 off32 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs) + 4, off64 = pass ? OFF_FGR(fs - 1) : OFF_FGR(fs);
                 if (pass == 0 && n == 2)
@@ -1306,7 +1492,7 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
                     ppc_andis_(c, 6, 5, 0x0400);   // FR
                     alt = ppc_bc_fwd(c, 12, 0, PPC_EQ);
                 }
-                if (pass == 1) ppc_patch_here(c, alt);
+                if (pass == 1 && n == 2) ppc_patch_here(c, alt);
                 switch (fmt)
                 {
                 case 0: ppc_lwa(c, 3, off32, JR_CPU); store_gpr(g, 3, ft); break;    // MFC1
@@ -1340,6 +1526,7 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
             ppc_andis_(c, 6, 5, 0x0002);
             slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
             ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+            g->rmNearest = 0;
             break;
         }
         return 1;
@@ -1351,7 +1538,14 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
         return 1;
     }
 
-    ppc_lwz(c, 5, OFF_FCR31, JR_CPU);
+    // fastFpu (mupen64plus's way): the operation on the host FPU as it is,
+    // without the operand and result checks or FCR31's cause and flag bits
+    // (each of those read FCR31 back right after storing it, read the FPSCR
+    // with mffs and called two shared routines: ~100 cycles per operation).
+    // Compares still write C; rounding modes other than nearest still go to
+    // the interpreter.
+    fast = g->sys->jit->fastFpu;
+    if (!fast || cmp || !g->rmNearest) ppc_lwz(c, 5, OFF_FCR31, JR_CPU);
     if (fromW)
     {
         // CVT.S.W, CVT.D.W: the integer through memory (fcfid converts a
@@ -1362,25 +1556,23 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
         ppc_fcfid(c, 1, 1);
         if (funct == 0x21)
         {
-            ppc_rlwinm(c, 5, 5, 0, 20, 13);
-            ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+            if (!fast)
+            {
+                ppc_rlwinm(c, 5, 5, 0, 20, 13);
+                ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+            }
             ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
             return 1;
         }
-        ppc_andi_(c, 6, 5, 3);   // rounding mode nearest
-        slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
+        rm_guard(g, slow, nSlow);   // rounding mode nearest
         ppc_frsp(c, 1, 1);
-        fp_call(g, g->sys->jit->rtFpFinish[0], slow, nSlow);
+        if (!fast) fp_call(g, g->sys->jit->rtFpFinish[0], slow, nSlow);
         fp_store32_zext(g, fd);
         ppc_stfs(c, 1, OFF_FGR(fd) + 4, JR_CPU);
         return 1;
     }
-    if (arith || cvts)
-    {
-        ppc_andi_(c, 6, 5, 3);   // rounding mode nearest
-        slow[(*nSlow)++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);
-    }
-    if (funct == 0x24)
+    if (arith || cvts) rm_guard(g, slow, nSlow);   // rounding mode nearest
+    if (funct == 0x24 && !g->rmNearest)
     {
         // CVT.W: nearest or towards zero (IDO's (int) casts set RM = 1 around it); cr0.eq = nearest.
         ppc_andi_(c, 6, 5, 2);
@@ -1420,14 +1612,17 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
         if (dbl) ppc_lfd(c, 2, offT, JR_CPU);
         else ppc_lfs(c, 2, offT, JR_CPU);
     }
-    fp_call(g, g->sys->jit->rtFpCheck[dbl][arith ? 1 : 0], slow, nSlow);
+    if (!fast) fp_call(g, g->sys->jit->rtFpCheck[dbl][arith ? 1 : 0], slow, nSlow);
     if (funct == 0x05 || funct == 0x07)
     {
         // ABS, NEG: no exception for these operands; the cause is cleared.
         if (funct == 0x05) ppc_fabs(c, 1, 1);
         else ppc_fneg(c, 1, 1);
-        ppc_rlwinm(c, 5, 5, 0, 20, 13);
-        ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+        if (!fast)
+        {
+            ppc_rlwinm(c, 5, 5, 0, 20, 13);
+            ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+        }
         if (dbl) ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
         else
         {
@@ -1439,14 +1634,18 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     if (cvtd)
     {
         // Exact: a normal single is a normal double, no flag.
-        ppc_rlwinm(c, 5, 5, 0, 20, 13);
-        ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+        if (!fast)
+        {
+            ppc_rlwinm(c, 5, 5, 0, 20, 13);
+            ppc_stw(c, 5, OFF_FCR31, JR_CPU);
+        }
         ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
         return 1;
     }
     if (toint)
     {
         if (funct == 0x0D) ppc_fctiwz(c, 1, 1);
+        else if (g->rmNearest) ppc_fctiw(c, 1, 1);
         else
         {
             u32 nearest, join;
@@ -1458,7 +1657,7 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
             ppc_fctiw(c, 1, 1);
             ppc_patch_here(c, join);
         }
-        fp_call(g, g->sys->jit->rtFpFinish[0], slow, nSlow);   // NaN, infinite or out of range: VXCVI
+        if (!fast) fp_call(g, g->sys->jit->rtFpFinish[0], slow, nSlow);   // NaN, infinite or out of range: VXCVI
         fp_store32_zext(g, fd);
         ppc_addi(c, 8, JR_CPU, OFF_FGR(fd) + 4);
         ppc_stfiwx(c, 1, 0, 8);
@@ -1477,7 +1676,7 @@ static int emit_fpu_fast(Gen *g, u32 op, u32 *slow, u32 *nSlow)
     else
         ppc_frsp(c, 1, 1);   // CVT.S.D
     // Flags, a denormal result, Inexact and FCR31 (shared routine).
-    fp_call(g, g->sys->jit->rtFpFinish[dbl && !cvts ? 2 : 1], slow, nSlow);
+    if (!fast) fp_call(g, g->sys->jit->rtFpFinish[dbl && !cvts ? 2 : 1], slow, nSlow);
     if (dbl && !cvts) ppc_stfd(c, 1, OFF_FGR(fd), JR_CPU);
     else
     {
@@ -1498,6 +1697,29 @@ static int emit_fpu(Gen *g, u32 op, u32 pc)
 // ---- Branches ----
 // Computes R_COND (1: taken) and R_TARGET for a native branch; writes the link.
 // Returns 0 when the branch is not handled natively (BC1x).
+// The exits after a native branch with a fixed target and its slot: compact
+// linked exits per outcome; J/JAL and BEQ rs,rs only have the taken one.
+static void branch_exit_n(Gen *g, u32 op, u32 pending, u64 target, u32 fallthrough)
+{
+    u32 opc = op >> 26, notTaken;
+    int always = opc == 0x02 || opc == 0x03 || (opc == 0x04 && ((op >> 21) & 31) == ((op >> 16) & 31));
+    if (!g->native)
+    {
+        exit_block(g);
+        return;
+    }
+    if (always)
+    {
+        link_exit_n(g, pending, (u32)target);
+        return;
+    }
+    ppc_cmpdi(&g->c, 0, R_COND, 0);
+    notTaken = ppc_bc_fwd(&g->c, 12, 0, PPC_EQ);
+    link_exit_n(g, pending, (u32)target);
+    ppc_patch_here(&g->c, notTaken);
+    link_exit_n(g, pending, fallthrough);
+}
+
 static int emit_branch_head(Gen *g, u32 op, u32 pc, int *likely, int *dynamicTarget, u64 *target)
 {
     H64PpcCode *c = &g->c;
@@ -1665,8 +1887,7 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
         u32 takenAt;
         ppc_cmpdi(c, 0, R_COND, 0);
         takenAt = ppc_bc_fwd(c, 4, 0, PPC_EQ);   // taken: go on with the slot
-        sync_to(g, g->pending, pc + 8);
-        link_exit(g, pc + 8);
+        link_exit_n(g, g->pending, pc + 8);
         ppc_patch_here(c, takenAt);
     }
     // The delay slot.
@@ -1674,6 +1895,12 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
     slotPre = g->rc;
     if (g->native && !is_branch(ds) && !ends_block(ds) && (emit_alu(g, ds) ? (g->pending++, 1) : 0))
     {
+        if (!dynamicTarget && !g->sys->jit->noLink && !g->sys->jit->fullExits)
+        {
+            branch_exit_n(g, op, g->pending, target, dsPc + 4);
+            g->pending = 0;
+            return;
+        }
         add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
         add_to(g, OFF_INSNS, (s32)g->pending);
         store_branch_pc(g, dynamicTarget, target, dsPc + 4);
@@ -1691,6 +1918,9 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
         u32 pend = g->pending;
         if (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) || emit_fpu_fast(g, ds, slow, &nSlow))
         {
+            // The compact exits diverged here (Conker, lockstep under QEMU,
+            // cause not found yet): the full exits after a load/store, FPU or
+            // overflow-checked slot.
             add_to(g, OFF_CYCLES, (s32)((pend + 1) * g->cpi));
             add_to(g, OFF_INSNS, (s32)(pend + 1));
             store_branch_pc(g, dynamicTarget, target, dsPc + 4);
@@ -1788,7 +2018,11 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
 
     if (j->blockCount >= j->blockCap || j->memUsed + MAX_BLOCK_BYTES + 64 > j->coldBase ||
         j->coldUsed + MAX_BLOCK_BYTES + 64 > j->memSize)
+    {
+        H64_INFO("[jit] code cache full (%u blocks, hot %u KB, cold %u KB): flushed", j->blockCount, j->memUsed >> 10,
+                 (j->coldUsed - j->coldBase) >> 10);
         h64_jit_reset(sys);
+    }
 
     j->memUsed = (j->memUsed + 15) & ~15u;
     start = j->mem + j->memUsed;
@@ -1842,9 +2076,13 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     }
     if (!endsWithBranch)
     {
-        sync_to(&g, g.pending, pc + n * 4);
-        if (ends_block(ops[n - 1])) exit_block(&g);   // COP0: the mode may have changed
-        else link_exit(&g, pc + n * 4);
+        if (ends_block(ops[n - 1]))
+        {
+            sync_to(&g, g.pending, pc + n * 4);
+            exit_block(&g);   // COP0: the mode may have changed
+        }
+        else
+            link_exit_n(&g, g.pending, pc + n * 4);
     }
     // The slow paths go to the cold region (they would dilute the hot code in
     // the caches): veneers here, then the shared exit.
@@ -1885,6 +2123,15 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     b->valid = 1;
     if (g.native) classify_idle(b, ops, n);
     b->fn = 0;
+    if (j->dumpFile)
+    {
+        // vpc, MIPS instruction count, hot PowerPC words, the MIPS words, the hot code (host byte order).
+        u32 hdr[3], k;
+        hdr[0] = pc; hdr[1] = n; hdr[2] = g.c.pos;
+        fwrite(hdr, 4, 3, (FILE *)j->dumpFile);
+        for (k = 0; k < n; k++) { u32 w = ops[k]; fwrite(&w, 4, 1, (FILE *)j->dumpFile); }
+        fwrite(start, 4, g.c.pos, (FILE *)j->dumpFile);
+    }
     j->memUsed = (u32)((start - j->mem) + g.c.pos * 4);
     if (j->flushIcache)
     {

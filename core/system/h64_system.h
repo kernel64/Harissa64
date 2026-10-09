@@ -60,6 +60,7 @@ enum
     H64_PROF_HELPER,         // recompiler: instructions run by the interpreter helper (HLE tasks they start excluded)
     H64_PROF_EVENTS,         // scheduler events (VI, AI, SI, PI...; HLE tasks they start excluded)
     H64_PROF_ASYNC_WAIT,     // waiting for the graphics worker (asyncWait)
+    H64_PROF_BLOCKS,         // recompiler: inside generated code (helper and events included)
     H64_PROF_COUNT
 };
 
