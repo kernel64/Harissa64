@@ -11,7 +11,7 @@
 
 #include "../../core/common/h64_types.h"
 
-#define XB_AUDIO_DEFAULT_MS 250   // user choice; V1 used 100: one underrun every 2 s on OoT (console A/B, 2026-10-08)
+#define XB_AUDIO_DEFAULT_MS 500   // user choice (2026-10-09, sound cuts at 250 in the Rare games); V1 used 100: one underrun every 2 s on OoT
 
 int xb_audio_init(void);
 // Queue target (ini audioms=, 40..500): the pacing threshold and the fill the

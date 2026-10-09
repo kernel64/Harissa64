@@ -48,8 +48,11 @@ struct XVtx
 struct FbSlot
 {
     u32 addr;          // RDRAM colour image
-    u32 width, height; // N64 pixels
-    u32 bytes;         // bytes per pixel
+    u32 width, height; // N64 pixels (height guessed from the width)
+    u32 drawnH;        // lines the GPU drew into (scissor / fills): what a copy back may write
+    u32 drawnAt;       // Xenos.presentCount when last selected for drawing
+    u32 bytes;         // bytes per pixel (I4: 1, not copied back)
+    int fmt;           // FB_*
     IDirect3DTexture9 *tex;   // resolved copy (RT_WIDTH x RT_HEIGHT)
     int valid;
     int gpuDirty;      // drawn by the GPU since the last copy back to RDRAM
@@ -73,6 +76,7 @@ struct Xenos
 {
     H64Renderer api;
     H64System *sys;
+    u32 presentCount;  // VI presents so far (frame slots' age)
     IDirect3DDevice9 *dev;
     H64RdpState *st;
 
@@ -798,6 +802,7 @@ static void select_framebuffer(Xenos *x)
         s = &x->fb[best];
         s->addr = addr;
         s->valid = 0;
+        s->drawnH = 0;
         x->dev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, x->debug == 1 ? 0xFF0000FF : 0xFF000000, 1.0f, 0);
     }
     else if (best != x->edramOwner)
@@ -811,9 +816,11 @@ static void select_framebuffer(Xenos *x)
         s = &x->fb[best];   // still in EDRAM (presenting draws to the back buffer elsewhere in EDRAM)
     x->edramOwner = best;
     s->gpuDirty = 1;
+    s->drawnAt = x->presentCount;
     s->width = x->st->colorWidth;
     s->height = fb_height(s->width);
-    s->bytes = x->st->colorFmt == FB_RGBA8888 ? 4 : 2;
+    s->fmt = x->st->colorFmt;
+    s->bytes = s->fmt == FB_RGBA8888 ? 4 : (s->fmt == FB_RGBA5551 || s->fmt == FB_IA88) ? 2 : 1;
     s->lastUse = ++x->useCounter;
     x->curSlot = best;
 }
@@ -822,12 +829,27 @@ static void select_framebuffer(Xenos *x)
 // image's format), so that the RDP or the CPU can read it.
 static void flush_batch(Xenos *x);
 
+// One copied-back pixel (c = 0x00RRGGBB) in the colour image's format. 8-bit
+// images took two bytes a pixel before, writing past them (Conker froze).
+static void store_pixel(u8 *p, int fmt, u32 c)
+{
+    u32 i = (((c >> 16) & 0xFF) + ((c >> 8) & 0xFF) + (c & 0xFF)) / 3;
+    if (fmt == FB_RGBA8888) h64_store_be32(p, (c << 8) | 0xFF);
+    else if (fmt == FB_RGBA5551) h64_store_be16(p, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
+    else if (fmt == FB_IA88) h64_store_be16(p, (u16)((i << 8) | 0xFF));
+    else *p = (u8)i;   // I8
+}
+
 static void copy_back(Xenos *x, int slot)
 {
     FbSlot *s = &x->fb[slot];
     D3DLOCKED_RECT lr;
-    u32 y, xx, w = s->width ? s->width : 320, h = s->height ? s->height : 240;
+    u32 y, xx, w = s->width ? s->width : 320, h = s->height ? s->height : 240, hc = h;
     u8 *ram = x->sys->rdram;
+    // Only the lines drawn (hc): an offscreen image (Conker's small render
+    // targets) is not as tall as the guess h, which still sets the scale.
+    if (s->drawnH && s->drawnH < h) hc = s->drawnH;
+    if (s->fmt == FB_I4) { s->gpuDirty = 0; return; }   // 4-bit colour images: not copied back
     flush_batch(x);
     if (slot == x->curSlot && x->targetBound) resolve_current(x);
     if (!s->tex || !s->valid) return;
@@ -856,17 +878,14 @@ static void copy_back(Xenos *x, int slot)
         ur.left = 0; ur.top = 0; ur.right = (LONG)w; ur.bottom = (LONG)h;
         XGUntileSurface(&x->copyBuf[0], w * 4, NULL, lr.pBits, RB_WIDTH, RB_HEIGHT, &ur, 4);
         x->rbTex->UnlockRect(0);
-        for (y = 0; y < h; y++)
+        for (y = 0; y < hc; y++)
         {
             const u32 *src = &x->copyBuf[y * w];
             for (xx = 0; xx < w; xx++)
             {
-                u32 c = src[xx], a = s->addr + (y * w + xx) * s->bytes;
+                u32 a = s->addr + (y * w + xx) * s->bytes;
                 if (a + s->bytes > H64_RDRAM_SIZE) break;
-                if (s->bytes == 4)
-                    h64_store_be32(ram + a, (c << 8) | 0xFF);
-                else
-                    h64_store_be16(ram + a, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
+                store_pixel(ram + a, s->fmt, src[xx]);
             }
         }
     }
@@ -877,29 +896,26 @@ static void copy_back(Xenos *x, int slot)
     if (x->copyBuf.size() < RT_WIDTH * RT_HEIGHT) x->copyBuf.resize(RT_WIDTH * RT_HEIGHT);
     XGUntileSurface(&x->copyBuf[0], RT_WIDTH * 4, NULL, lr.pBits, RT_WIDTH, RT_HEIGHT, NULL, 4);
     s->tex->UnlockRect(0);
-    for (y = 0; y < h; y++)
+    for (y = 0; y < hc; y++)
     {
         const u32 *src = &x->copyBuf[(y * RT_HEIGHT / h) * RT_WIDTH];
         for (xx = 0; xx < w; xx++)
         {
-            u32 c = src[xx * RT_WIDTH / w], a = s->addr + (y * w + xx) * s->bytes;
+            u32 a = s->addr + (y * w + xx) * s->bytes;
             if (a + s->bytes > H64_RDRAM_SIZE) break;
-            if (s->bytes == 4)
-                h64_store_be32(ram + a, (c << 8) | 0xFF);
-            else
-                h64_store_be16(ram + a, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
+            store_pixel(ram + a, s->fmt, src[xx * RT_WIDTH / w]);
         }
     }
     }
     if (x->deferNotify)
     {
         // On the graphics worker: the recompiler is the CPU thread's; tell it later.
-        u32 lo = s->addr, hi = s->addr + w * h * s->bytes;
+        u32 lo = s->addr, hi = s->addr + w * hc * s->bytes;
         if (x->pendingHi <= x->pendingLo) { x->pendingLo = lo; x->pendingHi = hi; }
         else { if (lo < x->pendingLo) x->pendingLo = lo; if (hi > x->pendingHi) x->pendingHi = hi; }
     }
     else
-        h64_jit_notify_write(x->sys, s->addr, w * h * s->bytes);
+        h64_jit_notify_write(x->sys, s->addr, w * hc * s->bytes);
     s->gpuDirty = 0;
     x->stats.copyBacks++;
 }
@@ -913,16 +929,24 @@ static void check_texture_source(Xenos *x)
         FbSlot *s = &x->fb[i];
         if (s->gpuDirty && s->tex && a >= s->addr && a < s->addr + s->width * s->height * s->bytes)
         {
-            copy_back(x, (int)i);
+            if (x->debug != 5) copy_back(x, (int)i);   // xenosdebug=5: no copy backs (diagnosis)
+            else s->gpuDirty = 0;
             return;
         }
     }
 }
 
 // ---------------------------------------------------------------- render states
+// The current colour image was drawn down to line `bottom`.
+static void note_drawn(Xenos *x, u32 bottom)
+{
+    if (x->curSlot >= 0 && x->fb[x->curSlot].drawnH < bottom) x->fb[x->curSlot].drawnH = bottom;
+}
+
 static void set_scissor(Xenos *x, float sx, float sy)
 {
     RECT r;
+    note_drawn(x, (x->st->scissorYhi + 3) >> 2);
     r.left = (LONG)((x->st->scissorXlo >> 2) * sx);
     r.top = (LONG)((x->st->scissorYlo >> 2) * sy);
     r.right = (LONG)((x->st->scissorXhi >> 2) * sx);
@@ -1186,6 +1210,10 @@ static void fill_rect(Xenos *x, const u32 *w)
         return;
     }
     select_framebuffer(x);
+    {
+        u32 bottom = (yh >> 2) + 1, sb = (st->scissorYhi + 3) >> 2;
+        note_drawn(x, bottom < sb ? bottom : sb);
+    }
     {
         u32 c = st->fillColor, argb;
         if (st->colorFmt == FB_RGBA8888)
@@ -1465,6 +1493,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     if (x->overlay) x->overlay(x->overlayUser, x->dev);
     x->dev->Present(NULL, NULL, NULL, NULL);
     x->stats.presents++;
+    x->presentCount++;
     // The next draw rebinds the N64 target and restores its content.
     x->curSlot = -1;
 }
@@ -1514,6 +1543,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->textureBytes = 0;
     x->poolBytes = 0;
     x->retires = 0;
+    x->presentCount = 0;
     x->stateDirty = 1;
     x->batchFlags = x->batchTile = 0xFFFFFFFF;
     x->tmemGen = 1;

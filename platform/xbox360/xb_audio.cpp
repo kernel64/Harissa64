@@ -17,7 +17,7 @@
 
 #include "../../core/common/h64_log.h"
 
-#define SLOTS 32
+#define SLOTS 64   // one game buffer (~23 ms) per slot: 500 ms of margin needs ~22
 #define SLOT_BYTES 16384
 static int s_targetMs = XB_AUDIO_DEFAULT_MS;   // fill the rate control aims for (the pacing threshold)
 #define TARGET_MS s_targetMs
