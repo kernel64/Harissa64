@@ -1017,16 +1017,18 @@ static void copy_back(Xenos *x, int slot)
 static void check_texture_source(Xenos *x)
 {
     u32 a = x->st->texAddr & 0xFFFFFF, i;
+    int found = -1;
+    // The most recently drawn image holding the address (an older, bigger one may cover it too).
     for (i = 0; i < FB_SLOTS; i++)
     {
-        FbSlot *s = &x->fb[i];
-        if (s->gpuDirty && s->tex && a >= s->addr && a < s->addr + s->width * s->height * s->bytes)
-        {
-            if (x->debug != 5) copy_back(x, (int)i);   // xenosdebug=5: no copy backs (diagnosis)
-            else s->gpuDirty = 0;
-            return;
-        }
+        const FbSlot *s = &x->fb[i];
+        if (s->tex && (s->valid || s->gpuDirty) && a >= s->addr && a < s->addr + s->width * s->height * s->bytes &&
+            (found < 0 || s->lastUse > x->fb[found].lastUse))
+            found = (int)i;
     }
+    if (found < 0 || !x->fb[found].gpuDirty) return;
+    if (x->debug != 5) copy_back(x, found);   // xenosdebug=5: no copy backs (diagnosis)
+    else x->fb[found].gpuDirty = 0;
 }
 
 // ---------------------------------------------------------------- render states
@@ -1556,14 +1558,24 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     u32 origin = vi[1] & 0xFFFFFF, width = vi[2] & 0xFFF, type = vi[0] & 3, i;
     int found = -1;
     if (x->curSlot >= 0 && x->targetBound) resolve_current(x);
+    // The most recently drawn image holding the origin: a stale bigger one can
+    // cover it too (DK64's 640x480 intro buffers span its 320x240 ones; the
+    // first match showed a black frame every other game frame).
     for (i = 0; i < FB_SLOTS; i++)
     {
         const FbSlot *s = &x->fb[i];
-        if (s->valid && s->tex && origin >= s->addr && origin < s->addr + s->width * s->height * s->bytes)
-        {
+        if (s->valid && s->tex && origin >= s->addr && origin < s->addr + s->width * s->height * s->bytes &&
+            (found < 0 || s->lastUse > x->fb[found].lastUse))
             found = (int)i;
-            break;
-        }
+    }
+    if (x->debug == 6 && (x->presentCount % 60) == 0)
+    {
+        // xenosdebug=6: what the VI shows, once a second.
+        H64_INFO("[xenos] VI origin %06X width %u type %u -> slot %d", origin, width, type, found);
+        for (i = 0; i < FB_SLOTS; i++)
+            if (x->fb[i].tex)
+                H64_INFO("[xenos]   slot %u: addr %06X %ux%u bytes %u valid %d drawnH %u lastUse %u", i, x->fb[i].addr, x->fb[i].width,
+                         x->fb[i].height, x->fb[i].bytes, x->fb[i].valid, x->fb[i].drawnH, x->fb[i].lastUse);
     }
     x->dev->SetRenderTarget(0, x->backBuffer);
     x->dev->SetDepthStencilSurface(NULL);
