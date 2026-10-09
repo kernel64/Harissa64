@@ -1037,6 +1037,12 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         prevButtons = s_padValid ? s_pad.Gamepad.wButtons : 0;
         if (c->saveStateAt && presented == c->saveStateAt) s_statePending = 1;
         if (c->menuAt && presented == c->menuAt) menuRequest = 1;
+        if (c->browserAt && presented == c->browserAt)
+        {
+            H64_INFO("[main] browserat reached: back to the ROM list");
+            result = RG_BROWSER;
+            break;
+        }
         if (s_statePending && SaveStateNow(sys)) s_statePending = 0;
         if (menuRequest)
         {
@@ -1302,7 +1308,7 @@ int __cdecl main()
                 base = cfg;
                 ConfigParseFile(&base, s_settingsPath);
                 if (!RomBrowser(dev, &base, s_settingsPath, path, sizeof(path))) break;
-                cfg.autoStart = 0;   // only the first time
+                if (cfg.autoStart > 0) { cfg.autoStart--; cfg.autoIndex++; }
                 game = base;
                 s_profilePath[0] = 0;
                 if (RomFolderName(path, folder, sizeof(folder)))

@@ -1511,7 +1511,16 @@ void h64_xenos_free(H64Renderer *r)
     if (!x) return;
     x->dev->SetRenderTarget(0, x->backBuffer);
     x->dev->SetDepthStencilSurface(NULL);
-    retire_all_textures(x);
+    retire_all_textures(x);   // waits for the GPU
+    // Nothing of this renderer may stay bound to the device once released (the
+    // 360 device keeps no reference): the next game's renderer, created on the
+    // same device, crashed at its first draws.
+    x->dev->SetTexture(0, NULL);
+    x->dev->SetTexture(1, NULL);
+    x->dev->SetPixelShader(NULL);
+    x->dev->SetVertexShader(NULL);
+    x->dev->SetVertexDeclaration(NULL);
+    x->dev->BlockUntilIdle();
     {
         std::map<u32, std::vector<IDirect3DTexture9 *> >::iterator pit;
         size_t k;
@@ -1529,6 +1538,7 @@ void h64_xenos_free(H64Renderer *r)
     if (x->psCopy) x->psCopy->Release();
     if (x->psFill) x->psFill->Release();
     if (x->psFallback) x->psFallback->Release();
+    if (x->psSmooth) x->psSmooth->Release();
     if (x->vs) x->vs->Release();
     if (x->decl) x->decl->Release();
     if (x->n64Color) x->n64Color->Release();
