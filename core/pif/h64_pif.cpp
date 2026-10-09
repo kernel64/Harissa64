@@ -187,9 +187,43 @@ void h64_pif_reset(H64System *sys)
 //  - 1 MB of ROM from 0x1000 copied to the entry point;
 //  - the registers IPL3 hands over: s3 ROM type (0 = cartridge), s4 TV type,
 //    s5 reset type (0 = cold), s6 CIC seed, s7 version, sp near the top of RDRAM;
-//  - osMemSize (0x80000318, or 0x800003F0 for 6105 games) = 8 MB;
+//  - osMemSize (0x80000318) = 8 MB;
 //  - PI domain 1 timing from the ROM header, RI as IPL3 programs it;
 //  - DMEM holds ROM[0..0x1000) as IPL2 left it.
+//
+// 6105 cartridges (Banjo-Tooie, Conker, Perfect Dark, Donkey Kong 64...) run
+// their real IPL3 instead (ipl3_boot): it starts a program on the RSP that
+// writes words into RDRAM which these games check later (DK64: 0x2FE1C0 ==
+// 0xAD170014) and loop forever without.
+static void ipl3_boot(H64System *sys)
+{
+    // What the PIF boot ROM (IPL1/IPL2) leaves for IPL3, as mupen64plus-core's
+    // pif_bootrom_hle_execute (device/pif/bootrom_hle.c, GPL v2+).
+    static const u32 imem[8] = { 0x3C0DBFC0u, 0x8DA807FCu, 0x25AD07C0u, 0x31080080u,
+                                 0x5500FFFCu, 0x3C0DBFC0u, 0x8DA80024u, 0x3C0BB000u };
+    H64Cpu *cpu = &sys->cpu;
+    u32 hdr = h64_load_be32(sys->rom.data), i;
+    sys->pi.regs[5] = hdr & 0xFF;            // BSD_DOM1_LAT
+    sys->pi.regs[6] = (hdr >> 8) & 0xFF;     // BSD_DOM1_PWD
+    sys->pi.regs[7] = (hdr >> 16) & 0x0F;    // BSD_DOM1_PGS
+    sys->pi.regs[8] = (hdr >> 20) & 0x03;    // BSD_DOM1_RLS
+    memcpy(sys->spMem + 0x40, sys->rom.data + 0x40, 0xFC0);   // IPL3 into DMEM
+    for (i = 0; i < 8; i++) h64_store_be32(sys->spMem + 0x1000 + i * 4, imem[i]);   // the end of IPL2 in IMEM
+    cpu->gpr[19] = 0;                                    // s3: ROM type (cartridge)
+    cpu->gpr[20] = (u64)sys->tvType;                     // s4: TV type
+    cpu->gpr[21] = 0;                                    // s5: reset type (cold)
+    cpu->gpr[22] = sys->rom.cicSeed;                     // s6: CIC seed
+    cpu->gpr[23] = 0;                                    // s7
+    cpu->gpr[11] = (u64)(s64)(s32)0xA4000040u;           // t3
+    cpu->gpr[29] = (u64)(s64)(s32)0xA4001FF0u;           // sp
+    cpu->gpr[31] = (u64)(s64)(s32)0xA4001550u;           // ra
+    cpu->cop0[CP0_STATUS] = 0x34000000u;
+    cpu->cop0[CP0_LLADDR] = 0xFFFFFFFFu;
+    cpu->pc = (u64)(s64)(s32)0xA4000040u;
+    cpu->nextPc = cpu->pc + 4;
+    H64_INFO("[boot] IPL3 boot: CIC %s seed %02X, TV type %d", h64_cic_name(sys->rom.cic), sys->rom.cicSeed, sys->tvType);
+}
+
 void h64_hle_boot(H64System *sys)
 {
     H64Cpu *cpu = &sys->cpu;
@@ -202,6 +236,7 @@ void h64_hle_boot(H64System *sys)
     u32 i, len = 0x100000;
     u32 hdr = h64_load_be32(sys->rom.data);
 
+    if (sys->rom.cic == H64_CIC_6105) { ipl3_boot(sys); return; }
     memcpy(sys->spMem, sys->rom.data, 0x1000);
     for (i = 0; i < len; i++)
     {
@@ -218,7 +253,7 @@ void h64_hle_boot(H64System *sys)
     h64_store_be32(sys->rdram + 0x30C, 0);             // reset type: cold
     h64_store_be32(sys->rdram + 0x310, sys->rom.cicSeed);
     h64_store_be32(sys->rdram + 0x314, 0);             // version
-    h64_store_be32(sys->rdram + (sys->rom.cic == H64_CIC_6105 ? 0x3F0 : 0x318), H64_RDRAM_SIZE);
+    h64_store_be32(sys->rdram + 0x318, H64_RDRAM_SIZE);
 
     sys->pi.regs[5] = hdr & 0xFF;            // BSD_DOM1_LAT
     sys->pi.regs[6] = (hdr >> 8) & 0xFF;     // BSD_DOM1_PWD

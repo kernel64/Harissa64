@@ -19,7 +19,7 @@
 
 struct H64System;
 
-#define H64_STATE_VERSION 1
+#define H64_STATE_VERSION 2   // 2: RSP pipeline (version 1 still loads)
 
 // 1 when a state can be taken now (no HLE task in progress).
 int h64_state_quiet(H64System *sys);

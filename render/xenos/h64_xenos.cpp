@@ -351,8 +351,12 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "}\n",
               (flags & KEY_DEPTH) ? "float d : DEPTH;" : "",
               c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
+              // Xenos computes ddx/ddy with a texture unit: a shader whose
+              // combiner reads no texture had no sampler left and failed to
+              // compile (X3602, Banjo-Kazooie); t0 * zbias.w (always 0) keeps s0.
               (flags & KEY_DEPTH) ? "  float z = lw.y / lw.x;\n"
-                                    "  o.d = saturate(z + zbias.x + zbias.y * max(abs(ddx(z)), abs(ddy(z))));\n" : "");
+                                    "  o.d = saturate(z + zbias.x + zbias.y * max(abs(ddx(z)), abs(ddy(z))));\n"
+                                    "  o.c += t0 * zbias.w;\n" : "");
     ps = compile_ps(x->dev, src);
     x->shaders[key] = ps;
     x->stats.shaderCompiles++;

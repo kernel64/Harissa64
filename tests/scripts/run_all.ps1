@@ -15,7 +15,18 @@ $msbuild = 'C:\Windows\Microsoft.NET\Framework\v4.0.30319\MSBuild.exe'
 $failed = @()
 
 Write-Host '== Windows host (MSVC 2026)'
+# cl's French "Remarque : inclusion du fichier :" line has a non-breaking
+# space, written in the console's OEM code page. A cache configured from a
+# console that recorded it differently (UTF-8) leaves Ninja without header
+# dependencies: changing a struct then rebuilt nothing that includes it (stale
+# objects, false crashes). Such a build folder is detected below and redone.
 $out = cmd /c "`"$vs2026`" >nul 2>&1 && cd /d `"$root`" && cmake -S . -B build-msvc -G Ninja -DCMAKE_BUILD_TYPE=Release >nul && cmake --build build-msvc && build-msvc\h64test.exe --unit" 2>&1
+$ninja = (Select-String -Path (Join-Path $root 'build-msvc\CMakeCache.txt') -Pattern '^CMAKE_MAKE_PROGRAM:[A-Z]+=(.*)$').Matches[0].Groups[1].Value
+if ($ninja -and (& $ninja -C (Join-Path $root 'build-msvc') -t deps | Select-String -Pattern '\.obj: #deps 0' -Quiet)) {
+    Write-Host '   no header dependencies recorded: reconfiguring build-msvc'
+    Remove-Item -LiteralPath (Join-Path $root 'build-msvc') -Recurse -Force
+    $out = cmd /c "`"$vs2026`" >nul 2>&1 && cd /d `"$root`" && cmake -S . -B build-msvc -G Ninja -DCMAKE_BUILD_TYPE=Release >nul && cmake --build build-msvc && build-msvc\h64test.exe --unit" 2>&1
+}
 $out | Select-String -Pattern 'warning|error|UNIT|FAIL' | ForEach-Object { $_.Line }
 if ($LASTEXITCODE -ne 0) { $failed += 'msvc' }
 

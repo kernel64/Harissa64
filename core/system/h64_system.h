@@ -35,7 +35,18 @@ struct H64Ai
     u64 statQueued, statReads, statReadSum; u32 statBuffers;   // statistics: bytes queued, AI_LEN reads
 };
 struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; };   // latch: last CPU write to the cartridge bus
-struct H64Ri { u32 regs[8]; };
+// RI registers, and the registers of the four 2 MB RDRAM modules (8 MB), which
+// the 6105 IPL3 programs and probes to size the memory.
+#define H64_RDRAM_MODULES 4
+struct H64Ri
+{
+    u32 regs[8];
+    u32 rdram[H64_RDRAM_MODULES][10];
+    u32 corrupt;   // a module is being calibrated (current enabled, CC = 0): RDRAM reads may return 0
+};
+struct H64System;
+// RDRAM data read while `corrupt` is set: 0 from no module or an uncalibrated one.
+int h64_rdram_read_lost(H64System *sys, u32 paddr);
 struct H64Si { u32 dramAddr, pifAddrRd, pifAddrWr, status; };
 
 // Profiling (host time spent per subsystem), when the platform sets profClock.
@@ -132,6 +143,7 @@ struct H64System
     int stop;            // set to leave the run loop
     int exitRequested;   // the guest asked to end the run (EMUX XIOCTL exit)
     u32 miRaised[6];     // statistics: MI interrupts raised, per line (SP SI AI VI PI DP)
+    H64RspDecode rspDecode;
 };
 
 // Creates a system for a ROM image (any dump order). Returns 0 or -1.

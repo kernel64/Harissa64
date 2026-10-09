@@ -1,6 +1,7 @@
 // Harissa64 V2 - RSP scalar unit, SP registers and SP DMA.
 // Ported from ares (ISC licence): ares/n64/rsp/interpreter.cpp,
-// interpreter-ipu.cpp, interpreter-scc.cpp, dma.cpp, io.cpp (commit a776c509).
+// interpreter-ipu.cpp, interpreter-scc.cpp, dma.cpp, io.cpp (commit a776c509);
+// pipeline timing from rsp.cpp, rsp.hpp and decoder.cpp (commit 652d6537).
 #include "h64_rsp.h"
 
 #include <string.h>
@@ -32,6 +33,182 @@ static u32 dmem_r32u(H64System *sys, u32 a) { return dmem_r16u(sys, a) << 16 | d
 static void dmem_w16u(H64System *sys, u32 a, u32 v) { dmem_w8(sys, a, (u8)(v >> 8)); dmem_w8(sys, a + 1, (u8)v); }
 static void dmem_w32u(H64System *sys, u32 a, u32 v) { dmem_w16u(sys, a, v >> 16); dmem_w16u(sys, a + 2, v); }
 
+// ---- Pipeline model (ares rsp.hpp OpInfo/Pipeline, decoder.cpp) ----
+#define OPF_LOAD   0x01u
+#define OPF_STORE  0x02u
+#define OPF_BRANCH 0x04u
+#define OPF_VECTOR 0x08u
+#define OPF_VNOP   0x10u   // dual issue conflicts with VNOP
+#define OPF_BYPASS 0x20u   // the result is forwarded: no stall for its readers
+
+static void rsp_decode(u32 i, H64RspOp *o)
+{
+    u32 rd = i >> 11 & 31, rt = i >> 16 & 31, rs = i >> 21 & 31, vd = i >> 6 & 31, vs = rd, vt = rt, f = i & 0x3F;
+    memset(o, 0, sizeof(*o));
+#define RUSE(n)  (o->rUse |= 1u << (n))
+#define RDEF(n)  (o->rDef |= 1u << (n))
+#define RDEFB(n) (RDEF(n), o->flags |= OPF_BYPASS)
+#define VUSE(n)  (o->vUse |= 1u << (n))
+#define VDEF(n)  (o->vDef |= 1u << (n))
+#define VCREF(n) (o->vcUse |= (u8)(1u << (n)), o->vcDef |= (u8)(1u << (n)))
+#define FL(x)    (o->flags |= (x))
+    switch (i >> 26)
+    {
+    case 0x00:   // SPECIAL
+        if (f == 0x00 || f == 0x02 || f == 0x03) { RDEFB(rd); RUSE(rt); }
+        else if (f == 0x04 || f == 0x06 || f == 0x07) { RDEFB(rd); RUSE(rt); RUSE(rs); }
+        else if (f == 0x08) { RUSE(rs); FL(OPF_BRANCH); }
+        else if (f == 0x09) { RDEFB(rd); RUSE(rs); FL(OPF_BRANCH); }
+        else if (f == 0x0D) FL(OPF_BRANCH);
+        else if ((f >= 0x20 && f <= 0x27) || f == 0x2A || f == 0x2B) { RDEFB(rd); RUSE(rs); RUSE(rt); }
+        break;
+    case 0x01:   // REGIMM
+        if (rt == 0x00 || rt == 0x01) { RUSE(rs); FL(OPF_BRANCH); }
+        else if (rt == 0x10 || rt == 0x11) { RDEFB(31); RUSE(rs); FL(OPF_BRANCH); }
+        break;
+    case 0x02: FL(OPF_BRANCH); break;
+    case 0x03: RDEFB(31); FL(OPF_BRANCH); break;
+    case 0x04: case 0x05: RUSE(rs); RUSE(rt); FL(OPF_BRANCH); break;
+    case 0x06: case 0x07: RUSE(rs); FL(OPF_BRANCH); break;
+    case 0x08: case 0x09: case 0x0A: case 0x0B: case 0x0C: case 0x0D: case 0x0E: RDEFB(rt); RUSE(rs); break;
+    case 0x0F: RDEFB(rt); break;
+    case 0x10:   // COP0
+        if (rs == 0x00) { RDEF(rt); FL(OPF_LOAD | OPF_STORE); }
+        else if (rs == 0x04) { RUSE(rt); FL(OPF_LOAD | OPF_STORE); }
+        break;
+    case 0x12:   // COP2
+        if (rs < 0x10)
+        {
+            if (rs == 0x00) { RDEF(rt); VUSE(vs); FL(OPF_LOAD | OPF_STORE); }                               // MFC2
+            else if (rs == 0x02) { RDEF(rt); o->vcUse |= (u8)(1u << (rd & 3)); FL(OPF_LOAD | OPF_STORE); }  // CFC2
+            else if (rs == 0x04) { RUSE(rt); VDEF(vs); FL(OPF_LOAD | OPF_STORE | OPF_VNOP); }                // MTC2
+            else if (rs == 0x06) { RUSE(rt); o->vcDef |= (u8)(1u << (rd & 3)); FL(OPF_LOAD | OPF_STORE); }  // CTC2
+            break;
+        }
+        FL(OPF_VECTOR);
+        if (f <= 0x0F)
+        {
+            VDEF(vd);
+            if (f == 0x0B) break;                         // VMACQ
+            VUSE(vt);
+            if (f != 0x02 && f != 0x0A) VUSE(vs);         // not VRNDP/VRNDN
+        }
+        else if (f == 0x10 || f == 0x11 || f == 0x13 || f == 0x14 || f == 0x15) { VDEF(vd); VUSE(vs); VUSE(vt); VCREF(0); }
+        else if (f == 0x1D) VDEF(vd);                     // VSAR
+        else if (f >= 0x20 && f <= 0x27)
+        {
+            VDEF(vd); VUSE(vs); VUSE(vt); VCREF(0); VCREF(1);
+            if (f >= 0x24 && f <= 0x26) VCREF(2);         // VCL, VCH, VCR
+        }
+        else if (f >= 0x28 && f <= 0x2D) { VDEF(vd); VUSE(vs); VUSE(vt); }
+        else if (f >= 0x30 && f <= 0x36) { VDEF(vd); o->vfake |= 1u << vs; VUSE(vt); }
+        else if (f == 0x37) { o->vfake |= 1u << vd; FL(OPF_VNOP); }   // VNOP
+        break;
+    case 0x20: case 0x21: case 0x23: case 0x24: case 0x25: case 0x27: RDEF(rt); RUSE(rs); FL(OPF_LOAD); break;
+    case 0x28: case 0x29: case 0x2B: RUSE(rt); RUSE(rs); FL(OPF_STORE); break;
+    case 0x32:   // LWC2
+        if (rd <= 0x09) { VDEF(vt); RUSE(rs); FL(OPF_LOAD); }
+        else if (rd == 0x0B) { o->vDef |= 0xFFu << (vt & ~7u); RUSE(rs); FL(OPF_LOAD | OPF_VNOP); }   // LTV
+        break;
+    case 0x3A:   // SWC2
+        if (rd <= 0x0A) { VUSE(vt); RUSE(rs); FL(OPF_STORE); }
+        else if (rd == 0x0B) { o->vUse |= 0xFFu << (vt & ~7u); RUSE(rs); FL(OPF_STORE); }             // STV
+        break;
+    }
+#undef RUSE
+#undef RDEF
+#undef RDEFB
+#undef VUSE
+#undef VDEF
+#undef VCREF
+#undef FL
+}
+
+static const H64RspOp *rsp_op(H64System *sys, u32 pc, u32 word)
+{
+    H64RspDecode *c = &sys->rspDecode;
+    u32 k = (pc >> 2) & 1023;
+    if (c->word[k] != word)
+    {
+        c->word[k] = word;
+        rsp_decode(word, &c->info[k]);
+    }
+    return &c->info[k];
+}
+
+static int can_dual_issue(const H64RspOp *a, const H64RspOp *b)
+{
+    return ((a->flags ^ b->flags) & OPF_VECTOR)                  // one scalar and one vector instruction
+        && !(a->vDef & (b->vUse | b->vDef))                       // no vector register written by the first
+        && !(a->vcDef & (b->vcUse | b->vcDef))                    // nor vector control register
+        && !(((a->flags | ~b->flags) & OPF_VNOP) && (a->vDef & b->vfake));
+}
+
+struct RspGroup
+{
+    u32 rRead, rWrite, vRead, vWrite;
+    int load, store, branch;
+    u32 clocks;   // RCP cycles
+};
+
+static void pipe_stall(H64Rsp *rsp, RspGroup *g)
+{
+    rsp->stage[2] = rsp->stage[1];
+    rsp->stage[1] = rsp->stage[0];
+    memset(&rsp->stage[0], 0, sizeof(rsp->stage[0]));
+    g->clocks++;
+    rsp->stalls++;
+}
+
+static void pipe_issue(RspGroup *g, const H64RspOp *op)
+{
+    g->rRead |= op->rUse;
+    if (!(op->flags & OPF_BYPASS)) g->rWrite |= op->rDef & ~1u;
+    g->vRead |= op->vUse;
+    g->vWrite |= op->vDef;
+    if (op->flags & OPF_LOAD) g->load = 1;
+    if (op->flags & OPF_STORE) g->store = 1;
+    if (op->flags & OPF_BRANCH) g->branch = 1;
+}
+
+static void pipe_end(H64Rsp *rsp, RspGroup *g)
+{
+    if (g->rRead & rsp->stage[0].rWrite) { pipe_stall(rsp, g); pipe_stall(rsp, g); }
+    else if (g->rRead & rsp->stage[1].rWrite) pipe_stall(rsp, g);
+    if (g->vRead & rsp->stage[0].vWrite) { pipe_stall(rsp, g); pipe_stall(rsp, g); pipe_stall(rsp, g); }
+    else if (g->vRead & rsp->stage[1].vWrite) { pipe_stall(rsp, g); pipe_stall(rsp, g); }
+    else if (g->vRead & rsp->stage[2].vWrite) pipe_stall(rsp, g);
+    if (g->store)
+        while (rsp->stage[1].load) pipe_stall(rsp, g);
+    rsp->singleIssue = g->branch;
+    rsp->stage[2] = rsp->stage[1];
+    rsp->stage[1] = rsp->stage[0];
+    rsp->stage[0].rWrite = g->rWrite;
+    rsp->stage[0].vWrite = g->vWrite;
+    rsp->stage[0].load = (u32)g->load;
+    g->clocks++;
+}
+
+// After each instruction (ares instructionBranchEpilogue): the delay slot of
+// a taken branch costs a cycle, and a target that is not 8-byte aligned makes
+// the next group single-issue.
+static void pipe_branch_epilogue(H64Rsp *rsp, RspGroup *g)
+{
+    int taken = rsp->branchTaken;
+    if (rsp->delaySlot)
+    {
+        pipe_stall(rsp, g);
+        if (rsp->delayTarget & 4) rsp->singleIssue = 1;
+        rsp->delaySlot = 0;
+    }
+    if (taken)
+    {
+        rsp->delaySlot = 1;
+        rsp->delayTarget = rsp->nextPc;
+    }
+    rsp->branchTaken = 0;
+}
+
 // ---- Reset ----
 void h64_rsp_reset(H64System *sys)
 {
@@ -42,6 +219,12 @@ void h64_rsp_reset(H64System *sys)
     rsp->current.length = 0xFF8;
     rsp->pending.length = 0;
     h64_rsp_vu_init_tables(rsp);
+    {
+        H64RspOp nop;
+        u32 i;
+        rsp_decode(0, &nop);
+        for (i = 0; i < 1024; i++) { sys->rspDecode.word[i] = 0; sys->rspDecode.info[i] = nop; }
+    }
 }
 
 // ---- SP DMA (timed: one RCP cycle per 8 bytes, ares) ----
@@ -209,7 +392,7 @@ void h64_sp_pc_write(H64System *sys, u32 value)
 #define OP_SA(op) (((op) >> 6) & 31)
 #define IMM16(op) ((u32)(s32)(s16)(op))
 
-static void take_branch(H64Rsp *rsp, u32 target) { rsp->nextPc = target & 0xFFF; }
+static void take_branch(H64Rsp *rsp, u32 target) { rsp->nextPc = target & 0xFFF; rsp->branchTaken = 1; }
 
 static void do_break(H64System *sys)
 {
@@ -307,29 +490,63 @@ static void execute(H64System *sys, u32 op, u32 pc)
     r[0] = 0;
 }
 
-void h64_rsp_step(H64System *sys)
+static void exec_next(H64System *sys, u32 op)
 {
     H64Rsp *rsp = &sys->rsp;
     u32 pc = rsp->pc;
-    u32 op = h64_load_be32(imem(sys) + (pc & 0xFFC));
     rsp->pc = rsp->nextPc;
     rsp->nextPc = (rsp->nextPc + 4) & 0xFFF;
     execute(sys, op, pc);
     rsp->instructions++;
+}
+
+void h64_rsp_step(H64System *sys)
+{
+    H64Rsp *rsp = &sys->rsp;
+    exec_next(sys, h64_load_be32(imem(sys) + (rsp->pc & 0xFFC)));
+    rsp->branchTaken = 0;
     if (rsp->status & ST_SSTEP)
         rsp->status |= ST_HALT;
+}
+
+// One issue group, as ares's RSP::instruction() (interpreter path).
+u32 h64_rsp_issue(H64System *sys)
+{
+    H64Rsp *rsp = &sys->rsp;
+    RspGroup g;
+    u32 pc0 = rsp->pc & 0xFFC, w0 = h64_load_be32(imem(sys) + pc0);
+    const H64RspOp *op0 = rsp_op(sys, pc0, w0);
+    memset(&g, 0, sizeof(g));
+    pipe_issue(&g, op0);
+    exec_next(sys, w0);
+    if (!rsp->singleIssue && !(op0->flags & OPF_BRANCH) && !(rsp->status & (ST_SSTEP | ST_HALT)))
+    {
+        u32 pc1 = (pc0 + 4) & 0xFFC, w1 = h64_load_be32(imem(sys) + pc1);
+        const H64RspOp *op1 = rsp_op(sys, pc1, w1);
+        if (can_dual_issue(op0, op1))
+        {
+            rsp->dualIssues++;
+            pipe_branch_epilogue(rsp, &g);
+            pipe_issue(&g, op1);
+            exec_next(sys, w1);
+        }
+    }
+    pipe_end(rsp, &g);
+    pipe_branch_epilogue(rsp, &g);
+    if (rsp->status & ST_SSTEP)
+        rsp->status |= ST_HALT;
+    return g.clocks;
 }
 
 void h64_rsp_advance(H64System *sys, u32 cpuCycles)
 {
     H64Rsp *rsp = &sys->rsp;
     if ((rsp->status & ST_HALT) || rsp->hleBusy) return;
-    // 2 RCP cycles per 3 CPU cycles.
-    rsp->cycleFrac += cpuCycles * 2;
+    // 2 RCP cycles per 3 CPU cycles; a group of n RCP cycles costs 3n.
+    rsp->cycleFrac += (s32)(cpuCycles * 2);
     while (rsp->cycleFrac >= 3)
     {
-        rsp->cycleFrac -= 3;
-        h64_rsp_step(sys);
+        rsp->cycleFrac -= 3 * (s32)h64_rsp_issue(sys);
         if (rsp->status & ST_HALT)
         {
             rsp->cycleFrac = 0;

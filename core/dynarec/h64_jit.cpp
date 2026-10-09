@@ -19,6 +19,7 @@ void h64_jit_reset(H64System *sys)
     if (!j) return;
     memset(j->hash, 0, sizeof(j->hash));
     memset(j->pageHead, 0, sizeof(j->pageHead));
+    memset(j->fetch, 0xFF, sizeof(j->fetch));
     memset(j->codeMap, 0, (H64_RDRAM_SIZE >> 6) * sizeof(u16));
     j->blockCount = 0;
     j->linkCount = 0;
@@ -202,8 +203,25 @@ void h64_jit_run_one(H64System *sys)
     // KSEG0/KSEG1 (where games run) translate without the TLB.
     if (cpu->pc == (u64)(s64)(s32)pc32 && pc32 >= 0x80000000u && pc32 < 0xC0000000u)
         paddr = pc32 & 0x1FFFFFFFu;
-    else if (cpu->pc != (u64)(s64)(s32)pc32 || h64_cpu_translate_debug(cpu, cpu->pc, &paddr) == 0)
+    else if (cpu->pc != (u64)(s64)(s32)pc32)
         paddr = 0xFFFFFFFFu;
+    else
+    {
+        // TLB-mapped: a small cache of page translations (h64_cpu_translate_debug
+        // copied the whole H64Cpu at every block: Perfect Dark ran at 8 MIPS).
+        u32 key = (pc32 >> 12) | (((u32)cpu->cop0[CP0_STATUS] & 0x1E) << 19);
+        u32 k = (pc32 >> 12) & 255;
+        if (j->fetch[k].key == key && j->fetch[k].gen == cpu->tlbGen)
+            paddr = j->fetch[k].ppage | (pc32 & 0xFFFu);
+        else if (h64_cpu_probe_fetch(cpu, pc32, &paddr))
+        {
+            j->fetch[k].key = key;
+            j->fetch[k].gen = cpu->tlbGen;
+            j->fetch[k].ppage = paddr & ~0xFFFu;
+        }
+        else
+            paddr = 0xFFFFFFFFu;
+    }
     if (cpu->branchPending || interrupt_pending(cpu) || (pc32 & 3) || paddr >= H64_RDRAM_SIZE)
     {
         h64_cpu_step(sys);

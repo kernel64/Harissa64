@@ -246,12 +246,92 @@ static void si_dma(H64System *sys, int toPif)
 }
 
 // ---- Register access ----
+// ---- RDRAM module registers (mupen64plus-core device/rdram/rdram.c and
+// device/rcp/ri/ri_controller.h, GPL v2+: studied and rewritten). A register
+// access reaches the module whose device ID matches the address bits that
+// its address-select swap field picks; bit 19 broadcasts writes.
+enum { RDRAM_CONFIG, RDRAM_DEVICE_ID, RDRAM_DELAY, RDRAM_MODE, RDRAM_REF_INTERVAL, RDRAM_REF_ROW,
+       RDRAM_RAS_INTERVAL, RDRAM_MIN_INTERVAL, RDRAM_ADDR_SELECT, RDRAM_DEVICE_MANUF, RDRAM_REGS };
+
+static int rdram_module(H64System *sys, u32 paddr)
+{
+    // RI address: for a register access Adr[19:11] and Adr[28:20] both come
+    // from address bits 10..18; for data, from bits 11..19 and 20..25.
+    u32 ri = (paddr >> 20) == 0x03F ? (paddr & 0x3FF) | (((paddr >> 10) & 0x1FF) << 11) | (((paddr >> 10) & 0x1FF) << 20)
+                                     : (paddr & 0x7FF) | (((paddr >> 11) & 0x1FF) << 11) | (((paddr >> 20) & 0x3F) << 20);
+    int m;
+    for (m = 0; m < H64_RDRAM_MODULES; m++)
+    {
+        u32 sel = sys->ri.rdram[m][RDRAM_ADDR_SELECT], id = sys->ri.rdram[m][RDRAM_DEVICE_ID];
+        u32 swap = ((sel >> 25) & 0x7F) | (((sel >> 15) & 1) << 7);
+        u32 field = ((swap & ((ri >> 11) & 0x1FF)) | (~swap & ((ri >> 20) & 0x1FF))) & 0xFFFF;
+        u32 want = ((id >> 26) & 0x3F) | (((id >> 23) & 1) << 6) | (((id >> 8) & 0xFF) << 7) | (((id >> 7) & 1) << 15);
+        if (field == want) return m;
+    }
+    return -1;   // no module there (memory sizing probes beyond the last one)
+}
+
+static u32 rdram_cc(u32 mode)
+{
+    return ((mode >> 6) & 1) | ((mode >> 13) & 2) | ((mode >> 20) & 4) | ((mode >> 4) & 8) | ((mode >> 11) & 16) | ((mode >> 18) & 32);
+}
+
+// The IPL3 sizes memory by calibrating each module's current: with the
+// current enabled and CC = 0, reads come back as 0 (mupen64plus
+// read_rdram_dram_corrupted); data where no module answers reads 0 too.
+int h64_rdram_read_lost(H64System *sys, u32 paddr)
+{
+    int m = rdram_module(sys, paddr);
+    u32 mode;
+    if (m < 0) return 1;
+    mode = sys->ri.rdram[m][RDRAM_MODE] ^ 0xC0C0C0C0u;
+    return (mode & 0x80000000u) && rdram_cc(mode) == 0;
+}
+
+static u32 rdram_reg_read(H64System *sys, u32 paddr)
+{
+    u32 reg = (paddr & 0x3FF) >> 2, v;
+    int m;
+    if (paddr & 0x80000u) return 0;   // broadcast reads: not supported
+    m = rdram_module(sys, paddr);
+    if (m < 0 || reg >= RDRAM_REGS) return 0;
+    v = sys->ri.rdram[m][reg];
+    if (reg == RDRAM_MODE) v ^= 0xC0C0C0C0u;   // some bits read inverted
+    return v;
+}
+
+static void rdram_reg_write(H64System *sys, u32 paddr, u32 value, u32 mask)
+{
+    u32 reg = (paddr & 0x3FF) >> 2;
+    int m;
+    if (reg >= RDRAM_REGS) return;
+    if (paddr & 0x80000u)
+    {
+        for (m = 0; m < H64_RDRAM_MODULES; m++)
+            sys->ri.rdram[m][reg] = (sys->ri.rdram[m][reg] & ~mask) | (value & mask);
+    }
+    else
+    {
+        m = rdram_module(sys, paddr);
+        if (m >= 0) sys->ri.rdram[m][reg] = (sys->ri.rdram[m][reg] & ~mask) | (value & mask);
+    }
+    if (reg == RDRAM_MODE)
+    {
+        sys->ri.corrupt = 0;
+        for (m = 0; m < H64_RDRAM_MODULES; m++)
+        {
+            u32 mode = sys->ri.rdram[m][RDRAM_MODE] ^ 0xC0C0C0C0u;
+            if ((mode & 0x80000000u) && rdram_cc(mode) == 0) sys->ri.corrupt = 1;
+        }
+    }
+}
+
 u32 h64_mmio_read(H64System *sys, u32 paddr)
 {
     u32 reg = (paddr & 0xFFFFF) >> 2;
     switch (paddr >> 20)
     {
-    case 0x03F: return 0;                                    // RDRAM registers: not modelled (HLE boot)
+    case 0x03F: { u32 v = rdram_reg_read(sys, paddr); H64_DEBUG("[rdreg] R %08X -> %08X", paddr, v); return v; }
     case 0x040:
         if (paddr == 0x04080000u) return h64_sp_pc_read(sys);
         if (paddr >= 0x04040000u && paddr < 0x04040020u) return h64_sp_read(sys, (paddr >> 2) & 7);
@@ -308,10 +388,9 @@ u32 h64_mmio_read(H64System *sys, u32 paddr)
 void h64_mmio_write(H64System *sys, u32 paddr, u32 value, u32 mask)
 {
     u32 reg = (paddr & 0xFFFFF) >> 2;
-    (void)mask;   // RCP registers take the full 32-bit bus value
-    switch (paddr >> 20)
+    switch (paddr >> 20)   // RCP registers take the full 32-bit bus value
     {
-    case 0x03F: return;
+    case 0x03F: rdram_reg_write(sys, paddr, value, mask); H64_DEBUG("[rdreg] W %08X <- %08X corrupt %u", paddr, value, sys->ri.corrupt); return;
     case 0x040:
         if (paddr == 0x04080000u) { h64_sp_pc_write(sys, value); return; }
         if (paddr >= 0x04040000u && paddr < 0x04040020u) h64_sp_write(sys, (paddr >> 2) & 7, value);
@@ -470,6 +549,17 @@ void h64_devices_reset(H64System *sys)
     memset(&sys->pi, 0, sizeof(sys->pi));
     memset(&sys->ri, 0, sizeof(sys->ri));
     memset(&sys->si, 0, sizeof(sys->si));
+    {
+        int m;
+        for (m = 0; m < H64_RDRAM_MODULES; m++)   // power-on values (mupen64plus poweron_rdram)
+        {
+            sys->ri.rdram[m][RDRAM_CONFIG] = 0xB5190010u;
+            sys->ri.rdram[m][RDRAM_DELAY] = 0x230B0223u;
+            sys->ri.rdram[m][RDRAM_MODE] = 0xC4C0C0C0u;
+            sys->ri.rdram[m][RDRAM_MIN_INTERVAL] = 0x0040C0E0u;
+            sys->ri.rdram[m][RDRAM_DEVICE_MANUF] = 0x00000500u;
+        }
+    }
     sys->mi.version = 0x02020102u;
     sys->vi.regs[VI_V_SYNC] = sys->tvType == 0 ? 625 : 525;
     sys->vi.regs[VI_V_INTR] = 0x3FF;

@@ -5,9 +5,11 @@
 // reciprocal unit), SP registers and SP DMA. Ported from ares (ISC licence,
 // ares/n64/rsp, commit a776c509, see THIRD_PARTY.md), scalar paths only.
 //
-// Timing: one instruction per RCP cycle (62.5 MHz, 2 RCP cycles every 3
-// CPU cycles), without the pipeline stall and dual-issue model of ares. A
-// running RSP advances in slices driven by the scheduler (H64_EV_RSP every
+// Timing: ares's pipeline model (ares/n64/rsp/rsp.cpp, rsp.hpp, decoder.cpp
+// at commit 652d6537): one issue group per RCP cycle (62.5 MHz, 2 RCP cycles
+// every 3 CPU cycles), a vector and a scalar instruction may issue together,
+// and a group stalls when it reads a register a recent load wrote, stores
+// right after a load, or sits in a taken branch's delay slot. A running RSP advances in slices driven by the scheduler (H64_EV_RSP every
 // H64_RSP_SLICE CPU cycles) and catches up to the exact cycle whenever the
 // CPU touches the RCP (h64_rsp_sync from the bus). Its effects on the CPU
 // therefore don't depend on how CPU instructions are grouped (interpreter
@@ -31,6 +33,22 @@ struct H64SpDma
     int toRdram;
 };
 
+// What an instruction reads and writes, for the pipeline model (ares OpInfo).
+struct H64RspOp
+{
+    u32 rUse, rDef;    // scalar registers (bit n = register n)
+    u32 vUse, vDef;    // vector registers
+    u32 vfake;         // "fake" vector uses (dual-issue conflicts only)
+    u16 flags;         // H64_RSPOP_*
+    u8 vcUse, vcDef;   // VCO, VCC, VCE
+};
+
+struct H64RspStage
+{
+    u32 rWrite, vWrite;
+    u32 load;
+};
+
 struct H64Rsp
 {
     // Scalar unit
@@ -51,7 +69,14 @@ struct H64Rsp
     H64SpDma pending, current;
     int dmaFull, dmaBusy;
 
-    u32 cycleFrac;             // CPU cycles not yet turned into RCP cycles (x2)
+    s32 cycleFrac;             // CPU cycles not yet turned into RCP cycles (x2; negative: cycles owed)
+    // Pipeline (ares): the last three issue groups, and what the next one may do
+    H64RspStage stage[3];
+    int singleIssue;           // the next group issues one instruction
+    int delaySlot;             // the next instruction is the delay slot of a taken branch
+    int branchTaken;           // set by the instruction being run (not state)
+    u32 delayTarget;
+    u64 stalls, dualIssues;    // statistics
     u64 syncedCycles;          // CPU cycle the RSP has run up to
     int inSync;                // the RSP is running (its own register accesses must not re-enter)
     u64 instructions;
@@ -62,6 +87,15 @@ struct H64Rsp
     u32 hleTasks;              // tasks run by the HLE (statistics)
 };
 
+// Decoded instructions, one per IMEM word (checked against the word; not
+// state). Kept at the end of H64System, away from the fields the dynarec
+// reaches with 16-bit displacements.
+struct H64RspDecode
+{
+    u32 word[1024];
+    H64RspOp info[1024];
+};
+
 void h64_rsp_reset(H64System *sys);
 // Runs the RSP for the RCP cycles matching `cpuCycles` CPU cycles (no-op while halted).
 void h64_rsp_advance(H64System *sys, u32 cpuCycles);
@@ -70,6 +104,8 @@ void h64_rsp_sync(H64System *sys);
 void h64_rsp_slice_event(H64System *sys);   // scheduler: H64_EV_RSP
 // One instruction (for tests).
 void h64_rsp_step(H64System *sys);
+// One issue group (one or two instructions); returns its length in RCP cycles.
+u32 h64_rsp_issue(H64System *sys);
 
 // SP registers at 0x04040000 (reg 0..7) and SP_PC at 0x04080000.
 u32 h64_sp_read(H64System *sys, u32 reg);

@@ -295,7 +295,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
     int stopOnNops = 0;
-    const char *fbPng = 0, *rawPng = 0;
+    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 traceFrames = 0, traceStep = 0;
     int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0;
@@ -318,6 +318,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--stop-on-nops")) stopOnNops = 1;
         else if (!strcmp(argv[i], "--fb-png") && i + 1 < argc) fbPng = argv[++i];
         else if (!strcmp(argv[i], "--raw-png") && i + 1 < argc) rawPng = argv[++i];
+        else if (!strcmp(argv[i], "--dump-ram") && i + 1 < argc) dumpRam = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
         else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) saveDir = argv[++i];
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) loadState = argv[++i];
@@ -455,6 +456,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         u32 n;
         u8 *st = read_file(loadState, &n);
         if (!st || h64_state_load(sys, st, n)) { fprintf(stderr, "cannot load the state %s\n", loadState); return 2; }
+        if (ref && h64_state_load(ref, st, n)) { fprintf(stderr, "cannot load the state into the reference system\n"); return 2; }   // --lockstep
         free(st);
     }
     if (traceFrames && traceStep >= 1000000000u)
@@ -601,6 +603,11 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     printf("[run] VI control %08X, width %u, x scale %08X, y scale %08X\n", sys->vi.regs[0], sys->vi.regs[2],
            sys->vi.regs[12], sys->vi.regs[13]);
     if (state) print_state(sys);
+    if (dumpRam)
+    {
+        FILE *f = fopen(dumpRam, "wb");   // RDRAM then SP DMEM/IMEM, at the end of the run
+        if (f) { fwrite(sys->rdram, 1, H64_RDRAM_SIZE, f); fwrite(sys->spMem, 1, 0x2000, f); fclose(f); }
+    }
     if (fbPng || rawPng)
     {
         static u8 rgb[1024 * 1024 * 3];

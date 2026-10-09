@@ -66,6 +66,7 @@ int h64_bus_read32(H64System *sys, u32 paddr, u32 *value)
     if (paddr < 0x03F00000u)
     {
         *value = paddr < H64_RDRAM_SIZE ? h64_load_be32(sys->rdram + paddr) : 0;
+        if (sys->ri.corrupt && h64_rdram_read_lost(sys, paddr)) *value = 0;
         return 0;
     }
     if (paddr < 0x04000000u) { *value = h64_mmio_read(sys, paddr); return 0; }
@@ -189,7 +190,7 @@ static int cart_sub_read(H64System *sys, u32 paddr, u32 *w)
 int h64_bus_read8(H64System *sys, u32 paddr, u8 *value)
 {
     u32 w;
-    if (paddr < H64_RDRAM_SIZE) { *value = sys->rdram[paddr]; return 0; }
+    if (paddr < H64_RDRAM_SIZE) { *value = sys->ri.corrupt && h64_rdram_read_lost(sys, paddr) ? 0 : sys->rdram[paddr]; return 0; }
     if (paddr >= 0x10000000u && paddr < 0x1FC00000u)
     {
         cart_sub_read(sys, paddr, &w);
@@ -204,7 +205,7 @@ int h64_bus_read8(H64System *sys, u32 paddr, u8 *value)
 int h64_bus_read16(H64System *sys, u32 paddr, u16 *value)
 {
     u32 w;
-    if (paddr < H64_RDRAM_SIZE) { *value = h64_load_be16(sys->rdram + paddr); return 0; }
+    if (paddr < H64_RDRAM_SIZE) { *value = sys->ri.corrupt && h64_rdram_read_lost(sys, paddr) ? 0 : h64_load_be16(sys->rdram + paddr); return 0; }
     if (paddr >= 0x10000000u && paddr < 0x1FC00000u)
     {
         cart_sub_read(sys, paddr, &w);
@@ -219,7 +220,7 @@ int h64_bus_read16(H64System *sys, u32 paddr, u16 *value)
 int h64_bus_read64(H64System *sys, u32 paddr, u64 *value)
 {
     u32 hi, lo;
-    if (paddr < H64_RDRAM_SIZE - 7) { *value = h64_load_be64(sys->rdram + paddr); return 0; }
+    if (paddr < H64_RDRAM_SIZE - 7) { *value = sys->ri.corrupt && h64_rdram_read_lost(sys, paddr) ? 0 : h64_load_be64(sys->rdram + paddr); return 0; }
     if (h64_bus_read32(sys, paddr, &hi) || h64_bus_read32(sys, paddr + 4, &lo)) return -1;
     *value = ((u64)hi << 32) | lo;
     return 0;

@@ -12,6 +12,7 @@
 #include <string.h>
 #include <vector>
 
+#include "../common/h64_crc32.h"
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
 #include "../rdp/h64_rdp.h"
@@ -20,6 +21,9 @@
 #include "../../render/api.h"
 
 enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2 };
+// Rare's modified microcodes, recognised by the CRC of their code (GLideN64's
+// table): F3D with other commands and vertex formats.
+enum { RARE_NONE = 0, RARE_GOLDEN, RARE_PD, RARE_DKR, RARE_JFG, RARE_CBFD };
 
 // Geometry mode bits, as decoded (the microcodes place them differently).
 enum
@@ -49,6 +53,7 @@ struct GfxUcode
     int type;
     int zex;     // F3DZEX (Zelda): G_BRANCH_W instead of G_BRANCH_Z
     int noNear;  // ".NoN": no near-plane clipping
+    int rare;    // RARE_*
 };
 
 struct GfxVtx
@@ -101,6 +106,16 @@ struct H64Gfx
     u32 texLevel, texTile, texOn;
     float fogMul, fogOff;
     u32 half1;
+    // Rare microcodes: DMA offsets, billboards, vertex colour table, counted display lists
+    u32 dmaMtx, dmaVtx, colorBase;
+    u32 texOffset, texShift, texCount;
+    u32 timgW0, timgW1;
+    int billboard, vertexi, dlCount;
+    // Conker's Bad Fur Day: point lights, a separate normal table, coordinate modifiers
+    float lightPos[10][3], lightCa[10];
+    float coordMod[16];
+    u32 normalBase;
+    int advLighting;
     u32 pc[GFX_PC_MAX];
     int pci, halt, abort;
     int fullSync;
@@ -262,6 +277,39 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->type = UC_NONE;
     u->zex = 0;
     u->noNear = 0;
+    u->rare = RARE_NONE;
+    {
+        // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
+        // RDRAM holds 32-bit words byte-reversed).
+        static const struct { u32 crc; int type, rare, noNear; const char *name; } known[] = {
+            { 0x302BCA09u, UC_F3D, RARE_GOLDEN, 0, "GoldenEye" },
+            { 0x1C4F7869u, UC_F3D, RARE_PD, 0, "Perfect Dark" },
+            { 0x6E6FC893u, UC_F3D, RARE_DKR, 0, "Diddy Kong Racing" },
+            { 0x8D91244Fu, UC_F3D, RARE_DKR, 0, "Diddy Kong Racing" },
+            { 0xBDE9D1FBu, UC_F3D, RARE_JFG, 0, "Jet Force Gemini, Mickey's Speedway" },
+            { 0x1B4ACE88u, UC_F3DEX2, RARE_CBFD, 1, "Conker's Bad Fur Day" },   // F3DEXBG.NoN
+        };
+        u8 code[4096];
+        u32 crc, k;
+        for (k = 0; k < 4096; k += 4)
+        {
+            u32 w = rd32(g, u->start + k);
+            code[k] = (u8)w;
+            code[k + 1] = (u8)(w >> 8);
+            code[k + 2] = (u8)(w >> 16);
+            code[k + 3] = (u8)(w >> 24);
+        }
+        crc = h64_crc32(0, code, sizeof(code));
+        for (k = 0; k < sizeof(known) / sizeof(known[0]); k++)
+            if (known[k].crc == crc)
+            {
+                u->type = known[k].type;
+                u->rare = known[k].rare;
+                u->noNear = known[k].noNear;
+                H64_INFO("[gfx] microcode at %06X: CRC %08X, %s's variant", u->start, crc, known[k].name);
+                return;
+            }
+    }
     if (n > 2048) n = 2048;
     for (i = 0; i < n; i++) data[i] = (char)rd8(g, u->dstart + i);
     data[n] = 0;
@@ -372,9 +420,74 @@ static void to_model_dir(const float m[4][4], const float d[3], float out[3])
     out[2] = z;
 }
 
-static void load_vertices(H64Gfx *g, u32 addr, u32 n, u32 v0)
+// Vertex formats: the standard 16-byte Vtx; Perfect Dark's 12-byte vertex with
+// a colour/normal index into a table (G_VTXCOLORBASE); Diddy Kong Racing's
+// 10-byte vertex (position and colour, no texture coordinates or normal).
+enum { VF_STD = 0, VF_PD, VF_DKR, VF_CBFD };
+
+// Conker's lighting (GLideN64 gSPLightVertexCBFD_basic/_advanced): the
+// vertex colour times ambient + point lights (distance falloff from the
+// light's position, given in clip space after the coordinate modifiers),
+// plus in the advanced mode the last light as a directional one. Normals come
+// from the G_MV_NORMALES table (x, y) and the vertex's flag (z); a negative
+// flag leaves the colour unlit.
+static void cbfd_light(H64Gfx *g, GfxVtx *v, u32 a, u32 index, u32 gm, float ldir[][3])
 {
-    u32 phys = seg_to_phys(g, addr), i;
+    s16 flag = rd16(g, a + 6);
+    int nl = g->numLights > 8 ? 8 : g->numLights, l;
+    float r, gg, b, p[3];
+    const float *cm = g->coordMod;
+    v->nx = (s8)rd8(g, g->normalBase + index * 2) / 128.0f;
+    v->ny = (s8)rd8(g, g->normalBase + index * 2 + 1) / 128.0f;
+    v->nz = (s8)(flag & 0xFF) / 128.0f;
+    v->r = rd8(g, a + 12);
+    v->g = rd8(g, a + 13);
+    v->b = rd8(g, a + 14);
+    if (flag < 0) return;
+    r = g->lightCol[nl][0] / 255.0f;
+    gg = g->lightCol[nl][1] / 255.0f;
+    b = g->lightCol[nl][2] / 255.0f;
+    p[0] = (v->x + cm[8]) * cm[12];
+    p[1] = (v->y + cm[9]) * cm[13];
+    p[2] = (v->z + cm[10]) * cm[14];
+    l = nl - 1;
+    if (g->advLighting && l >= 0)
+    {
+        float d = v->nx * ldir[l][0] + v->ny * ldir[l][1] + v->nz * ldir[l][2];
+        if (d > 1.0f) d = 1.0f;
+        if (d > 0)
+        {
+            r += g->lightCol[l][0] / 255.0f * d;
+            gg += g->lightCol[l][1] / 255.0f * d;
+            b += g->lightCol[l][2] / 255.0f * d;
+        }
+    }
+    for (l = nl - 2; l >= 0; l--)
+    {
+        float dx = p[0] - g->lightPos[l][0], dy = p[1] - g->lightPos[l][1], dz = p[2] - g->lightPos[l][2];
+        float len = 2.0f * (dx * dx + dy * dy + dz * dz) / 65536.0f;
+        float in = len > 0 ? g->lightCa[l] / len : 1.0f;
+        if (in > 1.0f) in = 1.0f;
+        if (g->advLighting && (g->geomRaw & 0x00400000u))   // G_POINT_LIGHTING: also facing the light
+        {
+            float d = v->nx * ldir[l][0] + v->ny * ldir[l][1] + v->nz * ldir[l][2];
+            in *= d > 1.0f ? 1.0f : d;
+        }
+        if (in > 0)
+        {
+            r += g->lightCol[l][0] / 255.0f * in;
+            gg += g->lightCol[l][1] / 255.0f * in;
+            b += g->lightCol[l][2] / 255.0f * in;
+        }
+    }
+    v->r *= r > 1.0f ? 1.0f : r;
+    v->g *= gg > 1.0f ? 1.0f : gg;
+    v->b *= b > 1.0f ? 1.0f : b;
+}
+
+static void load_vertices_fmt(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
+{
+    u32 i, stride = fmt == VF_PD ? 12 : fmt == VF_DKR ? 10 : 16;
     u32 gm = geom(g);
     float ldir[10][3], look[2][3];
     int l;
@@ -391,22 +504,39 @@ static void load_vertices(H64Gfx *g, u32 addr, u32 n, u32 v0)
     for (i = 0; i < n; i++)
     {
         GfxVtx *v = &g->vtx[v0 + i];
-        u32 a = phys + i * 16;
+        u32 a = phys + i * stride;
         float px = rd16(g, a), py = rd16(g, a + 2), pz = rd16(g, a + 4);
         const float (*m)[4] = g->combined;
-        float s = rd16(g, a + 8), t = rd16(g, a + 10);
+        float s = 0, t = 0;
+        u32 c = fmt == VF_PD ? g->colorBase + (h64_load_be16(g->sys->rdram + ((a + 6) & 0x7FFFFE)) & 0xFF) :
+                fmt == VF_DKR ? a + 6 : a + 12;   // colour, or normal with lighting
+        if (fmt != VF_DKR)
+        {
+            s = rd16(g, a + 8);
+            t = rd16(g, a + 10);
+        }
         v->x = px * m[0][0] + py * m[1][0] + pz * m[2][0] + m[3][0];
         v->y = px * m[0][1] + py * m[1][1] + pz * m[2][1] + m[3][1];
         v->z = px * m[0][2] + py * m[1][2] + pz * m[2][2] + m[3][2];
         v->w = px * m[0][3] + py * m[1][3] + pz * m[2][3] + m[3][3];
+        if (fmt == VF_DKR && g->billboard)
+        {
+            // Billboards: positions relative to vertex 0 (GLideN64 gSPBillboardVertex).
+            v->x += g->vtx[0].x;
+            v->y += g->vtx[0].y;
+            v->z += g->vtx[0].z;
+            v->w += g->vtx[0].w;
+        }
         v->xyOverride = v->zOverride = 0;
-        v->a = rd8(g, a + 15);
-        if (gm & GM_LIGHTING)
+        v->a = rd8(g, c + 3);
+        if ((gm & GM_LIGHTING) && fmt == VF_CBFD)
+            cbfd_light(g, v, a, v0 + i, gm, ldir);
+        else if ((gm & GM_LIGHTING) && fmt != VF_DKR)
         {
             float r, gg, b;
-            v->nx = (s8)rd8(g, a + 12) / 128.0f;
-            v->ny = (s8)rd8(g, a + 13) / 128.0f;
-            v->nz = (s8)rd8(g, a + 14) / 128.0f;
+            v->nx = (s8)rd8(g, c) / 128.0f;
+            v->ny = (s8)rd8(g, c + 1) / 128.0f;
+            v->nz = (s8)rd8(g, c + 2) / 128.0f;
             r = g->lightCol[g->numLights][0];
             gg = g->lightCol[g->numLights][1];
             b = g->lightCol[g->numLights][2];
@@ -423,31 +553,38 @@ static void load_vertices(H64Gfx *g, u32 addr, u32 n, u32 v0)
             v->r = r > 255.0f ? 255.0f : r;
             v->g = gg > 255.0f ? 255.0f : gg;
             v->b = b > 255.0f ? 255.0f : b;
+        }
+        if ((gm & GM_LIGHTING) && fmt != VF_DKR)
+        {
             if (gm & GM_TEXGEN)
             {
                 float x = look[0][0] * v->nx + look[0][1] * v->ny + look[0][2] * v->nz;
                 float y = look[1][0] * v->nx + look[1][1] * v->ny + look[1][2] * v->nz;
+                // GLideN64's formulas give texels (0..1024 before the
+                // G_TEXTURE scale); s and t here are in the vertex's s10.5
+                // units, hence x32 (MK64's and GoldenEye's shiny Nintendo
+                // logos sampled about one texel: dark).
                 if (gm & GM_TEXGEN_LINEAR)
                 {
                     if (x < -1.0f) x = -1.0f;
                     if (x > 1.0f) x = 1.0f;
                     if (y < -1.0f) y = -1.0f;
                     if (y > 1.0f) y = 1.0f;
-                    s = acosf(-x) * 325.94931f;
-                    t = acosf(-y) * 325.94931f;
+                    s = acosf(-x) * 325.94931f * 32.0f;
+                    t = acosf(-y) * 325.94931f * 32.0f;
                 }
                 else
                 {
-                    s = (x + 1.0f) * 512.0f;
-                    t = (y + 1.0f) * 512.0f;
+                    s = (x + 1.0f) * 512.0f * 32.0f;
+                    t = (y + 1.0f) * 512.0f * 32.0f;
                 }
             }
         }
         else
         {
-            v->r = rd8(g, a + 12);
-            v->g = rd8(g, a + 13);
-            v->b = rd8(g, a + 14);
+            v->r = rd8(g, c);
+            v->g = rd8(g, c + 1);
+            v->b = rd8(g, c + 2);
             v->nx = v->ny = v->nz = 0;
         }
         v->s = s * g->texScaleS;
@@ -464,6 +601,11 @@ static void load_vertices(H64Gfx *g, u32 addr, u32 n, u32 v0)
         if (v->y < -v->w) v->clip |= CL_NEGY;
         if (v->w < 0.01f) v->clip |= CL_W;
     }
+}
+
+static void load_vertices(H64Gfx *g, u32 addr, u32 n, u32 v0)
+{
+    load_vertices_fmt(g, seg_to_phys(g, addr), n, v0, VF_STD);
 }
 
 static void modify_vertex(H64Gfx *g, u32 n, u32 where, u32 val)
@@ -862,11 +1004,185 @@ static int load_ucode(H64Gfx *g, u32 start, u32 dstart, u32 dsize)
     return 1;
 }
 
+static void f3d_moveword(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 index = w0 & 0xFF, offset = (w0 >> 8) & 0xFFFF;
+    switch (index)
+    {
+    case 0x00: insert_matrix(g, offset, w1); break;
+    case 0x02:
+        g->numLights = w1 >= 0x80000020u ? (int)((w1 - 0x80000000u) >> 5) - 1 : 0;
+        if (g->numLights > 8) g->numLights = 8;
+        if (g->numLights < 0) g->numLights = 0;
+        break;
+    case 0x04: break;   // G_MW_CLIP
+    case 0x06: g->segments[(offset >> 2) & 0xF] = w1 & 0x00FFFFFF; break;
+    case 0x08:
+        g->fogMul = (float)(s16)(w1 >> 16);
+        g->fogOff = (float)(s16)w1;
+        break;
+    case 0x0A:
+        if ((offset & 0x1F) == 0) set_light_color(g, (int)(offset >> 5), w1);
+        break;
+    case 0x0C: modify_vertex(g, offset / 40, offset % 40, w1); break;
+    default: break;
+    }
+}
+
+// A triangle with its own texture coordinates (Diddy Kong Racing's DMA
+// triangles carry s, t per corner).
+static void triangle_st(H64Gfx *g, u32 i0, u32 i1, u32 i2, const float st[6])
+{
+    u32 idx[3];
+    float saved[3][2];
+    int k;
+    idx[0] = i0; idx[1] = i1; idx[2] = i2;
+    if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || i2 >= GFX_VTX_MAX) return;
+    for (k = 0; k < 3; k++) { saved[k][0] = g->vtx[idx[k]].s; saved[k][1] = g->vtx[idx[k]].t; }
+    for (k = 0; k < 3; k++) { g->vtx[idx[k]].s = st[k * 2]; g->vtx[idx[k]].t = st[k * 2 + 1]; }
+    triangle(g, i0, i1, i2);
+    for (k = 2; k >= 0; k--) { g->vtx[idx[k]].s = saved[k][0]; g->vtx[idx[k]].t = saved[k][1]; }
+}
+
+// Commands that differ in Rare's microcodes (GLideN64 F3DGOLDEN.cpp, F3DPD.cpp,
+// F3DDKR.cpp, gSP.cpp: studied and rewritten). Returns 0 for the commands
+// they share with F3D.
+static int run_rare(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 cmd = w0 >> 24;
+    int rare = g->uc->rare;
+    if (rare == RARE_GOLDEN || rare == RARE_PD)
+    {
+        if (cmd == 0xB1)   // G_TRIX: up to four triangles, 4-bit vertex indices
+        {
+            while (w1 != 0)
+            {
+                u32 a = w1 & 0xF, b = (w1 >> 4) & 0xF, c = w0 & 0xF;
+                w1 >>= 8;
+                w0 >>= 4;
+                triangle(g, a, b, c);
+            }
+            return 1;
+        }
+        if (rare == RARE_GOLDEN && cmd == 0xBD) { f3d_moveword(g, w0, w1); return 1; }
+        if (rare == RARE_PD && cmd == 0x04)
+        {
+            load_vertices_fmt(g, seg_to_phys(g, w1), ((w0 >> 20) & 0xF) + 1, (w0 >> 16) & 0xF, VF_PD);
+            return 1;
+        }
+        if (rare == RARE_PD && cmd == 0x07) { g->colorBase = seg_to_phys(g, w1); return 1; }   // G_VTXCOLORBASE
+        return 0;
+    }
+    // Diddy Kong Racing, Jet Force Gemini, Mickey's Speedway USA
+    switch (cmd)
+    {
+    case 0x01:   // G_DMA_MTX: one of four model-view slots, projection identity
+    {
+        float m[4][4];
+        u32 index = (w0 >> 16) & 0xF, multiply;
+        if ((w0 & 0xFFFF) != 64) return 1;
+        if (index == 0) { index = (w0 >> 22) & 3; multiply = 0; }   // DKR
+        else multiply = (w0 >> 23) & 1;                               // JFG
+        load_matrix(g, (g->dmaMtx + seg_to_phys(g, w1)) & 0x7FFFFF, m);
+        g->mvi = (int)index;
+        if (multiply) mat_mul(g->mv[index], m, g->mv[0]);
+        else memcpy(g->mv[index], m, sizeof(m));
+        mat_identity(g->proj);
+        g->combinedValid = 0;
+        return 1;
+    }
+    case 0x02:   // G_DMA_TEX_OFFSET: a table of texture address offsets
+        g->texOffset = seg_to_phys(g, w1);
+        g->texShift = 0;
+        g->texCount = 0;
+        return 1;
+    case 0x04:   // G_DMA_VTX
+    {
+        u32 n = (w0 >> 19) & 0x1F;
+        if (rare == RARE_DKR) n++;
+        if (w0 & 0x10000) { if (g->billboard) g->vertexi = 1; }
+        else g->vertexi = 0;
+        load_vertices_fmt(g, (g->dmaVtx + seg_to_phys(g, w1)) & 0x7FFFFF, n, (u32)g->vertexi + ((w0 >> 9) & 0x1F), VF_DKR);
+        g->vertexi += (int)n;
+        return 1;
+    }
+    case 0x05:   // G_DMA_TRI: 16-byte triangles with their own s, t
+    {
+        u32 n = ((w0 >> 20) & 0xF) + 1, a = seg_to_phys(g, w1), i;
+        g->texOn = (w0 >> 16) & 0xF;
+        for (i = 0; i < n; i++, a += 16)
+        {
+            u32 w = rd32(g, a);
+            float st[6];
+            int k;
+            g->geomRaw &= ~0x3000u;
+            if (!(w & 0x40000000u)) g->geomRaw |= g->vscale[0] > 0 ? 0x2000u : 0x1000u;   // cull back/front
+            for (k = 0; k < 3; k++)
+            {
+                st[k * 2] = rd16(g, a + 4 + k * 4) * g->texScaleS;
+                st[k * 2 + 1] = rd16(g, a + 6 + k * 4) * g->texScaleT;
+            }
+            triangle_st(g, (w >> 16) & 0xFF, (w >> 8) & 0xFF, w & 0xFF, st);
+        }
+        g->vertexi = 0;
+        return 1;
+    }
+    case 0x07:   // G_DMA_DL: the next `count` commands of another list
+        if (g->pci < GFX_PC_MAX - 1)
+        {
+            g->pc[++g->pci] = seg_to_phys(g, w1);
+            g->dlCount = (int)((w0 >> 16) & 0xFF) + 1;
+        }
+        return 1;
+    case 0xBF:   // G_DMA_OFFSETS
+        g->dmaMtx = w0 & 0xFFFFFF;
+        g->dmaVtx = w1 & 0xFFFFFF;
+        return 1;
+    case 0xBC:   // G_MOVEWORD: billboard flag, model-view slot
+        if ((w0 & 0xFF) == 0x02) { g->billboard = (int)(w1 & 1); return 1; }
+        if ((w0 & 0xFF) == 0x0A) { g->mvi = (int)((w1 >> 6) & 3); g->combinedValid = 0; return 1; }
+        return 0;
+    case 0xFD:   // SETTIMG: RGBA images move by the offset table's current entry
+        g->timgW0 = w0;
+        g->timgW1 = w1;
+        if (g->texOffset)
+        {
+            if (((w0 >> 21) & 7) == 0)
+            {
+                g->texShift = (u32)(u16)rd16(g, g->texOffset + g->texCount * 2);
+                rdp_passthrough(g, w0, seg_to_phys(g, w1) + g->texShift);
+                return 1;
+            }
+            g->texOffset = g->texShift = g->texCount = 0;
+        }
+        return 0;
+    case 0xF3:   // LOADBLOCK
+        if (g->texOffset)
+        {
+            u32 lrs = (w1 >> 12) & 0xFFF;
+            if (g->texShift % (((lrs >> 2) + 1) << 3))
+            {
+                rdp_passthrough(g, g->timgW0, seg_to_phys(g, g->timgW1));   // the unshifted image after all
+                g->texOffset = g->texShift = g->texCount = 0;
+            }
+            else
+                g->texCount++;
+        }
+        return 0;
+    case 0x03: case 0x06: case 0x00: case 0xB2: case 0xB3: case 0xB4: case 0xB5:
+    case 0xB6: case 0xB7: case 0xB8: case 0xB9: case 0xBA: case 0xBB: case 0xBE:
+        return 0;
+    default:
+        return cmd >= 0xC0 ? 0 : 1;   // F3D commands these microcodes do not have
+    }
+}
+
 // ---- F3D / F3DEX (the 0xB0..0xBF immediate commands share most encodings)
 static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
 {
     u32 cmd = w0 >> 24;
     int ex = g->uc->type == UC_F3DEX;
+    if (g->uc->rare && run_rare(g, w0, w1)) return;
     switch (cmd)
     {
     case 0x00: break;   // G_SPNOOP
@@ -933,31 +1249,7 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
     case 0xB9: set_othermode(g, 0, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;
     case 0xBA: set_othermode(g, 1, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;
     case 0xBB: set_texture(g, w1, (w0 >> 11) & 7, (w0 >> 8) & 7, w0 & 0xFF); break;
-    case 0xBC:          // G_MOVEWORD
-    {
-        u32 index = w0 & 0xFF, offset = (w0 >> 8) & 0xFFFF;
-        switch (index)
-        {
-        case 0x00: insert_matrix(g, offset, w1); break;
-        case 0x02:
-            g->numLights = w1 >= 0x80000020u ? (int)((w1 - 0x80000000u) >> 5) - 1 : 0;
-            if (g->numLights > 8) g->numLights = 8;
-            if (g->numLights < 0) g->numLights = 0;
-            break;
-        case 0x04: break;   // G_MW_CLIP
-        case 0x06: g->segments[(offset >> 2) & 0xF] = w1 & 0x00FFFFFF; break;
-        case 0x08:
-            g->fogMul = (float)(s16)(w1 >> 16);
-            g->fogOff = (float)(s16)w1;
-            break;
-        case 0x0A:
-            if ((offset & 0x1F) == 0) set_light_color(g, (int)(offset >> 5), w1);
-            break;
-        case 0x0C: modify_vertex(g, offset / 40, offset % 40, w1); break;
-        default: break;
-        }
-        break;
-    }
+    case 0xBC: f3d_moveword(g, w0, w1); break;   // G_MOVEWORD
     case 0xBD: if (w1 == 0) pop_matrix(g, 1); break;   // G_POPMTX (modelview)
     case 0xBE:          // G_CULLDL
         if (ex) { if (cull_vertices(g, (w0 & 0xFFFF) >> 1, (w1 & 0xFFFF) >> 1)) end_dl(g); }
@@ -981,10 +1273,85 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
     }
 }
 
+// Conker's Bad Fur Day (GLideN64 F3DEX2CBFD.cpp and gSP.cpp: studied and
+// rewritten). Returns 0 for the commands it shares with F3DEX2.
+static int run_cbfd(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 cmd = w0 >> 24;
+    if (cmd >= 0x10 && cmd <= 0x1F)   // four triangles, 5-bit vertex indices
+    {
+        triangle(g, (w0 >> 23) & 31, (w0 >> 18) & 31, (((w0 >> 15) & 7) << 2) | (w1 >> 30));
+        triangle(g, (w0 >> 10) & 31, (w0 >> 5) & 31, w0 & 31);
+        triangle(g, (w1 >> 25) & 31, (w1 >> 20) & 31, (w1 >> 15) & 31);
+        triangle(g, (w1 >> 10) & 31, (w1 >> 5) & 31, w1 & 31);
+        return 1;
+    }
+    switch (cmd)
+    {
+    case 0x01:   // G_VTX: the same encoding, Conker's vertex
+    {
+        u32 n = (w0 >> 12) & 0xFF;
+        load_vertices_fmt(g, seg_to_phys(g, w1), n, ((w0 >> 1) & 0x7F) - n, VF_CBFD);
+        return 1;
+    }
+    case 0xDD: g->advLighting = 1; return 1;   // G_LOAD_UCODE: switches to the advanced lighting
+    case 0xDC:   // G_MOVEMEM
+        switch (w0 & 0xFF)
+        {
+        case 8: set_viewport(g, w1); break;
+        case 10:   // lights are 48 bytes; the first two are the lookats
+        {
+            u32 n = ((w0 >> 5) & 0x3FFF) / 48;
+            if (n < 2) set_lookat(g, w1, (int)n);
+            else if (n - 2 < 10)
+            {
+                u32 a = seg_to_phys(g, w1);
+                n -= 2;
+                set_light(g, w1, (int)n);
+                g->lightPos[n][0] = rd16(g, a + 32);
+                g->lightPos[n][1] = rd16(g, a + 34);
+                g->lightPos[n][2] = rd16(g, a + 36);
+                g->lightCa[n] = rd8(g, a + 12) / 16.0f;
+            }
+            break;
+        }
+        case 14: g->normalBase = seg_to_phys(g, w1); break;   // G_MV_NORMALES
+        default: break;
+        }
+        return 1;
+    case 0xDB:   // G_MOVEWORD
+        switch ((w0 >> 16) & 0xFF)
+        {
+        case 0x02: g->numLights = (int)(w1 / 48) > 8 ? 8 : (int)(w1 / 48); return 1;
+        case 0x06: case 0x08: return 0;   // segment, fog: as F3DEX2
+        case 0x10:   // G_MW_COORD_MOD
+            if (!(w0 & 8))
+            {
+                u32 idx = (w0 >> 1) & 3, pos = w0 & 0x30;
+                float *cm = g->coordMod;
+                if (pos == 0) { cm[idx] = (s16)(w1 >> 16); cm[1 + idx] = (s16)w1; }
+                else if (pos == 0x10)
+                {
+                    cm[4 + idx] = (w1 >> 16) / 65536.0f;
+                    cm[5 + idx] = (w1 & 0xFFFF) / 65536.0f;
+                    cm[12 + idx] = cm[idx] + cm[4 + idx];
+                    cm[13 + idx] = cm[1 + idx] + cm[5 + idx];
+                }
+                else if (pos == 0x20) { cm[8 + idx] = (s16)(w1 >> 16); cm[9 + idx] = (s16)w1; }
+            }
+            return 1;
+        default: return 1;
+        }
+    default:
+        return 0;
+    }
+}
+
 // ---- F3DEX2 / F3DZEX
 static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
 {
     u32 cmd = w0 >> 24;
+    if (g->uc->rare == RARE_CBFD && run_cbfd(g, w0, w1)) return;
     switch (cmd)
     {
     case 0x00: break;   // G_NOOP
@@ -1340,6 +1707,12 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     g->combinedValid = 0;
     g->forcedCombined = 0;
     g->geomRaw = 0;
+    g->dmaMtx = g->dmaVtx = g->colorBase = 0;
+    g->texOffset = g->texShift = g->texCount = 0;
+    g->billboard = g->vertexi = 0;
+    g->dlCount = -1;
+    g->normalBase = 0;
+    g->advLighting = 0;   // GLideN64 resets it with each display list
     memset(g->lightCol, 0, sizeof(g->lightCol));
     memset(g->lightDir, 0, sizeof(g->lightDir));
     g->numLights = 0;
@@ -1358,6 +1731,12 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
         if (g->uc->type == UC_F3DEX2) run_f3dex2(g, w0, w1);
         else if (g->uc->type == UC_S2DEX2) run_s2dex2(g, w0, w1);
         else run_f3d(g, w0, w1);
+        if (g->dlCount > 0 && --g->dlCount == 0)
+        {
+            // G_DMA_DL: its commands are done (GLideN64 RSP_CheckDLCounter).
+            g->dlCount = -1;
+            if (g->pci > 0) g->pci--;
+        }
         if (++g->commands > GFX_MAX_COMMANDS)
         {
             H64_WARN("[gfx] display list too long (loop?): task left to the LLE RSP");

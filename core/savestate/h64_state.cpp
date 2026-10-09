@@ -25,6 +25,7 @@ struct StateIO
     const u8 *in;
     u32 size, pos;
     int error;
+    u32 version;               // format version being read or written
     std::vector<u8> scratch;   // verify pass: blocks are decoded here
 };
 
@@ -230,7 +231,26 @@ static void visit_rsp(StateIO *io, H64Rsp *r)
     }
     io_int(io, &r->dmaFull);
     io_int(io, &r->dmaBusy);
-    io_u32(io, &r->cycleFrac);
+    io_s32(io, &r->cycleFrac);
+    if (io->version >= 2)
+    {
+        for (i = 0; i < 3; i++)
+        {
+            io_u32(io, &r->stage[i].rWrite);
+            io_u32(io, &r->stage[i].vWrite);
+            io_u32(io, &r->stage[i].load);
+        }
+        io_int(io, &r->singleIssue);
+        io_int(io, &r->delaySlot);
+        io_u32(io, &r->delayTarget);
+    }
+    else if (io->mode == IO_LOAD)
+    {
+        // Version 1 (no pipeline model): an empty pipeline.
+        memset(r->stage, 0, sizeof(r->stage));
+        r->singleIssue = 0;
+        r->delaySlot = 0;
+    }
     io_u64(io, &r->syncedCycles);
     io_u64(io, &r->instructions);
     io_u32(io, &r->tasks);
@@ -353,6 +373,11 @@ static void visit(StateIO *io, H64System *sys, u8 *hidden)
     io_u32(io, &sys->pi.latch);
     io_u64(io, &sys->pi.latchUntil);
     io_u32s(io, sys->ri.regs, 8);
+    if (io->version >= 2)
+    {
+        io_u32s(io, &sys->ri.rdram[0][0], H64_RDRAM_MODULES * 10);
+        io_u32(io, &sys->ri.corrupt);
+    }
     io_u32(io, &sys->si.dramAddr);
     io_u32(io, &sys->si.pifAddrRd);
     io_u32(io, &sys->si.pifAddrWr);
@@ -389,9 +414,10 @@ static void visit_header(StateIO *io, H64System *sys)
     io_u32(io, &crc1);
     io_u32(io, &crc2);
     io->mode = mode;
+    io->version = version;
     if (mode == IO_SAVE || io->error) return;
     if (memcmp(magic, "H64S", 4)) { H64_WARN("[state] not a save state"); io->error = 1; }
-    else if (version != H64_STATE_VERSION) { H64_WARN("[state] format version %u, this build reads %u", version, H64_STATE_VERSION); io->error = 1; }
+    else if (version < 1 || version > H64_STATE_VERSION) { H64_WARN("[state] format version %u, this build reads %u", version, H64_STATE_VERSION); io->error = 1; }
     else if (crc1 != sys->rom.crc1 || crc2 != sys->rom.crc2) { H64_WARN("[state] made with another ROM (CRC %08X %08X)", crc1, crc2); io->error = 1; }
 }
 

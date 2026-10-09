@@ -100,6 +100,11 @@ struct H64Jit
     int noNative;                   // debugging: every instruction through the interpreter
     int noFpu;                      // debugging: COP1 arithmetic through the interpreter
     int noRegCache;                 // debugging: no MIPS registers kept in host registers
+
+    // Translations of TLB-mapped instruction pages for the dispatcher
+    // (Perfect Dark, GoldenEye and Conker run code at 0x70000000/0x7F000000):
+    // valid while cpu.tlbGen is unchanged; key = page | mode bits.
+    struct { u32 key, ppage, gen; } fetch[256];
 };
 
 // Takes executable memory (and its icache flush) from the platform.
