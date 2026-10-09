@@ -1292,8 +1292,9 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 H64_INFO("[cprof] ms/frame inside cpu: interpreter helper %.1f, scheduler events %.1f; waiting for the graphics worker %.1f%s",
                          pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          s_gfxQ.thread ? " (graphics and audio HLE run on workers, beside cpu)" : "");
-                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f, %u texels/frame) draw calls %.1f",
-                         xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.texelsDecoded / framesSincePerf, xs.tDraw * k);
+                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f, %u texels/frame, %u cache resets) draw calls %.1f",
+                         xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.texelsDecoded / framesSincePerf,
+                         xs.retires, xs.tDraw * k);
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;

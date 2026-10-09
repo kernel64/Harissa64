@@ -57,6 +57,8 @@ struct H64XenosStats
     // Time (sys->profClock ticks) in the software RDP state, texture lookups and
     // decoding, draw calls, and the RDP command handler as a whole.
     u64 tState, tTexture, tDraw, tRdp;
+    u64 tHash, tDecode;   // inside tTexture: cache keys (TMEM hashing), decoding and upload
+    u32 retires;          // texture cache emptied (full)
 };
 // Presents with these VI registers (a copy taken at the VI, for the graphics worker).
 void h64_xenos_present_vi(H64Renderer *r, const u32 *viRegs);

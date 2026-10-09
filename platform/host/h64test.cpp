@@ -198,6 +198,14 @@ static u8 *read_file(const char *path, u32 *size)
     return data;
 }
 
+// --async CYCLES: the Xbox's worker path (graphics tasks busy CYCLES, audio
+// 100000), with each job run at once on this thread.
+static u32 s_ticket;
+static u32 async_start(void *user, void (*job)(void *arg), void *arg) { (void)user; job(arg); return ++s_ticket; }
+static void async_wait(void *user) { (void)user; }
+static void async_wait_ticket(void *user, u32 ticket) { (void)user; (void)ticket; }
+static void async_audio_start(void *user, void (*job)(void *arg), void *arg) { (void)user; job(arg); }
+
 static void print_state(H64System *sys)
 {
     H64Cpu *c = &sys->cpu;
@@ -297,6 +305,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0, *dumpRam = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
+    u32 asyncCycles = 0;
     u32 traceFrames = 0, traceStep = 0;
     int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0;
     H64System *ref = 0;
@@ -363,6 +372,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hle")) { hleGfx = 1; hleAudio = 1; }
+        else if (!strcmp(argv[i], "--async") && i + 1 < argc) asyncCycles = (u32)atoi(argv[++i]);
         else { fprintf(stderr, "unknown option %s\n", argv[i]); return 2; }
     }
 
@@ -440,6 +450,16 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.hleAudio = hleAudio == 1;
     sys->options.hleAudioCheck = hleAudio == 2;
     sys->options.hleGfx = hleGfx;
+    if (asyncCycles)
+    {
+        sys->asyncStart = async_start;
+        sys->asyncWait = async_wait;
+        sys->asyncWaitTicket = async_wait_ticket;
+        sys->asyncGfxCycles = asyncCycles;
+        sys->asyncAudioStart = async_audio_start;
+        sys->asyncAudioWait = async_wait;
+        sys->asyncAudioCycles = 100000;
+    }
     if (nullRenderer)
     {
         s_nullRenderer.user = sys;

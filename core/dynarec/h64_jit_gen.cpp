@@ -37,6 +37,7 @@
 static_assert(offsetof(H64System, mi) + 16 < 32768, "sys->mi out of displacement range");
 static_assert(offsetof(H64System, jit) < 32768, "sys->jit out of displacement range");
 static_assert(offsetof(H64Jit, codeMap) < 32768, "jit->codeMap out of displacement range");
+static_assert(offsetof(H64Jit, indBody) < 32768, "jit->indBody out of displacement range");
 #define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 2048)
 
 // Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r27 branch taken, r26 jump target.
@@ -387,6 +388,15 @@ static void emit_cold_links(Gen *g, H64PpcCode *hot)
 static void branch_exit(Gen *g, int dynamicTarget, u64 target, u32 fallthrough)
 {
     u32 notTaken;
+    if (dynamicTarget && g->native && !g->sys->jit->noLink)
+    {
+        // cpu->pc holds the target: rtIndirect goes on into its block when
+        // the dispatcher has seen it (Dr. Mario's main loop: jalr/jr ra every
+        // ~30 instructions, each a dispatcher round trip).
+        if (g->cacheOn) rc_writeback(g, &g->rc);
+        ppc_branch_to(&g->c, g->sys->jit->rtIndirect, 0);
+        return;
+    }
     if (dynamicTarget || !g->native)
     {
         exit_block(g);
@@ -670,6 +680,50 @@ void h64_jit_emit_runtime(H64System *sys)
             ppc_cmpwi(c, 0, 6, 0);
             ppc_blr(c);
         }
+    }
+    // rtIndirect (branched to, not called): cpu->pc is a jr/jalr target.
+    // Like a linked exit: no event and not the run's end within the next
+    // block, then the block from the table if it is that pc's; else the exit.
+    {
+        H64PpcCode *c = &g.c;
+        u32 out[8], n = 0, k;
+        j->rtIndirect = c->buf + c->pos;
+        ppc_ld(c, 3, OFF_PC, JR_CPU);
+        ppc_extsw(c, 4, 3);
+        ppc_cmpd(c, 0, 4, 3);
+        out[n++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);            // bne: not a sign-extended 32-bit pc
+        ppc_andis_(c, 5, 3, 0xDF80);
+        ppc_xoris(c, 5, 5, 0x8000);
+        ppc_cmpwi(c, 0, 5, 0);
+        out[n++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);            // not KSEG0/1 RDRAM
+        ppc_andi_(c, 5, 3, 3);
+        out[n++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);            // misaligned
+        ppc_ld(c, 6, OFF_CYCLES, JR_CPU);
+        ppc_addi(c, 6, 6, (s32)(H64_JIT_MAX_INSNS * sys->cpu.cpi));
+        ppc_ld(c, 7, (s32)(offsetof(H64System, sched) + offsetof(H64Scheduler, next)), JR_SYS);
+        ppc_cmpld(c, 0, 6, 7);
+        out[n++] = ppc_bc_fwd(c, 12, 0, PPC_GT);           // bgt: an event comes first
+        load_ptr(&g, 8, (s32)offsetof(H64System, jit), JR_SYS);
+        ppc_ld(c, 7, (s32)offsetof(H64Jit, runEnd), 8);
+        ppc_cmpld(c, 0, 6, 7);
+        out[n++] = ppc_bc_fwd(c, 12, 0, PPC_GT);           // bgt: the end of the run
+        ppc_rlwinm(c, 5, 3, 0, 20, 29);               // (pc & 0xFFC): entry * 4
+        load_ptr(&g, 9, (s32)offsetof(H64Jit, indPc), 8);
+        ppc_lwzx(c, 10, 9, 5);
+        ppc_cmplw(c, 0, 10, 3);
+        out[n++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);            // not this pc's block
+        load_ptr(&g, 9, (s32)offsetof(H64Jit, indBody), 8);
+#if defined(H64_JIT_ABI_XBOX)
+        ppc_lwzx(c, 10, 9, 5);
+#else
+        ppc_rlwinm(c, 5, 3, 1, 19, 28);               // entry * 8
+        ppc_ldx(c, 10, 9, 5);
+#endif
+        ppc_std(c, 6, (s32)offsetof(H64Jit, blockEndCycles), 8);
+        ppc_mtctr(c, 10);
+        ppc_bctr(c);
+        for (k = 0; k < n; k++) ppc_patch_here(c, out[k]);
+        ppc_branch_to(c, j->rtExit, 0);
     }
 #if defined(H64_JIT_ABI_ELFV1)
     {

@@ -535,8 +535,18 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
             b->clampT = 1; b->mirrorT = b->wrapT = 0;
         }
     }
-    // Key: tile parameters, the TMEM rows it covers and the palette.
-    key = fnv64(key, (const u8 *)t, sizeof(*t));
+    // Key: what the decode depends on (not the tile's position: the same texels
+    // loaded for another place would be decoded again; GoldenEye's intro made
+    // ~300 small new textures a frame), the TMEM rows it covers and the palette.
+    {
+        u32 k[5];
+        k[0] = t->offset;
+        k[1] = t->stride;
+        k[2] = (u32)t->fmt | (u32)t->size << 8 | (u32)t->palette << 16;
+        k[3] = (u32)t->maskS | (u32)t->maskT << 8 | (u32)t->flags << 16;
+        k[4] = 0;
+        key = fnv64(key, (const u8 *)k, sizeof(k));
+    }
     key = fnv64(key, (const u8 *)&b->w, sizeof(b->w));
     key = fnv64(key, (const u8 *)&b->h, sizeof(b->h));
     key = fnv64(key, (const u8 *)&b->ox, sizeof(b->ox));
@@ -544,24 +554,33 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     i = (u32)(tlut | tlutType << 1);
     key = fnv64(key, (const u8 *)&i, sizeof(i));
     rowBytes = t->stride ? t->stride : 8;
-    rows = (b->ox || b->oy) ? 4096 / rowBytes : b->h + 1;   // a window can reach any TMEM line
-    if (rowBytes * rows > 4096) rows = 4096 / rowBytes;
     {
-        // The rows are contiguous in TMEM (wrapping at 4 KB): one or two ranges.
-        u32 off = t->offset & 0xFFF, n = rows * rowBytes, first = n;
-        if (off + first > 4096) first = 4096 - off;
-        key = mem_hash(key, st->tmem + off, first);
-        if (first < n) key = mem_hash(key, st->tmem, n - first);
-        if (t->size == 3 && t->fmt == 0)
+        // The TMEM rows the decode reads: [oy, oy + h] (+1: bilinear), or with
+        // a T mask the masked rows from 0. Hashing all of TMEM for every
+        // windowed rectangle cost GoldenEye ~30 ms per frame.
+        u32 firstRow = 0;
+        u64 h0 = h64_prof_now(x->sys);
+        if (t->maskT) rows = 1u << t->maskT;
+        else { firstRow = b->oy; rows = b->h + 1; }
+        if (rowBytes * rows > 4096) { rows = 4096 / rowBytes; firstRow = 0; }
         {
-            // 32-bit textures: the other half of each texel is 2 KB further.
-            for (y = 0; y < rows; y++)
+            // The rows are contiguous in TMEM (wrapping at 4 KB): one or two ranges.
+            u32 off = (t->offset + firstRow * rowBytes) & 0xFFF, n = rows * rowBytes, first = n;
+            if (off + first > 4096) first = 4096 - off;
+            key = mem_hash(key, st->tmem + off, first);
+            if (first < n) key = mem_hash(key, st->tmem, n - first);
+            if (t->size == 3 && t->fmt == 0)
             {
-                u32 o = (t->offset + y * rowBytes) & 0xFFF, m = rowBytes;
-                if (o + m > 4096) m = 4096 - o;
-                key = mem_hash(key, st->tmem + ((o | 0x800) & 0xFFF), m);
+                // 32-bit textures: the other half of each texel is 2 KB further.
+                for (y = firstRow; y < firstRow + rows; y++)
+                {
+                    u32 o = (t->offset + y * rowBytes) & 0xFFF, m = rowBytes;
+                    if (o + m > 4096) m = 4096 - o;
+                    key = mem_hash(key, st->tmem + ((o | 0x800) & 0xFFF), m);
+                }
             }
         }
+        x->stats.tHash += h64_prof_now(x->sys) - h0;
     }
     if (tlut)
     {
@@ -575,7 +594,11 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         return it->second.tex;
 
     if (x->textures.size() >= MAX_TEXTURES || x->textureBytes + b->w * b->h * 4 > MAX_TEXTURE_BYTES)
+    {
         retire_all_textures(x);
+        x->stats.retires++;
+    }
+    u64 d0 = h64_prof_now(x->sys);
     e.tex = NULL;
     e.w = b->w;
     e.h = b->h;
@@ -618,6 +641,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     }
     x->textures[key] = e;
     x->textureBytes += e.w * e.h * 4;
+    x->stats.tDecode += h64_prof_now(x->sys) - d0;
     x->stats.textureUploads++;
     x->stats.texelsDecoded += b->w * b->h;
     if (b->w * b->h >= 65536) x->stats.bigCount++;

@@ -54,6 +54,7 @@ struct H64JitLink
     u32 *patch;                     // the branch word in the source block
     u32 orig;                       // its unlinked value
     int next;                       // next link into the same target (-1: none)
+    int tlb;                        // the target is TLB-mapped: undone when its TLB entry changes
 };
 
 struct H64Jit
@@ -66,6 +67,10 @@ struct H64Jit
     u32 curPage;
     int curInvalidated;
     u16 *codeMap;                   // live blocks over each 64-byte RDRAM chunk (stores there take the slow path)
+    // Indirect jump targets (jr/jalr, read by rtIndirect): KSEG0/1 pc -> native
+    // block body, by pc bits 2..11; filled by the dispatcher, dropped with their block.
+    u32 *indPc;
+    u32 **indBody;
 
     u8 *mem;                        // executable code memory (from the platform)
     u32 memSize, memUsed;           // hot code grows from the start...
@@ -86,6 +91,8 @@ struct H64Jit
     u32 *rtFpCheck[2][2];           // [double][two operands]: f1 (and f2) normal, zero or infinite -> cr0.eq
     u32 *rtFpFinish[3];             // [result: none, single, double]: FPSCR and FCR31 after an operation -> cr0.eq
     u32 *rtSlow;                    // a slow path's interpreter call (see h64_jit_emit_runtime)
+    u32 *rtIndirect;                // a jr/jalr exit: straight into the target's block when known
+
 
     // Block linking: exits with a fixed target jump straight into the next
     // block's body once it has been compiled (see h64_jit_gen.cpp).
@@ -104,7 +111,13 @@ struct H64Jit
     // Translations of TLB-mapped instruction pages for the dispatcher
     // (Perfect Dark, GoldenEye and Conker run code at 0x70000000/0x7F000000):
     // valid while cpu.tlbGen is unchanged; key = page | mode bits.
-    struct { u32 key, ppage, gen; } fetch[256];
+    // valid while that TLB entry and the ASID are unchanged (entry -1: KSEG0/1).
+    struct { u32 key, ppage, gen, asid; int entry; } fetch[256];
+    u32 linkTlbGen;                 // cpu.tlbGen last seen by the dispatcher
+    u32 seenEntryGen[32], seenAsidGen;
+    // Links into TLB-mapped code: link index and the TLB entry of the target.
+    struct { u32 link; int entry; } tlbLinks[4096];
+    u32 tlbLinkCount;
 };
 
 // Takes executable memory (and its icache flush) from the platform.

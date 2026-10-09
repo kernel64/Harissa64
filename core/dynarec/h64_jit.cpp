@@ -20,6 +20,9 @@ void h64_jit_reset(H64System *sys)
     memset(j->hash, 0, sizeof(j->hash));
     memset(j->pageHead, 0, sizeof(j->pageHead));
     memset(j->fetch, 0xFF, sizeof(j->fetch));
+    j->tlbLinkCount = 0;
+    memset(j->indPc, 0, 1024 * sizeof(u32));
+    memset(j->indBody, 0, 1024 * sizeof(u32 *));
     memset(j->codeMap, 0, (H64_RDRAM_SIZE >> 6) * sizeof(u16));
     j->blockCount = 0;
     j->linkCount = 0;
@@ -46,7 +49,13 @@ int h64_jit_init(H64System *sys, void *execMem, u32 size, void (*flushIcache)(vo
     j->linkCap = 65536;
     j->links = (H64JitLink *)calloc(j->linkCap, sizeof(H64JitLink));
     j->codeMap = (u16 *)calloc(H64_RDRAM_SIZE >> 6, sizeof(u16));
-    if (!j->blocks || !j->links || !j->codeMap) { free(j->blocks); free(j->links); free(j->codeMap); free(j); return -1; }
+    j->indPc = (u32 *)calloc(1024, sizeof(u32));
+    j->indBody = (u32 **)calloc(1024, sizeof(u32 *));
+    if (!j->blocks || !j->links || !j->codeMap || !j->indPc || !j->indBody)
+    {
+        free(j->blocks); free(j->links); free(j->codeMap); free(j->indPc); free(j->indBody); free(j);
+        return -1;
+    }
     j->runEnd = ~0ull;
     // Linked exits read sys->sched.next and sys->jit with 16-bit displacements.
     if (offsetof(H64System, sched) + offsetof(H64Scheduler, next) > 32760 || offsetof(H64System, jit) > 32760 ||
@@ -67,6 +76,8 @@ void h64_jit_free(H64System *sys)
     free(sys->jit->blocks);
     free(sys->jit->links);
     free(sys->jit->codeMap);
+    free(sys->jit->indPc);
+    free(sys->jit->indBody);
     free(sys->jit);
     sys->jit = 0;
 }
@@ -90,6 +101,10 @@ static void unlink_block(H64Jit *j, H64JitBlock *b)
         i = l->next;
     }
     b->linkHead = -1;
+    {
+        u32 k = (b->vpc >> 2) & 1023;   // its indirect-jump entry
+        if (j->indBody[k] == b->body) { j->indBody[k] = 0; j->indPc[k] = 0; }
+    }
 }
 
 void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
@@ -151,7 +166,8 @@ static int interrupt_pending(const H64Cpu *cpu)
 int h64_jit_should_exit(H64System *sys)
 {
     H64Jit *j = sys->jit;
-    return j->curInvalidated || sys->sched.next < j->blockEndCycles || interrupt_pending(&sys->cpu) || sys->stop;
+    return j->curInvalidated || sys->sched.next < j->blockEndCycles || interrupt_pending(&sys->cpu) || sys->stop ||
+           sys->cpu.tlbGen != j->linkTlbGen;   // linked jumps into TLB-mapped code may be stale
 }
 
 static void process_events(H64System *sys)
@@ -170,7 +186,29 @@ static void process_events(H64System *sys)
 }
 
 // Links the exit the previous block left by to b (the block it leads to).
-static void link_exit(H64Jit *j, u32 *patch, H64JitBlock *b)
+// Undoes the links into TLB-mapped code that went through TLB entry `entry`
+// (-2: all of them, the ASID changed).
+static void unlink_tlb(H64Jit *j, int entry)
+{
+    u32 i, n = 0;
+    for (i = 0; i < j->tlbLinkCount; i++)
+    {
+        if (entry == -2 || j->tlbLinks[i].entry == entry)
+        {
+            H64JitLink *l = &j->links[j->tlbLinks[i].link];
+            if (*l->patch != l->orig)
+            {
+                *l->patch = l->orig;
+                if (j->flushIcache) j->flushIcache(l->patch, 4);
+            }
+        }
+        else
+            j->tlbLinks[n++] = j->tlbLinks[i];
+    }
+    j->tlbLinkCount = n;
+}
+
+static void link_exit(H64Jit *j, u32 *patch, H64JitBlock *b, int tlb)
 {
     H64JitLink *l;
     s32 off;
@@ -178,8 +216,16 @@ static void link_exit(H64Jit *j, u32 *patch, H64JitBlock *b)
     off = (s32)((u8 *)b->body - (u8 *)patch);
     if (off < -0x2000000 || off >= 0x2000000) return;
     l = &j->links[j->linkCount];
+    if (tlb >= 0 && j->tlbLinkCount >= sizeof(j->tlbLinks) / sizeof(j->tlbLinks[0])) return;
     l->patch = patch;
     l->orig = *patch;
+    l->tlb = tlb >= 0;
+    if (tlb >= 0)
+    {
+        j->tlbLinks[j->tlbLinkCount].link = j->linkCount;
+        j->tlbLinks[j->tlbLinkCount].entry = tlb;
+        j->tlbLinkCount++;
+    }
     l->next = b->linkHead;
     b->linkHead = (int)j->linkCount++;
     *patch = 0x48000000u | ((u32)off & 0x03FFFFFCu);
@@ -193,10 +239,26 @@ void h64_jit_run_one(H64System *sys)
     H64JitBlock *b;
     u32 pc32, paddr;
     u32 *lastExit = j->lastExit, lastTarget = j->lastExitTarget;
+    int tlbEntry = -1;   // the TLB entry pc32 goes through (-1: KSEG0/1)
     u64 flushes = j->stats.flushes;
 
     j->lastExit = 0;
     process_events(sys);
+    if (cpu->tlbGen != j->linkTlbGen)
+    {
+        // Only the links through the entries that changed (Conker refills
+        // its TLB all the time; undoing every link each time ran it at 1 FPS).
+        int e;
+        if (cpu->asidGen != j->seenAsidGen) { unlink_tlb(j, -2); j->seenAsidGen = cpu->asidGen; }
+        for (e = 0; e < 32; e++)
+            if (cpu->tlbEntryGen[e] != j->seenEntryGen[e])
+            {
+                unlink_tlb(j, e);
+                j->seenEntryGen[e] = cpu->tlbEntryGen[e];
+            }
+        j->linkTlbGen = cpu->tlbGen;
+        lastExit = 0;
+    }
     pc32 = (u32)cpu->pc;
     // Cases the recompiled code doesn't start in: delay slots, pending
     // interrupts, 64-bit addresses, misaligned pcs, code outside RDRAM.
@@ -211,13 +273,20 @@ void h64_jit_run_one(H64System *sys)
         // copied the whole H64Cpu at every block: Perfect Dark ran at 8 MIPS).
         u32 key = (pc32 >> 12) | (((u32)cpu->cop0[CP0_STATUS] & 0x1E) << 19);
         u32 k = (pc32 >> 12) & 255;
-        if (j->fetch[k].key == key && j->fetch[k].gen == cpu->tlbGen)
+        int e = j->fetch[k].entry;
+        if (j->fetch[k].key == key && e >= 0 && j->fetch[k].gen == cpu->tlbEntryGen[e] && j->fetch[k].asid == cpu->asidGen)
+        {
             paddr = j->fetch[k].ppage | (pc32 & 0xFFFu);
-        else if (h64_cpu_probe_fetch(cpu, pc32, &paddr))
+            tlbEntry = e;
+        }
+        else if (h64_cpu_probe_fetch(cpu, pc32, &paddr, &e))
         {
             j->fetch[k].key = key;
-            j->fetch[k].gen = cpu->tlbGen;
+            j->fetch[k].entry = e;
+            j->fetch[k].gen = e >= 0 ? cpu->tlbEntryGen[e] : 0;
+            j->fetch[k].asid = cpu->asidGen;
             j->fetch[k].ppage = paddr & ~0xFFFu;
+            tlbEntry = e;
         }
         else
             paddr = 0xFFFFFFFFu;
@@ -251,11 +320,18 @@ void h64_jit_run_one(H64System *sys)
         return;
     }
     // The previous block left by an unlinked exit to this pc: link it, so
-    // that next time it jumps here directly. Only fixed mappings (KSEG0/1)
-    // and native blocks; idle loops stay with the dispatcher (skipping).
-    if (lastExit && lastTarget == pc32 && flushes == j->stats.flushes && !j->noLink && b->kernel && b->valid &&
-        !b->idle && pc32 >= 0x80000000u && pc32 < 0xC0000000u)
-        link_exit(j, lastExit, b);
+    // that next time it jumps here directly. Native blocks only; idle loops
+    // stay with the dispatcher (skipping). Links into TLB-mapped code
+    // (Perfect Dark, GoldenEye, Conker) are undone whenever the TLB changes.
+    if (lastExit && lastTarget == pc32 && flushes == j->stats.flushes && !j->noLink && b->kernel && b->valid && !b->idle)
+        link_exit(j, lastExit, b, (pc32 >= 0x80000000u && pc32 < 0xC0000000u) ? -1 : tlbEntry);
+    // Known to rtIndirect: native KSEG0/1 blocks that are not idle loops.
+    if (b->kernel && b->valid && !b->idle && !j->noLink && pc32 >= 0x80000000u && pc32 < 0xC0000000u && b->body)
+    {
+        u32 k = (pc32 >> 2) & 1023;
+        j->indPc[k] = pc32;
+        j->indBody[k] = b->body;
+    }
     j->blockEndCycles = cpu->cycles + (u64)b->insns * cpu->cpi;
     j->curPage = b->paddr >> 12;
     j->curInvalidated = 0;

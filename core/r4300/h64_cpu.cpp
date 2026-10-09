@@ -234,7 +234,7 @@ static int translate(H64Cpu *cpu, u64 vaddr, int access, u32 *paddr)
     return -1;
 }
 
-int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr)
+int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr, int *entry)
 {
     u64 vaddr = (u64)(s64)(s32)a;
     u8 asid = (u8)cpu->cop0[CP0_ENTRYHI];
@@ -243,6 +243,7 @@ int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr)
     {
         if (!kernel) return 0;
         *paddr = a & 0x1FFFFFFFu;
+        *entry = -1;
         return 1;
     }
     if (a >= 0xC0000000u && !kernel && !(cpu_supervisor_mode(cpu) && a < 0xE0000000u)) return 0;
@@ -258,6 +259,7 @@ int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr)
         lo = (vaddr & (offsetMask + 1)) ? e->entryLo1 : e->entryLo0;
         if (!((lo >> 1) & 1)) return 0;
         *paddr = (u32)((((u64)(lo >> 6) & 0xFFFFF) << 12) & ~offsetMask) | (u32)(vaddr & offsetMask);
+        *entry = i;
         return 1;
     }
     return 0;
@@ -408,7 +410,10 @@ static void cop0_write(H64System *sys, int r, u64 v)
         cpu->countOffset = (u32)v - (u32)(cpu->cycles >> 1);
         h64_cpu_reschedule_compare(sys);
         break;
-    case CP0_ENTRYHI: cpu->cop0[r] = v & 0xC00000FFFFFFE0FFull; cpu->tlbGen++; break;
+    case CP0_ENTRYHI:
+        if ((u8)v != (u8)cpu->cop0[r]) { cpu->asidGen++; cpu->tlbGen++; }
+        cpu->cop0[r] = v & 0xC00000FFFFFFE0FFull;
+        break;
     case CP0_COMPARE:
         cpu->cop0[r] = (u32)v;
         h64_cpu_set_ip(sys, 7, 0);
@@ -445,6 +450,7 @@ static void tlb_write(H64Cpu *cpu, int index)
 {
     H64TlbEntry *e = &cpu->tlb[index & 31];
     cpu->tlbGen++;
+    cpu->tlbEntryGen[index & 31]++;
     // The TLB keeps one bit per PageMask pair (the upper one) and a 20-bit PFN.
     e->pageMask = (u32)cpu->cop0[CP0_PAGEMASK] & 0x01554000u;
     e->pageMask |= e->pageMask >> 1;

@@ -107,7 +107,9 @@ struct H64Cpu
     u32 nopRun;                                    // consecutive NOPs (debugging: nopHook at 1000)
     void (*nopHook)(void *user);
     void *excUser;
-    u32 tlbGen;        // changes with every TLB write and EntryHi (ASID) write: cached translations expire
+    u32 tlbGen;          // changes with every TLB write and ASID change (the dynarec checks its caches then)
+    u32 tlbEntryGen[32]; // per entry: changes when that entry is written
+    u32 asidGen;         // changes when EntryHi's ASID changes
 };
 
 void h64_cpu_reset(H64Cpu *cpu);
@@ -123,7 +125,8 @@ void h64_cpu_reschedule_compare(H64System *sys);
 int h64_cpu_translate_debug(H64Cpu *cpu, u64 vaddr, u32 *paddr);
 // Instruction fetch at a 32-bit address in the current mode, without side
 // effects (no exception, no copy): 1 with *paddr, 0 when it would fault.
-int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr);
+// *entry: the TLB entry used, or -1 (KSEG0/1).
+int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr, int *entry);
 // One step with the instruction at pc already known (the recompiler, for an
 // instruction it read when compiling the block): the same as h64_cpu_step
 // without the fetch.
