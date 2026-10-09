@@ -29,6 +29,9 @@
 #define RT_HEIGHT 720
 #define EDRAM_N64_COLOR 720
 #define EDRAM_N64_DEPTH 1260
+#define EDRAM_READBACK 1800   // 640x480 colour (240 tiles): frames shrunk to the N64 size for copy-backs
+#define RB_WIDTH 640
+#define RB_HEIGHT 480
 #define FB_SLOTS 8
 #define MAX_TEXTURES 1500
 #define MAX_TEXTURE_BYTES (40u * 1024u * 1024u)
@@ -107,6 +110,8 @@ struct Xenos
     int curSlot;        // slot whose image is in the N64 render target (-1: none)
     int edramOwner;     // slot whose colour and depth the N64 EDRAM target holds (-1: none)
     std::vector<u32> copyBuf;
+    IDirect3DSurface9 *rbSurf;     // EDRAM target at EDRAM_READBACK
+    IDirect3DTexture9 *rbTex;      // its resolve, in CPU-cached memory (D3DUSAGE_CPU_CACHED_MEMORY)
     u32 copyBacks;
     u32 useCounter;
     int debug;
@@ -798,6 +803,47 @@ static void copy_back(Xenos *x, int slot)
     flush_batch(x);
     if (slot == x->curSlot && x->targetBound) resolve_current(x);
     if (!s->tex || !s->valid) return;
+    if (x->rbSurf && x->rbTex && w <= RB_WIDTH && h <= RB_HEIGHT)
+    {
+        // Shrink the frame to the N64 size on the GPU (one texel per N64 pixel,
+        // sampled at its centre), resolve that into CPU-cached memory and read
+        // it: 9 times less data than the whole 960x720 frame, and cached reads
+        // instead of write-combined ones (Paper Mario's file-select transition
+        // copied 7 frames back per frame: 6 FPS).
+        u32 wa = (w + 31) & ~31u, ha = (h + 7) & ~7u, i;
+        D3DRECT r;
+        RECT ur;
+        x->dev->SetRenderTarget(0, x->rbSurf);
+        x->dev->SetDepthStencilSurface(NULL);
+        x->targetBound = 0;     // the N64 target is bound again (its EDRAM content kept) at the next draw
+        x->stateDirty = 1;
+        draw_textured(x, s->tex, 1.0f, 1.0f, 0.0f, 0.0f, (float)w, (float)h, (float)RB_WIDTH, (float)RB_HEIGHT);
+        r.x1 = 0; r.y1 = 0; r.x2 = (LONG)wa; r.y2 = (LONG)ha;
+        x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, &r, x->rbTex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
+        x->dev->BlockUntilIdle();
+        if (FAILED(x->rbTex->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) return;
+        // The GPU wrote behind the CPU caches: drop any stale line first.
+        for (i = 0; i < RB_WIDTH * RB_HEIGHT * 4; i += 128) __dcbf(i, lr.pBits);
+        if (x->copyBuf.size() < RB_WIDTH * RB_HEIGHT) x->copyBuf.resize(RB_WIDTH * RB_HEIGHT);
+        ur.left = 0; ur.top = 0; ur.right = (LONG)w; ur.bottom = (LONG)h;
+        XGUntileSurface(&x->copyBuf[0], w * 4, NULL, lr.pBits, RB_WIDTH, RB_HEIGHT, &ur, 4);
+        x->rbTex->UnlockRect(0);
+        for (y = 0; y < h; y++)
+        {
+            const u32 *src = &x->copyBuf[y * w];
+            for (xx = 0; xx < w; xx++)
+            {
+                u32 c = src[xx], a = s->addr + (y * w + xx) * s->bytes;
+                if (a + s->bytes > H64_RDRAM_SIZE) break;
+                if (s->bytes == 4)
+                    h64_store_be32(ram + a, (c << 8) | 0xFF);
+                else
+                    h64_store_be16(ram + a, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
+            }
+        }
+    }
+    else
+    {
     x->dev->BlockUntilIdle();
     if (FAILED(s->tex->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) return;
     if (x->copyBuf.size() < RT_WIDTH * RT_HEIGHT) x->copyBuf.resize(RT_WIDTH * RT_HEIGHT);
@@ -815,6 +861,7 @@ static void copy_back(Xenos *x, int slot)
             else
                 h64_store_be16(ram + a, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
         }
+    }
     }
     if (x->deferNotify)
     {
@@ -1468,6 +1515,13 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     sp.Base = EDRAM_N64_DEPTH;
     sp.HierarchicalZBase = 0;
     dev->CreateDepthStencilSurface(RT_WIDTH, RT_HEIGHT, D3DFMT_D24S8, D3DMULTISAMPLE_NONE, 0, FALSE, &x->n64Depth, &sp);
+    sp.Base = EDRAM_READBACK;
+    sp.HierarchicalZBase = 0xFFFFFFFF;
+    x->rbSurf = NULL;
+    x->rbTex = NULL;
+    if (FAILED(dev->CreateRenderTarget(RB_WIDTH, RB_HEIGHT, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &x->rbSurf, &sp))) x->rbSurf = NULL;
+    if (FAILED(dev->CreateTexture(RB_WIDTH, RB_HEIGHT, 1, D3DUSAGE_CPU_CACHED_MEMORY, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &x->rbTex, NULL)))
+        x->rbTex = NULL;
     dev->CreateVertexDeclaration(decl, &x->decl);
     x->vs = compile_vs(dev, s_vsSource);
     x->psCopy = compile_ps(dev, s_psCopySource);
@@ -1543,6 +1597,8 @@ void h64_xenos_free(H64Renderer *r)
     if (x->decl) x->decl->Release();
     if (x->n64Color) x->n64Color->Release();
     if (x->n64Depth) x->n64Depth->Release();
+    if (x->rbSurf) x->rbSurf->Release();
+    if (x->rbTex) x->rbTex->Release();
     if (x->backBuffer) x->backBuffer->Release();
     x->sys->options.rdpStateOnly = 0;
     delete x;
