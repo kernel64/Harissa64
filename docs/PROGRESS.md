@@ -18,7 +18,9 @@ Order agreed with the user: (1) texture lookup speed, (2) graphics task ends bef
 
 2026-10-09: OoT's Kokiri paths fixed (the graphics HLE clamped Z per vertex with the .NoN microcode; Xenos now writes a clamped per-pixel depth for such triangles; checked against the LLE microcode with the user's save state). Second ROM launched from the browser crashed: the renderer released its shaders/textures while still bound to the device; fixed, 4 games chained on the console. User reports Mario Party 3 and Paper Mario now run (earlier hangs gone); Paper Mario's name-entry screen animated heavily: not slowness (60 FPS) but frame pacing; frames now paced on the clock, and a 100-120 ms stall every 2 s removed (OutputDebugString to XBDM for every log line); console: present intervals sd 11 -> 4 ms, max 130 -> 22 ms, 57.3 -> 60.0 FPS. The transition into it ran at 6 FPS: Paper Mario reads its frame back ~7 times a frame, and each copy-back read the whole 960x720 frame from write-combined memory; frames are now shrunk to the N64 size on the GPU and read from CPU-cached memory (6.7 -> 40 FPS over the transition period, gfx time 137 -> 4 ms per frame).
 
-Still open for later milestones: Donkey Kong 64 (LLE boot), S2DEX BG_1CYC and object commands, the LLE RSP on a worker, the OoT MQ intro stall on the host, controllers 2-4, zipped ROMs in the browser.
+Zipped ROMs (2026-10-09): the browser, `rom=` and h64test take `.zip` files (the first N64 ROM inside, found by its first word; stored or deflated, inflated with zlib straight from the file, CRC checked). Checked: unit test on every target; the 304 zips of V1's ROM folder all load in h64test; on the console SM64 (U) and OoT (Master Quest) start from their zips (OoT at 60 FPS).
+
+Still open for later milestones: Donkey Kong 64 (LLE boot), S2DEX BG_1CYC and object commands, the LLE RSP on a worker, the OoT MQ intro stall on the host, controllers 2-4.
 
 ## M4 — HLE and the Xenos renderer (complete, 2026-10-07)
 

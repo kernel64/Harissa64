@@ -5,7 +5,7 @@
 //   mode=play      (default) run a ROM: recompiler or interpreter CPU, RSP
 //                  task HLE (graphics and audio), Xenos renderer, XAudio2,
 //                  XInput. The ROM is rom=<path>, else game:\test.z64, else
-//                  the first .z64/.n64/.v64 in game:\roms\.
+//                  the first .z64/.n64/.v64/.zip in game:\roms\.
 //   mode=jittest   the M3 recompiler check (lockstep and timings, no video).
 //   cpu=dynarec    (default) or cpu=interp (Xenia cannot run generated code).
 //   hle=1          (default) or hle=0 for the LLE RSP (slow; no video yet:
@@ -233,12 +233,12 @@ static u8 *LoadFile(const char *path, u32 *size)
 
 static int FindRom(const Config *c, char *path, size_t len)
 {
-    static const char *patterns[] = { "game:\\roms\\*.z64", "game:\\roms\\*.n64", "game:\\roms\\*.v64" };
+    static const char *patterns[] = { "game:\\roms\\*.z64", "game:\\roms\\*.n64", "game:\\roms\\*.v64", "game:\\roms\\*.zip" };
     WIN32_FIND_DATAA fd;
     int i;
     if (c->rom[0] && GetFileAttributesA(c->rom) != 0xFFFFFFFF) { strncpy(path, c->rom, len); path[len - 1] = 0; return 1; }
     if (GetFileAttributesA("game:\\test.z64") != 0xFFFFFFFF) { strncpy(path, "game:\\test.z64", len); return 1; }
-    for (i = 0; i < 3; i++)
+    for (i = 0; i < 4; i++)
     {
         HANDLE f = FindFirstFileA(patterns[i], &fd);
         if (f == INVALID_HANDLE_VALUE) continue;
@@ -579,7 +579,7 @@ static void RunDynarecTest(const Config *c, char *report, size_t len)
         report[len - 1] = 0;
         return;
     }
-    data = LoadFile(rom, &size);
+    data = RomFileLoad(rom, &size);
     if (!data) { _snprintf(report, len, "Recompiler test: cannot read %s", rom); report[len - 1] = 0; return; }
     H64_INFO("[jit] test ROM %s (%u bytes)", rom, size);
 
@@ -965,7 +965,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         MessageScreen(dev, "No ROM found", "Put a ROM at game:\\test.z64 or in game:\\roms\\", D3DCOLOR_XRGB(240, 200, 60));
         return RG_DASHBOARD;
     }
-    data = LoadFile(rom, &size);
+    data = RomFileLoad(rom, &size);
     if (!data) { MessageScreen(dev, "Cannot read the ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys = MakeSystem(data, size, jit);
     free(data);

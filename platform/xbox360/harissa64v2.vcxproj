@@ -45,7 +45,7 @@
       <ExceptionHandling>Async</ExceptionHandling>
       <BufferSecurityCheck>false</BufferSecurityCheck>
       <RuntimeTypeInfo>false</RuntimeTypeInfo>
-      <PreprocessorDefinitions>_XBOX;H64_VERSION=$(H64Version);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>_XBOX;Z_SOLO;H64_VERSION=$(H64Version);%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(H64RepoRoot);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <CompileAs>CompileAsCpp</CompileAs>
       <!-- The reference FPU changes the rounding mode at run time (#pragma fenv_access). -->
@@ -94,6 +94,11 @@
     <ClCompile Include="..\..\core\**\*.cpp" />
     <ClCompile Include="..\..\render\xenos\*.cpp" />
     <ClCompile Include="..\..\tests\unit\*.cpp" />
+    <!-- zlib, inflate only (zipped ROMs), compiled as C. -->
+    <ClCompile Include="..\..\third_party\zlib\adler32.c;..\..\third_party\zlib\crc32.c;..\..\third_party\zlib\inffast.c;..\..\third_party\zlib\inflate.c;..\..\third_party\zlib\inftrees.c;..\..\third_party\zlib\zutil.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+    </ClCompile>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="xb_audio.cpp" />
     <ClCompile Include="xb_config.cpp" />

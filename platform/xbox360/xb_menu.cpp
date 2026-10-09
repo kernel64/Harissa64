@@ -11,6 +11,7 @@
 
 #include "../../core/cart/h64_rom.h"
 #include "../../core/cart/h64_save.h"
+#include "../../core/cart/h64_zip.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "xb_ui.h"
@@ -140,7 +141,7 @@ static void scan_roms(std::vector<RomEntry> *out)
         const char *dot = strrchr(fd.cFileName, '.');
         RomEntry e;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (!dot || (_stricmp(dot, ".z64") && _stricmp(dot, ".n64") && _stricmp(dot, ".v64"))) continue;
+        if (!dot || (_stricmp(dot, ".z64") && _stricmp(dot, ".n64") && _stricmp(dot, ".v64") && _stricmp(dot, ".zip"))) continue;
         e.file = std::string("game:\\roms\\") + fd.cFileName;
         e.shown = std::string(fd.cFileName, dot - fd.cFileName);
         if (e.shown.size() > 52) e.shown = e.shown.substr(0, 49) + "...";
@@ -150,19 +151,70 @@ static void scan_roms(std::vector<RomEntry> *out)
     std::sort(out->begin(), out->end(), rom_less);
 }
 
-// Reads the first 4 KB of a ROM file (any dump order) into *rom. Returns the
-// file size, or 0 when it is not an N64 ROM.
-static u32 read_header(const char *path, H64Rom *rom)
+// ---- ROM files (plain or zipped) ----
+static u32 handle_read(void *user, u32 offset, void *buf, u32 len)
+{
+    DWORD got = 0;
+    if (SetFilePointer((HANDLE)user, (LONG)offset, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) return 0;
+    if (!ReadFile((HANDLE)user, buf, len, &got, NULL)) return 0;
+    return got;
+}
+
+// Opens `path`; for a zip, finds the ROM inside (*isZip set). Returns the
+// handle (INVALID_HANDLE_VALUE on failure) and the ROM size in *size.
+static HANDLE rom_open(const char *path, H64ZipReader *r, H64ZipEntry *e, int *isZip, u32 *size)
 {
     HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    u8 magic[4];
+    *isZip = 0;
+    if (h == INVALID_HANDLE_VALUE) return h;
+    r->user = h;
+    r->size = GetFileSize(h, NULL);
+    r->read = handle_read;
+    *size = r->size;
+    if (handle_read(h, 0, magic, 4) == 4 && magic[0] == 'P' && magic[1] == 'K' && magic[2] == 3 && magic[3] == 4)
+    {
+        if (h64_zip_find_rom(r, e)) { H64_WARN("[rom] no N64 ROM in %s", path); CloseHandle(h); return INVALID_HANDLE_VALUE; }
+        *isZip = 1;
+        *size = e->size;
+    }
+    return h;
+}
+
+u8 *RomFileLoad(const char *path, u32 *size)
+{
+    H64ZipReader r;
+    H64ZipEntry e;
+    int zip, ok;
+    u32 len;
+    HANDLE h = rom_open(path, &r, &e, &zip, &len);
+    u8 *buf;
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    buf = (u8 *)malloc(len ? len : 1);
+    if (!buf) { CloseHandle(h); return NULL; }
+    ok = zip ? h64_zip_extract(&r, &e, buf, len) == 0 : handle_read(h, 0, buf, len) == len;
+    CloseHandle(h);
+    if (!ok) { H64_WARN("[rom] cannot read %s%s", path, zip ? " (bad zip entry)" : ""); free(buf); return NULL; }
+    if (zip) H64_INFO("[rom] %s: %s (%u bytes)", path, e.name, len);
+    *size = len;
+    return buf;
+}
+
+// Reads the first 4 KB of a ROM (any dump order, plain or zipped) into *rom.
+// Returns the ROM size, or 0 when it is not an N64 ROM.
+static u32 read_header(const char *path, H64Rom *rom)
+{
     static u8 head[0x1000];
-    DWORD got = 0, len;
+    H64ZipReader r;
+    H64ZipEntry e;
+    int zip, ok;
+    u32 len;
+    HANDLE h = rom_open(path, &r, &e, &zip, &len);
     memset(rom, 0, sizeof(*rom));
     if (h == INVALID_HANDLE_VALUE) return 0;
-    len = GetFileSize(h, NULL);
-    ReadFile(h, head, sizeof(head), &got, NULL);
+    ok = len >= sizeof(head) && (zip ? h64_zip_extract(&r, &e, head, sizeof(head)) == 0 : handle_read(h, 0, head, sizeof(head)) == sizeof(head));
     CloseHandle(h);
-    if (got < sizeof(head) || h64_rom_load(rom, head, got)) return 0;
+    if (!ok || h64_rom_load(rom, head, sizeof(head))) return 0;
     return len;
 }
 
@@ -265,7 +317,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         UiText(dev, 96, 50, 5, COL_EDGE, "HARISSA64 V2");
         UiText(dev, 96 + UiTextWidth(5, "HARISSA64 V2") + 24, 74, 2, COL_DIM, H64_VERSION_STRING);
         if (!n)
-            UiText(dev, 96, listY, 3, COL_TEXT, "No ROM found.\n\nCopy .z64, .n64 or .v64 files\ninto game:\\roms\\");
+            UiText(dev, 96, listY, 3, COL_TEXT, "No ROM found.\n\nCopy .z64, .n64, .v64 or .zip files\ninto game:\\roms\\");
         for (i = 0; i < rows && top + i < n; i++)
         {
             int y = listY + i * rowH;

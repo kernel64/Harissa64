@@ -17,6 +17,7 @@
 #include <string.h>
 
 #include "../../core/common/h64_types.h"
+#include "../../core/cart/h64_zip.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "../../core/system/h64_system.h"
@@ -366,7 +367,27 @@ static int run_rom(const char *path, int argc, char **argv, int first)
 
     file = read_file(path, &size);
     if (!file) { fprintf(stderr, "cannot read %s\n", path); return 2; }
-    sys = (H64System *)malloc(sizeof(H64System));
+    if (size >= 4 && file[0] == 'P' && file[1] == 'K' && file[2] == 3 && file[3] == 4)
+    {
+        // A zip: the first N64 ROM inside.
+        H64ZipMem zm;
+        H64ZipReader zr;
+        H64ZipEntry ze;
+        u8 *rom;
+        zm.data = file;
+        zm.size = size;
+        zr.user = &zm;
+        zr.size = size;
+        zr.read = h64_zip_mem_read;
+        if (h64_zip_find_rom(&zr, &ze)) { fprintf(stderr, "no N64 ROM in %s\n", path); return 2; }
+        rom = (u8 *)malloc(ze.size ? ze.size : 1);
+        if (!rom || h64_zip_extract(&zr, &ze, rom, ze.size)) { fprintf(stderr, "cannot extract %s from %s\n", ze.name, path); return 2; }
+        printf("[rom] %s: %s (%u bytes)\n", path, ze.name, ze.size);
+        free(file);
+        file = rom;
+        size = ze.size;
+    }
+    sys =(H64System *)malloc(sizeof(H64System));
     if (!sys || h64_system_init(sys, file, size, 0)) { fprintf(stderr, "not an N64 ROM: %s\n", path); return 2; }
     if (lockstep)
     {

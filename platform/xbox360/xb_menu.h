@@ -32,12 +32,16 @@ void SettingsBuild(UiMenu *m, const Config *c, int perGame);
 // Applies one input to *c and the menu; returns SET_*.
 int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down);
 
+// Reads a ROM file, or the first N64 ROM inside a .zip. Returns a malloc'd
+// buffer, or NULL.
+u8 *RomFileLoad(const char *path, u32 *size);
+
 // The game's save/profile folder name (h64_save_folder_name) from the ROM
 // file's header. Returns 0 when the file is not an N64 ROM.
 int RomFolderName(const char *path, char *out, size_t size);
 
 // ---- ROM browser ----
-// Lists game:\roms\ (.z64 .n64 .v64). Returns 1 with the chosen path, 0 when
+// Lists game:\roms\ (.z64 .n64 .v64 .zip). Returns 1 with the chosen path, 0 when
 // the user leaves to the dashboard. Y opens the settings for all games,
 // saved to `settingsPath` (also where the last selection is kept).
 int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char *path, size_t pathSize);
