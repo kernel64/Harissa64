@@ -116,6 +116,16 @@ struct H64Cpu
     // TLB entry it came from; cleared when that entry or the ASID changes.
     u32 jitPage[256];
     s8 jitPageEnt[256];
+    // The recompiler's TLB-mapped data accesses (not saved: a cache). Per
+    // virtual page (bits 12..19): the page's address | 1 when a load (dtlbR)
+    // or a store (dtlbW, the page dirty) there translated to RDRAM page
+    // dtlbPhys, from TLB entry dtlbEnt; filled by the interpreter's
+    // translations, cleared like jitPage. Perfect Dark keeps data in kuseg:
+    // ~4000 accesses a frame went through the interpreter.
+    u32 dtlbR[256];
+    u32 dtlbW[256];
+    u32 dtlbPhys[256];
+    s8 dtlbEnt[256];
 };
 
 // Virtual page tag (address bits 20..31) and physical page (RDRAM: 11 bits).

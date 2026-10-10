@@ -32,6 +32,8 @@ void h64_jit_reset(H64System *sys)
     j->lastExit = 0;
     j->staleBlock = 0;
     memset(sys->cpu.jitPage, 0, sizeof(sys->cpu.jitPage));
+    memset(sys->cpu.dtlbR, 0, sizeof(sys->cpu.dtlbR));
+    memset(sys->cpu.dtlbW, 0, sizeof(sys->cpu.dtlbW));
     j->memUsed = 0;
     // Slow paths take about 1.4 times the hot code (DK64: 48 hot and 69 cold
     // bytes per MIPS instruction; with half each the cold half filled first).

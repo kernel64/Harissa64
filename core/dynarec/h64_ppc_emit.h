@@ -86,6 +86,10 @@ static inline void ppc_rlwinm(H64PpcCode *c, u32 ra, u32 rs, u32 sh, u32 mb, u32
 {
     ppc_put(c, (21u << 26) | (rs << 21) | (ra << 16) | (sh << 11) | (mb << 6) | (me << 1));
 }
+static inline void ppc_rlwimi(H64PpcCode *c, u32 ra, u32 rs, u32 sh, u32 mb, u32 me)
+{
+    ppc_put(c, (20u << 26) | (rs << 21) | (ra << 16) | (sh << 11) | (mb << 6) | (me << 1));
+}
 static inline void ppc_rldicl(H64PpcCode *c, u32 ra, u32 rs, u32 sh, u32 mb) { ppc_put(c, ppc_md(rs, ra, sh, mb, 0)); }
 static inline void ppc_rldicr(H64PpcCode *c, u32 ra, u32 rs, u32 sh, u32 me) { ppc_put(c, ppc_md(rs, ra, sh, me, 1)); }
 static inline void ppc_rldimi(H64PpcCode *c, u32 ra, u32 rs, u32 sh, u32 mb) { ppc_put(c, ppc_md(rs, ra, sh, mb, 3)); }

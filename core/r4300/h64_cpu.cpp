@@ -187,6 +187,16 @@ static int tlb_translate(H64Cpu *cpu, u64 vaddr, int access, int addr64, u32 *pa
                 return -1;
             }
             *paddr = (u32)((((u64)(lo >> 6) & 0xFFFFF) << 12) & ~offsetMask) | (u32)(vaddr & offsetMask);
+            if (access != ACC_FETCH && vaddr == SEXT32(vaddr) && *paddr < 0x800000u)
+            {
+                // For the recompiler's loads and stores (see H64Cpu.dtlbR).
+                u32 k = ((u32)vaddr >> 12) & 255, tag = ((u32)vaddr & ~0xFFFu) | 1u;
+                if (cpu->dtlbR[k] != tag || cpu->dtlbEnt[k] != i) cpu->dtlbW[k] = 0;
+                cpu->dtlbR[k] = tag;
+                if (dirty) cpu->dtlbW[k] = tag;
+                cpu->dtlbPhys[k] = *paddr & ~0xFFFu;
+                cpu->dtlbEnt[k] = (s8)i;
+            }
             return 0;
         }
     }
@@ -437,6 +447,8 @@ static void cop0_write(H64System *sys, int r, u64 v)
             cpu->asidGen++;
             cpu->tlbGen++;
             memset(cpu->jitPage, 0, sizeof(cpu->jitPage));
+            memset(cpu->dtlbR, 0, sizeof(cpu->dtlbR));
+            memset(cpu->dtlbW, 0, sizeof(cpu->dtlbW));
         }
         cpu->cop0[r] = v & 0xC00000FFFFFFE0FFull;
         break;
@@ -497,7 +509,10 @@ static void tlb_write(H64Cpu *cpu, int index)
         cpu->tlbGen++;
         cpu->tlbEntryGen[index & 31]++;
         for (k = 0; k < 256; k++)
+        {
             if (cpu->jitPageEnt[k] == (index & 31)) cpu->jitPage[k] = 0;
+            if (cpu->dtlbEnt[k] == (index & 31)) cpu->dtlbR[k] = cpu->dtlbW[k] = 0;
+        }
     }
 }
 

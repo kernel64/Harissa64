@@ -43,6 +43,7 @@ static_assert(offsetof(H64System, jit) < 32768, "sys->jit out of displacement ra
 static_assert(offsetof(H64Jit, codeMap) < 32768, "jit->codeMap out of displacement range");
 static_assert(offsetof(H64Jit, staleBlock) < 32768, "jit->staleBlock out of displacement range");
 static_assert(offsetof(H64Cpu, jitPage) + 1024 < 32768, "cpu->jitPage out of displacement range");
+static_assert(offsetof(H64Cpu, dtlbPhys) + 1024 < 32768, "cpu->dtlb* out of displacement range");
 static_assert(offsetof(H64Jit, indBody) < 32768, "jit->indBody out of displacement range");
 #define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 2048)
 // The cold part: each slow path writes back and reloads cached registers.
@@ -792,7 +793,9 @@ static void emit_epilogue(Gen *g)
 //     take the fast path: a sign-extended 32-bit KSEG0/KSEG1 address inside
 //     the 8 MB of RDRAM ((addr & 0xDF800000) == 0x80000000), aligned, and for
 //     stores no block over the 64-byte chunk (codeMap) and no MI repeat mode.
-//     Clobbers r5, r6, cr0 and LR (r7 holds Status.FR for COP1 accesses).
+//     TLB-mapped addresses take the fast path too when the page is in
+//     H64Cpu.dtlbR/dtlbW (filled by the interpreter's translations).
+//     Clobbers r0, r5, r6, cr0 and LR (r7 holds Status.FR for COP1 accesses).
 void h64_jit_emit_runtime(H64System *sys)
 {
     H64Jit *j = sys->jit;
@@ -816,6 +819,7 @@ void h64_jit_emit_runtime(H64System *sys)
         for (sz = 0; sz < 4; sz++)
         {
             H64PpcCode *c = &g.c;
+            u32 mapped, phys;
             j->rtCheck[st][sz] = c->buf + c->pos;
             ppc_extsw(c, 4, 3);
             ppc_cmpd(c, 0, 4, 3);
@@ -823,13 +827,32 @@ void h64_jit_emit_runtime(H64System *sys)
             ppc_andis_(c, 5, 3, 0xDF80);
             ppc_xoris(c, 5, 5, 0x8000);
             ppc_cmpwi(c, 0, 5, 0);
-            ppc_put(c, 0x4C820020u);              // bnelr: not KSEG0/1, or beyond 8 MB
+            mapped = ppc_bc_fwd(c, 4, 0, PPC_EQ);   // not KSEG0/1, or beyond 8 MB: maybe a known TLB page
             if (sz)
             {
                 ppc_andi_(c, 5, 3, (1u << sz) - 1);
                 ppc_put(c, 0x4C820020u);          // bnelr: unaligned
             }
             ppc_rlwinm(c, 4, 3, 0, 3, 31);        // physical address
+            phys = ppc_b_fwd(c);
+            // TLB-mapped: the page as the interpreter last translated it.
+            ppc_patch_here(c, mapped);
+            ppc_rlwinm(c, 5, 3, 0, 0, 19);        // the page
+            ppc_ori(c, 5, 5, 1);
+            ppc_rlwinm(c, 6, 3, 22, 22, 29);      // (address >> 12 & 255) * 4
+            ppc_add(c, 6, 6, JR_CPU);
+            ppc_lwz(c, 0, st ? (s32)offsetof(H64Cpu, dtlbW) : (s32)offsetof(H64Cpu, dtlbR), 6);
+            ppc_cmpw(c, 0, 0, 5);
+            ppc_put(c, 0x4C820020u);              // bnelr: not known (or not writable)
+            if (sz)
+            {
+                ppc_andi_(c, 5, 3, (1u << sz) - 1);
+                ppc_put(c, 0x4C820020u);          // bnelr: unaligned
+            }
+            ppc_lwz(c, 4, (s32)offsetof(H64Cpu, dtlbPhys), 6);
+            ppc_rlwimi(c, 4, 3, 0, 20, 31);       // physical address
+            ppc_cmpw(c, 0, 4, 4);                 // eq
+            ppc_patch_here(c, phys);
             if (st)
             {
                 load_ptr(&g, 6, (s32)offsetof(H64System, jit), JR_SYS);
