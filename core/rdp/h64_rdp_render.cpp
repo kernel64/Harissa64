@@ -1283,7 +1283,7 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
         w[i * 2 + 1] = (u32)words[i];
     }
     op = (w[0] >> 24) & 0x3F;
-    if (sys->options.rdpLogFrame && sys->vi.frames == sys->options.rdpLogFrame &&
+    if (sys->options.rdpLogFrame && sys->vi.frames >= sys->options.rdpLogFrame && sys->vi.frames < sys->options.rdpLogFrame + 4 &&
         (op == 0x24 || op == 0x25 || op == 0x2D || op == 0x2F || op == 0x30 || op == 0x32 || op == 0x33 || op == 0x34 ||
          op == 0x35 || op == 0x3C || op == 0x3D || op == 0x3F || (op >= 0x08 && op <= 0x0F)))
         H64_INFO("[rdp] %02X %08X %08X %08X %08X", op, w[0], w[1], count > 1 ? w[2] : 0, count > 1 ? w[3] : 0);

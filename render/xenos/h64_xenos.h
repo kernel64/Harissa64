@@ -53,7 +53,10 @@ struct H64XenosStats
     u32 texelsDecoded;
     u32 fbTexRects;   // rectangles textured straight from a frame the GPU drew
     u64 tCopyBack;    // copy-backs (GPU wait, readback, conversion)
+    u64 tCopyBackWait;   // inside tCopyBack: waiting for the GPU
     u64 tLoads;       // texture loads in the software RDP (inside tState)
+    u32 loadResolves; // copy backs put off, then needed (resolve_loads)
+    u32 resolveCopyBacks;   // copy backs those made
     // The largest texture decoded: its size, tile (fmt, size, stride, masks, flags) and source
     // (0 triangle, 1 rectangle).
     u32 bigW, bigH, bigFmt, bigSize, bigStride, bigMaskS, bigMaskT, bigFlags, bigRect, bigCount;

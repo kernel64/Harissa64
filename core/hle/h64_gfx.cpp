@@ -1620,12 +1620,103 @@ static void bg_copy(H64Gfx *g, u32 addr)
     }
 }
 
+// G_BG_1CYC draws a picture from RDRAM scaled, in 1-cycle mode with the
+// game's combiner and blender (Majora's Mask's cutscene and pause
+// backgrounds; with the task left to the LLE RSP they ran at 9-15 VI/s).
+// uObjScaleBg (gs2dex.h): the uObjBg fields, then scaleW and scaleH (5.10:
+// texels per pixel) at 28 and 30. As the microcode does, bands of image lines
+// go to TMEM through tile 7 (one more line and column for the bilinear
+// filter) and a scaled rectangle draws each band with tile 0. The picture is
+// split where it wraps horizontally; a flipped, 4-bit or 32-bit picture, or
+// one that wraps vertically, is left to the LLE RSP.
+static void bg_1cyc(H64Gfx *g, u32 addr)
+{
+    u32 a = seg_to_phys(g, addr);
+    s32 imageX = (u16)rd16(g, a + 0), imageW = (u16)rd16(g, a + 2) >> 2;   // 10.5, texels
+    s32 frameX = rd16(g, a + 4), frameW = (u16)rd16(g, a + 6);             // 10.2
+    s32 imageY = (u16)rd16(g, a + 8), imageH = (u16)rd16(g, a + 10) >> 2;
+    s32 frameY = rd16(g, a + 12), frameH = (u16)rd16(g, a + 14);
+    u32 ptr = seg_to_phys(g, rd32(g, a + 16));
+    u32 fmt = rd8(g, a + 22), siz = rd8(g, a + 23), pal = (u16)rd16(g, a + 24), flip = (u16)rd16(g, a + 26);
+    s32 scaleW = (u16)rd16(g, a + 28), scaleH = (u16)rd16(g, a + 30);
+    u32 bpp = 4u << siz, tmemBytes = fmt == 2 ? 2048 : 4096, cycle = (g->omH >> 20) & 3;
+    s32 xa, xw;
+    if (flip || (siz != 1 && siz != 2) || cycle > 1 || imageW <= 0 || imageH <= 0 || scaleW <= 0 || scaleH <= 0)
+    {
+        g->abort = 1;   // not handled here: the LLE RSP draws it
+        return;
+    }
+    // A frame starting above or left of the screen: the picture moves on by
+    // as many pixels (10.2 pixels * 5.10 texels a pixel = 10.5 texels * 128).
+    if (frameX < 0) { imageX += (-frameX) * scaleW / 128; frameW += frameX; frameX = 0; }
+    if (frameY < 0) { imageY += (-frameY) * scaleH / 128; frameH += frameY; frameY = 0; }
+    if (frameW <= 0 || frameH <= 0) return;
+    imageX %= imageW * 32;
+    imageY %= imageH * 32;
+    if (imageY + (frameH * scaleH) / 128 > imageH * 32) { g->abort = 1; return; }   // wraps vertically
+    for (xa = 0; xa < frameW; xa += xw)
+    {
+        // A piece of the frame's width: up to where the picture wraps, and
+        // narrow enough for two lines (and the bilinear column) in TMEM.
+        s32 sa = (imageX + xa * scaleW / 128) % (imageW * 32), texW, ya, yh;
+        u32 lineBytes;
+        xw = frameW - xa;
+        if ((s32)((s64)xw * scaleW / 128) > imageW * 32 - sa)
+            xw = (s32)(((s64)(imageW * 32 - sa) * 128 + scaleW - 1) / scaleW);
+        xw = (xw + 3) & ~3;   // whole pixels
+        if (xw <= 0) xw = 4;
+        for (;;)
+        {
+            texW = ((sa & 31) + xw * scaleW / 128) / 32 + 2;
+            if (texW > imageW - (sa >> 5)) texW = imageW - (sa >> 5);
+            lineBytes = ((u32)texW * bpp + 63) / 64 * 8;
+            if (lineBytes * 2 <= tmemBytes || xw <= 4) break;
+            xw = (xw / 2 + 3) & ~3;
+        }
+        if (lineBytes * 2 > tmemBytes) { g->abort = 1; return; }
+        for (ya = 0; ya < frameH; ya = yh)
+        {
+            s32 ta = imageY + ya * scaleH / 128, ty0 = ta >> 5, fit = (s32)(tmemBytes / lineBytes), tyMax, rows, sx0 = sa >> 5;
+            u32 line = lineBytes / 8, xh = (u32)(frameX + xa), yt = (u32)(frameY + ya), xl, yl;
+            u64 w[2];
+            // Screen rows whose texel rows (and the next, bilinear) are in this band.
+            tyMax = ty0 + fit - 2;
+            yh = ya + (s32)(((s64)((tyMax + 1) * 32 - ta) * 128) / scaleH);
+            yh &= ~3;
+            if (yh <= ya) yh = ya + 4;
+            if (yh > frameH) yh = frameH;
+            rows = ((imageY + (yh - 1) * scaleH / 128) >> 5) - ty0 + 2;
+            if (rows > fit) rows = fit;
+            if (ty0 + rows > imageH) rows = imageH - ty0;
+            if (rows < 1) break;
+            xl = xh + (u32)xw;
+            yl = yt + (u32)(yh - ya);
+            out_rdp1(g, 0xFD000000u | (fmt << 21) | (siz << 19) | (u32)(imageW - 1), ptr);                    // SETTIMG
+            out_rdp1(g, 0xF5000000u | (fmt << 21) | (siz << 19) | (line << 9), 0x07000000u);                 // SETTILE 7
+            out_rdp1(g, 0xE6000000u, 0);                                                                     // LOADSYNC
+            out_rdp1(g, 0xF4000000u | ((u32)sx0 << 14) | ((u32)ty0 << 2),
+                     0x07000000u | ((u32)(sx0 + texW - 1) << 14) | ((u32)(ty0 + rows - 1) << 2));            // LOADTILE
+            out_rdp1(g, 0xE7000000u, 0);                                                                     // PIPESYNC
+            out_rdp1(g, 0xF5000000u | (fmt << 21) | (siz << 19) | (line << 9),
+                     ((pal & 15) << 20) | (2u << 18) | (2u << 8));                                           // SETTILE 0, clamped
+            out_rdp1(g, 0xF2000000u | ((u32)sx0 << 14) | ((u32)ty0 << 2),
+                     ((u32)(sx0 + texW - 1) << 14) | ((u32)(ty0 + rows - 1) << 2));                          // SETTILESIZE 0
+            // TEXRECT (1-cycle: exclusive lower-right corner), s/t in 10.5, steps in 5.10.
+            w[0] = ((u64)(0xE4000000u | ((xl & 0xFFF) << 12) | (yl & 0xFFF)) << 32) | (((xh & 0xFFF) << 12) | (yt & 0xFFF));
+            w[1] = ((u64)((((u32)sa & 0xFFFF) << 16) | ((u32)ta & 0xFFFF)) << 32) |
+                   (((u32)scaleW & 0xFFFF) << 16) | ((u32)scaleH & 0xFFFF);
+            out_rdp(g, w, 2);
+        }
+    }
+}
+
 static void run_s2dex2(H64Gfx *g, u32 w0, u32 w1)
 {
     u32 cmd = w0 >> 24;
     switch (cmd)
     {
     case 0x00: case 0xE0: break;                                   // G_NOOP, G_SPNOOP
+    case 0x09: bg_1cyc(g, w1); break;                              // G_BG_1CYC
     case 0x0A: bg_copy(g, w1); break;                              // G_BG_COPY
     case 0x0B: break;                                              // G_OBJ_RENDERMODE (copy mode ignores it)
     case 0xDB:          // G_MOVEWORD

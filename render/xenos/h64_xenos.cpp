@@ -72,7 +72,18 @@ struct FbSlot
     u32 splitAt;       // presentCount of the last swap of tex and front
     int valid;
     int gpuDirty;      // drawn by the GPU since the last copy back to RDRAM
+    u32 cleanLo, cleanHi;   // while gpuDirty: the lines copied back since (a copy back of part of the image)
     u32 lastUse;
+};
+
+// A texture load kept for replay (resolve_loads).
+struct LoadRec
+{
+    u32 w0, w1, op;
+    int slot;          // a load from this GPU image, not copied back yet (-1: an ordinary load)
+    H64RdpTile tile;   // the load tile's descriptor then
+    u32 texAddr, texWidth;
+    u8 texFmt, texSize;
 };
 
 struct TexEntry
@@ -153,6 +164,15 @@ struct Xenos
         u32 sl, tl, cols, rows;   // LoadTile: first texel and size of the area loaded
         u32 dxt;
     } fbLoad;
+    // Loads from a GPU image whose texels only rectangles sampling the image
+    // itself use (fb_rect_source) need no copy back: they are logged with the
+    // loads after them, and replayed after the copy back only if a texture
+    // must be decoded from TMEM (resolve_loads). Majora's Mask redraws its
+    // previous frame (motion blur) every frame: copy backs took 18 ms.
+    std::vector<LoadRec> loadLog;
+    const u8 *logRam;   // the RDRAM snapshot the logged loads read
+    u8 staleTmem[512];  // per 64-bit TMEM word: written by a logged load from a GPU image, not since by another
+    u32 staleCount;     // words set in staleTmem
     IDirect3DTexture9 *fbTex;   // set: bind_texture puts this image on unit 0 instead of decoding the tile
     float fbTexels[2];          // its N64 texels across [0, 1] (3-point filter sizes)
     struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; } memo[8];
@@ -173,7 +193,8 @@ struct Xenos
     u32 copyBacks;
     u32 useCounter;
     int debug;
-    u32 debugFrom;     // xenosdebug=8: the first of the two presents logged (xenosdebug=8000+N: present N)
+    u32 debugFrom;
+    u32 debugLines;    // xenosdebug=9: lines logged so far     // xenosdebug=8: the first of the two presents logged (xenosdebug=8000+N: present N)
     IDirect3DTexture9 *shown;   // texture shown at the last present
     int shownSlot;              // frame slot the VI showed at the last present (-1: none)
     float shownU, shownV;
@@ -639,6 +660,8 @@ static int arena_alloc(Xenos *x, u32 size, u32 *offset)
     x->arenaHead += (size + 4095) & ~4095u;
     return 1;
 }
+
+static void resolve_loads(Xenos *x);
 
 static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
@@ -1274,6 +1297,7 @@ static void select_framebuffer(Xenos *x)
         }
     }
     s->gpuDirty = 1;
+    s->cleanLo = s->cleanHi = 0;
     s->drawnAt = x->presentCount;
     s->width = x->st->colorWidth;
     s->height = fb_height(s->width);
@@ -1298,7 +1322,10 @@ static void store_pixel(u8 *p, int fmt, u32 c)
     else *p = (u8)i;   // I8
 }
 
-static void copy_back(Xenos *x, int slot)
+// Lines [r0, r1) of the image (all: 0, ~0): Majora's Mask reads a few lines
+// of its previous frame as a texture several times a frame, and converting the
+// whole frame each time took ~5 ms on the console.
+static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
 {
     FbSlot *s = &x->fb[slot];
     D3DLOCKED_RECT lr;
@@ -1310,6 +1337,8 @@ static void copy_back(Xenos *x, int slot)
     // targets) is not as tall as the guess h, which still sets the scale.
     if (s->drawnH && s->drawnH < h) hc = s->drawnH;
     if (s->fmt == FB_I4) { s->gpuDirty = 0; return; }   // 4-bit colour images: not copied back
+    if (r1 > hc) r1 = hc;
+    if (r0 >= r1) return;
     flush_batch(x);
     if (slot == x->curSlot && x->targetBound) resolve_current(x);
     if (!s->tex || !s->valid) return;
@@ -1320,25 +1349,34 @@ static void copy_back(Xenos *x, int slot)
         // it: 9 times less data than the whole 960x720 frame, and cached reads
         // instead of write-combined ones (Paper Mario's file-select transition
         // copied 7 frames back per frame: 6 FPS).
-        u32 wa = (w + 31) & ~31u, ha = (h + 7) & ~7u, i;
+        u32 wa = (w + 31) & ~31u, ha = (h + 7) & ~7u, i, y1 = r0 & ~7u, y2 = (r1 + 7) & ~7u;
         D3DRECT r;
         RECT ur;
+        D3DPOINT dp;
+        POINT up;
+        if (y2 > ha) y2 = ha;
         x->dev->SetRenderTarget(0, x->rbSurf);
         x->dev->SetDepthStencilSurface(NULL);
         x->targetBound = 0;     // the N64 target is bound again (its EDRAM content kept) at the next draw
         x->stateDirty = 1;
         draw_textured(x, s->tex, x->uMax, x->vMax, 0.0f, 0.0f, (float)w, (float)h, (float)RB_WIDTH, (float)RB_HEIGHT);
-        r.x1 = 0; r.y1 = 0; r.x2 = (LONG)wa; r.y2 = (LONG)ha;
-        x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, &r, x->rbTex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
-        x->dev->BlockUntilIdle();
+        r.x1 = 0; r.y1 = (LONG)y1; r.x2 = (LONG)wa; r.y2 = (LONG)y2;   // 32x8-aligned
+        dp.x = 0; dp.y = (LONG)y1;
+        x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, &r, x->rbTex, &dp, 0, 0, NULL, 0.0f, 0, NULL);
+        {
+            u64 w0 = h64_prof_now(x->sys);
+            x->dev->BlockUntilIdle();
+            x->stats.tCopyBackWait += h64_prof_now(x->sys) - w0;
+        }
         if (FAILED(x->rbTex->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) return;
         // The GPU wrote behind the CPU caches: drop any stale line first.
         for (i = 0; i < RB_WIDTH * RB_HEIGHT * 4; i += 128) __dcbf(i, lr.pBits);
         if (x->copyBuf.size() < RB_WIDTH * RB_HEIGHT) x->copyBuf.resize(RB_WIDTH * RB_HEIGHT);
-        ur.left = 0; ur.top = 0; ur.right = (LONG)w; ur.bottom = (LONG)h;
-        XGUntileSurface(&x->copyBuf[0], w * 4, NULL, lr.pBits, RB_WIDTH, RB_HEIGHT, &ur, 4);
+        ur.left = 0; ur.top = (LONG)r0; ur.right = (LONG)w; ur.bottom = (LONG)r1;
+        up.x = 0; up.y = (LONG)r0;
+        XGUntileSurface(&x->copyBuf[0], w * 4, &up, lr.pBits, RB_WIDTH, RB_HEIGHT, &ur, 4);
         x->rbTex->UnlockRect(0);
-        for (y = 0; y < hc; y++)
+        for (y = r0; y < r1; y++)
         {
             const u32 *src = &x->copyBuf[y * w];
             for (xx = 0; xx < w; xx++)
@@ -1357,7 +1395,7 @@ static void copy_back(Xenos *x, int slot)
     if (x->copyBuf.size() < RT_WIDTH * RT_HEIGHT) x->copyBuf.resize(RT_WIDTH * RT_HEIGHT);
     XGUntileSurface(&x->copyBuf[0], RT_WIDTH * 4, NULL, lr.pBits, RT_WIDTH, RT_HEIGHT, NULL, 4);
     s->tex->UnlockRect(0);
-    for (y = 0; y < hc; y++)
+    for (y = r0; y < r1; y++)
     {
         const u32 *src = &x->copyBuf[(y * x->rtH / h) * RT_WIDTH];
         for (xx = 0; xx < w; xx++)
@@ -1372,18 +1410,72 @@ static void copy_back(Xenos *x, int slot)
     if (x->deferNotify)
     {
         // On the graphics worker: the recompiler is the CPU thread's; tell it later.
-        u32 lo = s->addr, hi = s->addr + w * hc * s->bytes;
+        u32 lo = s->addr + w * r0 * s->bytes, hi = s->addr + w * r1 * s->bytes;
         if (x->pendingHi <= x->pendingLo) { x->pendingLo = lo; x->pendingHi = hi; }
         else { if (lo < x->pendingLo) x->pendingLo = lo; if (hi > x->pendingHi) x->pendingHi = hi; }
     }
     else
-        h64_jit_notify_write(x->sys, s->addr, w * hc * s->bytes);
-    s->gpuDirty = 0;
+        h64_jit_notify_write(x->sys, s->addr + w * r0 * s->bytes, w * (r1 - r0) * s->bytes);
+    // The lines copied back so far (one range: a separate one replaces it).
+    if (s->cleanHi > s->cleanLo && r0 <= s->cleanHi && r1 >= s->cleanLo)
+    {
+        if (r0 < s->cleanLo) s->cleanLo = r0;
+        if (r1 > s->cleanHi) s->cleanHi = r1;
+    }
+    else
+    {
+        s->cleanLo = r0;
+        s->cleanHi = r1;
+    }
+    if (s->cleanLo == 0 && s->cleanHi >= hc) s->gpuDirty = 0;
     x->stats.copyBacks++;
 }
 
-// Texture loads from a colour image the GPU drew: copy it back first.
-static void check_texture_source(Xenos *x)
+static void copy_back(Xenos *x, int slot)
+{
+    copy_back_rows(x, slot, 0, 0xFFFFFFFFu);
+}
+
+// The RDRAM a texture load reads (rounded up), from the texture image.
+static void load_rdram_range(const H64RdpState *st, const u32 *w, u32 op, u32 *lo, u32 *hi)
+{
+    u32 sl = (w[0] >> 12) & 0xFFF, tl = w[0] & 0xFFF, sh = (w[1] >> 12) & 0xFFF, th = w[1] & 0xFFF;
+    u32 size = st->texSize ? st->texSize : 1, bpl = (st->texWidth << size) >> 1, addr = st->texAddr & 0xFFFFFF;
+    if (op == 0x33)   // LOAD_BLOCK: texels from (sl, tl) on
+    {
+        *lo = addr + tl * bpl + ((sl << size) >> 1);
+        *hi = *lo + ((((sh - sl + 1) & 0xFFF) << size) >> 1) + 16;
+    }
+    else              // LOAD_TILE, LOAD_TLUT: lines tl..th
+    {
+        *lo = addr + (tl >> 2) * bpl;
+        *hi = addr + ((th >> 2) + 1) * bpl + 16;
+    }
+}
+
+// Copies back the lines of a GPU image a load reads, unless done since it was drawn.
+static void copy_back_timed(Xenos *x, int slot);
+static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
+{
+    FbSlot *s;
+    u32 lo, hi, rb, r0, r1;
+    if (slot < 0 || !x->fb[slot].gpuDirty) return;
+    s = &x->fb[slot];
+    rb = (s->width ? s->width : 320) * (s->bytes ? s->bytes : 2);
+    load_rdram_range(x->st, w, op, &lo, &hi);
+    if (hi <= s->addr || x->debug == 5) { copy_back_timed(x, slot); return; }
+    r0 = lo > s->addr ? (lo - s->addr) / rb : 0;
+    r1 = (hi - s->addr + rb - 1) / rb;
+    if (s->cleanHi > s->cleanLo && r0 >= s->cleanLo && r1 <= s->cleanHi) return;   // copied back already
+    {
+        u64 t0 = h64_prof_now(x->sys);
+        copy_back_rows(x, slot, r0, r1);
+        x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
+    }
+}
+
+// The colour image (slot) a texture load reads, if the GPU drew it (-1: none).
+static int find_texture_slot(Xenos *x)
 {
     u32 a = x->st->texAddr & 0xFFFFFF, i;
     int found = -1;
@@ -1397,14 +1489,133 @@ static void check_texture_source(Xenos *x)
              (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;
     }
-    if (found < 0 || !x->fb[found].gpuDirty) return;
+    return found;
+}
+
+static void copy_back_timed(Xenos *x, int slot)
+{
+    if (slot < 0 || !x->fb[slot].gpuDirty) return;
     if (x->debug != 5)   // xenosdebug=5: no copy backs (diagnosis)
     {
         u64 t0 = h64_prof_now(x->sys);
-        copy_back(x, found);
+        copy_back(x, slot);
         x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
     }
-    else x->fb[found].gpuDirty = 0;
+    else x->fb[slot].gpuDirty = 0;
+}
+
+static void log_load(Xenos *x, const u32 *w, u32 op, int slot)
+{
+    LoadRec r;
+    const H64RdpState *st = x->st;
+    if (x->loadLog.empty()) x->logRam = st->loadRam;
+    r.w0 = w[0];
+    r.w1 = w[1];
+    r.op = op;
+    r.slot = slot;
+    r.tile = st->tiles[(w[1] >> 24) & 7];
+    r.texAddr = st->texAddr;
+    r.texWidth = st->texWidth;
+    r.texFmt = st->texFmt;
+    r.texSize = st->texSize;
+    x->loadLog.push_back(r);
+}
+
+// The TMEM words a load writes: [*lo, *lo + *n) in 64-bit words (wrapping at 512).
+static void load_range(const H64RdpState *st, const u32 *w, u32 op, u32 *lo, u32 *n)
+{
+    const H64RdpTile *t = &st->tiles[(w[1] >> 24) & 7];
+    u32 sl = (w[0] >> 12) & 0xFFF, tl = w[0] & 0xFFF, sh = (w[1] >> 12) & 0xFFF, th = w[1] & 0xFFF, size = st->texSize;
+    *lo = t->offset >> 3;
+    if (op == 0x30)        // LOAD_TLUT: each entry four times (8 bytes)
+        *n = ((sh >> 2) - (sl >> 2) + 1) & 0x3FF;
+    else if (op == 0x33)   // LOAD_BLOCK
+        *n = ((((sh - sl + 1) & 0xFFF) << size) + 15) >> 4;
+    else                   // LOAD_TILE: lines of `stride` bytes
+    {
+        u32 lines = (th >> 2) >= (tl >> 2) ? (th >> 2) - (tl >> 2) + 1 : 1;
+        *n = lines * (t->stride >> 3);
+    }
+    if (*n > 512) *n = 512;
+}
+
+static void stale_mark(Xenos *x, u32 lo, u32 n, int on)
+{
+    u32 i;
+    for (i = 0; i < n; i++)
+    {
+        u8 *m = &x->staleTmem[(lo + i) & 511];
+        if (*m != (u8)on) { *m = (u8)on; x->staleCount += on ? 1 : (u32)-1; }
+    }
+}
+
+// Whether a tile (and its palette) reads TMEM words a logged load left stale.
+static int tile_reads_stale(Xenos *x, u32 tileIndex)
+{
+    const H64RdpState *st = x->st;
+    const H64RdpTile *t = &st->tiles[tileIndex & 7];
+    // The rows of the tile's size (one more: bilinear), fewer if its T mask wraps sooner.
+    u32 rows = (t->thi >> 2) >= (t->tlo >> 2) ? (t->thi >> 2) - (t->tlo >> 2) + 2 : 1;
+    u32 n, lo = t->offset >> 3, i, p0, pn;
+    if (!x->staleCount) return 0;
+    if (t->maskT && rows > (1u << t->maskT)) rows = 1u << t->maskT;
+    n = rows * ((t->stride ? t->stride : 8) >> 3);
+    if (n > 512) n = 512;
+    for (i = 0; i < n; i++)
+        if (x->staleTmem[(lo + i) & 511]) return 1;
+    if (st->rasterFlags & RS_TLUT)
+    {
+        // The palette the texture reads: 16 entries (4-bit) or 256, 8 bytes each.
+        if (t->size == 0) { p0 = 256 + ((t->palette & 15) << 4); pn = 16; }
+        else { p0 = 256; pn = 256; }
+        for (i = 0; i < pn; i++)
+            if (x->staleTmem[p0 + i]) return 1;
+    }
+    return 0;
+}
+
+// TMEM is about to be decoded: the images logged loads read are copied back
+// and the loads run again, in order, as they were (tile descriptor and
+// texture image of the time), then the descriptors are put back. A log from
+// another task (another RDRAM snapshot) is dropped.
+static void resolve_loads(Xenos *x)
+{
+    H64RdpState *st = x->sys->rdpState;
+    H64RdpTile tiles[8];
+    u32 texAddr, texWidth, i;
+    u8 texFmt, texSize;
+    if (x->loadLog.empty()) return;
+    x->stats.loadResolves++;
+    if (st->loadRam != x->logRam)
+    {
+        x->loadLog.clear();
+        memset(x->staleTmem, 0, sizeof(x->staleTmem));
+        x->staleCount = 0;
+        return;
+    }
+    for (i = 0; i < x->loadLog.size(); i++)
+        if (x->loadLog[i].slot >= 0)
+        {
+            if (x->fb[x->loadLog[i].slot].gpuDirty) x->stats.resolveCopyBacks++;
+            copy_back_timed(x, x->loadLog[i].slot);
+        }
+    memcpy(tiles, st->tiles, sizeof(tiles));
+    texAddr = st->texAddr; texWidth = st->texWidth; texFmt = st->texFmt; texSize = st->texSize;
+    for (i = 0; i < x->loadLog.size(); i++)
+    {
+        const LoadRec *r = &x->loadLog[i];
+        u32 t = (r->w1 >> 24) & 7;
+        st->tiles[t] = r->tile;
+        st->texAddr = r->texAddr; st->texWidth = r->texWidth; st->texFmt = r->texFmt; st->texSize = r->texSize;
+        h64_rdp_load(x->sys, t, (r->w0 >> 12) & 0xFFF, r->w0 & 0xFFF, (r->w1 >> 12) & 0xFFF, r->w1 & 0xFFF,
+                     r->op == 0x34 ? 0 : r->op == 0x30 ? 1 : 2);
+    }
+    memcpy(st->tiles, tiles, sizeof(tiles));
+    st->texAddr = texAddr; st->texWidth = texWidth; st->texFmt = texFmt; st->texSize = texSize;
+    x->loadLog.clear();
+    memset(x->staleTmem, 0, sizeof(x->staleTmem));
+    x->staleCount = 0;
+    x->tmemGen++;
 }
 
 // ---------------------------------------------------------------- render states
@@ -1645,6 +1856,9 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || x->batch.size() + 3 > BATCH_VERTICES)
     {
         flush_batch(x);
+        // TMEM as the loads left it (copy backs put off) before a texture is decoded from it.
+        if (x->staleCount && (tile_reads_stale(x, tile) || tile_reads_stale(x, tile + 1)))
+            resolve_loads(x);
         select_framebuffer(x);
         setup_combined(x, (flags & H64_TRI_ZBUFFER) != 0, &x->batchTb0, &x->batchTb1, tile, (flags & TRI_ZOUT) != 0);
         x->batchFlags = flags;
@@ -1885,6 +2099,13 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     select_framebuffer(x);
     x->win.active = 0;
     fbSrc = fb_rect_source(x, t0, flip, s, t, dsdx, dtdy, xh - xl, yh - yl, fbMap);
+    if (!fbSrc && x->staleCount && (tile_reads_stale(x, tile) || tile_reads_stale(x, tile + 1)))
+    {
+        // Texels decoded from TMEM: the copy backs put off happen now, and
+        // the target (unbound by them) is bound again.
+        resolve_loads(x);
+        select_framebuffer(x);
+    }
     if (!fbSrc && !t0->shiftS && !t0->shiftT)
     {
         // The texels sampled, tile-relative, with a texel of margin (bilinear).
@@ -2001,6 +2222,9 @@ static void xenos_reset(void *user)
     x->targetBound = 0;
     x->tmemGen++;
     x->fbLoad.valid = 0;
+    x->loadLog.clear();
+    memset(x->staleTmem, 0, sizeof(x->staleTmem));
+    x->staleCount = 0;
     x->stateDirty = 1;
 }
 
@@ -2023,15 +2247,51 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         if (op == 0x30 || op == 0x32 || op == 0x33 || op == 0x34 || op == 0x35 || op == 0x2F) x->tmemGen++;
     }
     if (op == 0x3C) x->combineRaw = words[0];
-    // Loads from a colour image the GPU drew: copied back first. Palettes too:
-    // Paper Mario draws its characters' shaded palette into a 16x1 image and
-    // loads it with LOAD_TLUT (they were black silhouettes at night).
-    if (op == 0x30 || op == 0x33 || op == 0x34) check_texture_source(x);
+    // Loads from a colour image the GPU drew: copied back first (palettes
+    // too: Paper Mario draws its characters' shaded palette into a 16x1 image
+    // and loads it with LOAD_TLUT; they were black silhouettes at night),
+    // unless only rectangles sampling the image itself may use them (logged
+    // instead, see loadLog).
     if (op == 0x30 || op == 0x33 || op == 0x34)
     {
+        int slot = find_texture_slot(x);
         x->tmemDataGen++;
         x->fbLoad.valid = 0;
         if (op != 0x30) fb_load(x, w, op == 0x33);
+        u32 lo, n;
+        load_range(x->st, w, op, &lo, &n);
+        if (!x->loadLog.empty() && x->st->loadRam != x->logRam)
+        {
+            x->loadLog.clear();   // another task's
+            memset(x->staleTmem, 0, sizeof(x->staleTmem));
+            x->staleCount = 0;
+        }
+        if (slot >= 0 && x->fb[slot].gpuDirty && op != 0x30 && x->fbLoad.valid && x->fbLoad.slot == slot && x->debug != 5 &&
+            x->loadLog.size() < 64)
+        {
+            log_load(x, w, op, slot);
+            stale_mark(x, lo, n, 1);
+        }
+        else
+        {
+            if (x->loadLog.size() >= 64) resolve_loads(x);
+            if (x->debug == 9 && slot >= 0 && x->fb[slot].gpuDirty && x->debugLines < 40)
+            {
+                // xenosdebug=9: why a load copies a GPU image back (three presents).
+                const FbSlot *fs = &x->fb[slot];
+                H64_INFO("[xenos] copy back for load %02X: image %06X width %u size %u fmt %u | slot %d addr %06X %ux%u bytes %u valid %d | "
+                         "fbLoad valid %d slot %d", op, x->st->texAddr, x->st->texWidth, x->st->texSize, x->st->texFmt, slot, fs->addr,
+                         fs->width, fs->height, fs->bytes, fs->valid, x->fbLoad.valid, x->fbLoad.slot);
+                x->debugLines++;
+            }
+            if (slot >= 0) copy_back_for_load(x, slot, w, op);
+            if (!x->loadLog.empty())
+            {
+                log_load(x, w, op, -1);
+                stale_mark(x, lo, n, 0);
+                if (!x->staleCount) x->loadLog.clear();   // every stale word written again: nothing to replay
+            }
+        }
     }
     // State and TMEM: the software RDP (state only).
     t0 = h64_prof_now(x->sys);
@@ -2245,6 +2505,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->batchFlags = x->batchTile = 0xFFFFFFFF;
     x->tmemGen = 1;
     x->tmemDataGen = 0;
+    memset(x->staleTmem, 0, sizeof(x->staleTmem));
+    x->staleCount = 0;
     memset(&x->fbLoad, 0, sizeof(x->fbLoad));
     x->fbTex = NULL;
     x->usesT1 = 1;
@@ -2496,6 +2758,7 @@ void h64_xenos_set_debug(H64Renderer *r, int mode)
 {
     Xenos *x = X(r);
     x->debugFrom = 2500;
+    x->debugLines = 0;
     if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
     x->debug = mode;
     x->shaders.clear();   // leaks the compiled shaders: debug only
