@@ -4,7 +4,7 @@
 #   3. Xbox 360, VS2010 + XDK (MSBuild)             -> platform\xbox360\Release\harissa64v2.xex
 #      (+ the execmem proof of concept with -ExecMem)
 # The Xbox build only compiles: its unit tests run at start-up in Xenia or on
-# the console (see docs/DEVELOPMENT.md). Exit code 1 if anything fails.
+# the console (see the developer notes). Exit code 1 if anything fails.
 param([switch]$ExecMem, [switch]$SkipXbox, [switch]$SkipWsl)
 
 $ErrorActionPreference = 'Continue'

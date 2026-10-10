@@ -79,7 +79,7 @@ enum
     H64_PROF_COUNT
 };
 
-// Options that change emulated timing: named and documented (docs/DEVELOPMENT.md).
+// Options that change emulated timing: named and documented (developer notes).
 struct H64Options
 {
     int hleBoot;        // 1: skip IPL3 and set up its results directly
