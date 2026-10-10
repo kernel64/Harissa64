@@ -81,6 +81,7 @@ struct H64Options
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
     int hleAudioCheck;  // 1: audio tasks run on the LLE RSP, and the HLE runs each one on a copy
                         //    of RDRAM; the results are compared when the LLE task ends (debug)
+    u32 rdpLogFrame;    // h64test --rdp-log N: log the RDP's image, tile, load and rectangle commands during VI frame N (0: off)
 };
 
 struct H64System

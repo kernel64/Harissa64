@@ -326,6 +326,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
     int logPc = 0, gfxCostLog = 0, gfxTiming = 0, padCount = 1;
+    u32 rdpLogFrame = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0;
@@ -349,6 +350,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--trace-exc") && i + 1 < argc) s_traceExc = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch-pc") && i + 1 < argc) watchPc = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--gfx-cost-log")) gfxCostLog = 1;
+        else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--log-from") && i + 1 < argc) s_logFrom = (u32)atoi(argv[++i]);
@@ -497,6 +499,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.hleAudio = hleAudio == 1;
     sys->options.hleAudioCheck = hleAudio == 2;
     sys->options.gfxCostLog = gfxCostLog;
+    sys->options.rdpLogFrame = rdpLogFrame;
     sys->padMask = padCount >= 1 && padCount <= 4 ? (1u << padCount) - 1u : 1u;   // --pads N: ports 1..N plugged in
     sys->options.gfxTiming = gfxTiming;
     sys->options.hleGfx = hleGfx;

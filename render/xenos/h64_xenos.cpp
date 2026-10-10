@@ -136,6 +136,21 @@ struct Xenos
 
     // Texture of each tile until TMEM or the tile changes.
     u32 tmemGen;
+    // Texels loaded from an image the GPU drew (see fb_load / fb_rect_source):
+    // rectangles that only show them sample that image directly.
+    u32 tmemDataGen;   // TMEM loads so far
+    struct
+    {
+        int valid, slot, block;
+        u32 dataGen, slotAddr, slotUse;
+        u32 tmemOff, stride;      // the load tile's TMEM offset and line stride (bytes)
+        u32 startPix;             // LoadBlock: first texel's index in the image (y * width + x)
+        u32 texels;               // LoadBlock: texels loaded
+        u32 sl, tl, cols, rows;   // LoadTile: first texel and size of the area loaded
+        u32 dxt;
+    } fbLoad;
+    IDirect3DTexture9 *fbTex;   // set: bind_texture puts this image on unit 0 instead of decoding the tile
+    float fbTexels[2];          // its N64 texels across [0, 1] (3-point filter sizes)
     struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; } memo[8];
 
     FbSlot fb[FB_SLOTS];
@@ -812,7 +827,18 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
 {
     u64 t0 = h64_prof_now(x->sys);
-    IDirect3DTexture9 *tex = get_texture(x, tile, b);
+    IDirect3DTexture9 *tex;
+    if (stage == 0 && x->fbTex)
+    {
+        // A frame the GPU drew, sampled directly (fb_rect_source).
+        memset(b, 0, sizeof(*b));
+        b->w = (u32)x->fbTexels[0];
+        b->h = (u32)x->fbTexels[1];
+        b->clampS = b->clampT = 1;
+        tex = x->fbTex;
+    }
+    else
+        tex = get_texture(x, tile, b);
     x->stats.tTexture += h64_prof_now(x->sys) - t0;
     DWORD filter = (x->st->rasterFlags & (RS_SAMPLE_QUAD)) && !(x->st->rasterFlags & RS_COPY) && x->texFilter == 1 ? D3DTEXF_LINEAR
                                                                                                              : D3DTEXF_POINT;
@@ -821,6 +847,13 @@ static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
     sz[1] = (float)(b->h ? b->h : 1);
     sz[2] = 1.0f / sz[0];
     sz[3] = 1.0f / sz[1];
+    if (stage == 0 && x->fbTex)
+    {
+        sz[0] = x->fbTexels[0];
+        sz[1] = x->fbTexels[1];
+        sz[2] = 1.0f / sz[0];
+        sz[3] = 1.0f / sz[1];
+    }
     x->dev->SetPixelShaderConstantF(8 + stage, sz, 1);   // tsize0/tsize1 (3-point filter)
     x->dev->SetTexture(stage, tex ? tex : x->dummy);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, b->clampS ? D3DTADDRESS_CLAMP : b->mirrorS ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
@@ -1658,6 +1691,122 @@ static void fill_rect(Xenos *x, const u32 *w)
     }
 }
 
+// A texture load from a colour image the GPU drew (same texel size and
+// width): where its texels came from, for fb_rect_source. Perfect Dark's
+// cutscenes blend the previous frame over the new one, one LoadBlock and one
+// rectangle per line: decoding those ~180 strips a frame on the CPU (after
+// copying the frame back) took ~25 ms; the GPU samples its own frame instead.
+static void fb_load(Xenos *x, const u32 *w, int block)
+{
+    const H64RdpState *st = x->st;
+    const H64RdpTile *lt = &st->tiles[(w[1] >> 24) & 7];
+    u32 a = st->texAddr & 0xFFFFFF, i, bytes = st->texSize == 2 ? 2 : st->texSize == 3 ? 4 : 0;
+    u32 sl = (w[0] >> 12) & 0xFFF, tl = w[0] & 0xFFF, sh = (w[1] >> 12) & 0xFFF, th = w[1] & 0xFFF;
+    int found = -1;
+    if (!bytes || st->texFmt != 0 || x->debug == 5) return;
+    for (i = 0; i < FB_SLOTS; i++)
+    {
+        const FbSlot *s = &x->fb[i];
+        if (s->valid && s->tex && s->bytes == bytes && s->width == st->texWidth && a >= s->addr &&
+            a < s->addr + s->width * s->height * s->bytes && (found < 0 || s->addr > x->fb[found].addr))
+            found = (int)i;
+    }
+    if (found < 0 || ((a - x->fb[found].addr) % bytes)) return;
+    x->fbLoad.slot = found;
+    x->fbLoad.slotAddr = x->fb[found].addr;
+    x->fbLoad.slotUse = x->fb[found].lastUse;
+    x->fbLoad.block = block;
+    x->fbLoad.tmemOff = lt->offset;
+    x->fbLoad.stride = lt->stride;
+    if (block)
+    {
+        x->fbLoad.startPix = (a - x->fb[found].addr) / bytes + tl * st->texWidth + sl;
+        x->fbLoad.texels = (sh - sl + 1) & 0xFFF;
+        x->fbLoad.dxt = th;
+    }
+    else
+    {
+        x->fbLoad.startPix = (a - x->fb[found].addr) / bytes;
+        x->fbLoad.sl = sl >> 2;
+        x->fbLoad.tl = tl >> 2;
+        x->fbLoad.cols = ((sh >> 2) - (sl >> 2) + 1) & 0xFFF;
+        x->fbLoad.rows = (th >> 2) - (tl >> 2) + 1;
+        x->fbLoad.dxt = 0;
+    }
+    x->fbLoad.dataGen = x->tmemDataGen;
+    x->fbLoad.valid = 1;
+}
+
+// Whether a rectangle on `tile` shows texels of the last fb_load, mapped
+// straight onto the source image (no flip, no shift, no palette, no wrap,
+// one image row per tile row). If so, binds that image for bind_texture
+// and gives map[0..1] = the source pixel of tile texel (0, 0), map[2..3] =
+// texture units per source pixel.
+static int fb_rect_source(Xenos *x, const H64RdpTile *t, int flip, float s, float tc, float dsdx, float dtdy, float spanX,
+                          float spanY, float *map)
+{
+    const H64RdpState *st = x->st;
+    const FbSlot *fs;
+    float s0, s1, t0, t1;
+    s32 rel, rb, row, xb, yb, width;
+    int single, multi;
+    if (!x->fbLoad.valid || x->fbLoad.dataGen != x->tmemDataGen || flip || dsdx <= 0.0f || dtdy < 0.0f) return 0;
+    fs = &x->fb[x->fbLoad.slot];
+    if (!fs->valid || !fs->tex || fs->addr != x->fbLoad.slotAddr || fs->lastUse != x->fbLoad.slotUse ||
+        x->fbLoad.slot == x->curSlot)
+        return 0;
+    if (t->fmt != 0 || t->size != (fs->bytes == 2 ? 2 : 3) || (st->rasterFlags & RS_TLUT) || t->shiftS || t->shiftT) return 0;
+    width = (s32)fs->width;
+    s0 = s / 32.0f - t->slo / 4.0f;
+    t0 = tc / 32.0f - t->tlo / 4.0f;
+    s1 = s0 + spanX * dsdx;
+    t1 = t0 + spanY * dtdy;
+    if (s0 < 0.0f || t0 < 0.0f) return 0;
+    if (t->maskS && s1 > (float)(1 << t->maskS)) return 0;
+    if (t->maskT && t1 > (float)(1 << t->maskT)) return 0;
+    row = (s32)floorf(t0);
+    single = (s32)floorf(t1 - 0.001f) == row;   // one tile row
+    rel = (s32)t->offset - (s32)x->fbLoad.tmemOff;
+    if (rel < 0 || (rel & 1)) return 0;
+    rb = single ? row : 0;
+    if (x->fbLoad.block)
+    {
+        // Linear texels from startPix. Odd tile rows are read with swapped
+        // words: only right when the load swapped them too (dxt).
+        s32 p;
+        multi = !single;
+        if ((multi || (row & 1)) && !x->fbLoad.dxt) return 0;
+        if (multi && t->stride != (u32)width * 2) return 0;
+        p = rel / 2 + rb * (s32)t->stride / 2;
+        if (p + (s32)ceilf(s1) > (s32)x->fbLoad.texels + (multi ? (s32)(t1 + 1.0f) * width : 0)) return 0;
+        p += (s32)x->fbLoad.startPix;
+        xb = p % width;
+        yb = p / width;
+    }
+    else
+    {
+        // Lines of `cols` texels, `stride` bytes apart in TMEM, from (sl, tl).
+        s32 r, c, b = rel + rb * (s32)t->stride, ls = (s32)x->fbLoad.stride;
+        if (!ls) return 0;
+        if (!single && t->stride != (u32)ls) return 0;
+        r = b / ls;
+        c = (b % ls) / 2;
+        if (((r ^ rb) & 1) || c + (s32)ceilf(s1) > (s32)x->fbLoad.cols || r + (single ? 1 : (s32)ceilf(t1)) > (s32)x->fbLoad.rows)
+            return 0;
+        xb = (s32)(x->fbLoad.startPix % (u32)width) + (s32)x->fbLoad.sl + c;
+        yb = (s32)(x->fbLoad.startPix / (u32)width) + (s32)x->fbLoad.tl + r;
+    }
+    if (xb + s1 > (float)width + 0.001f) return 0;   // a row of the tile must stay on one image row
+    map[0] = (float)xb;
+    map[1] = (float)(yb - rb);
+    map[2] = x->uMax / (float)width;
+    map[3] = x->vMax / (float)(fs->height ? fs->height : 240);
+    x->fbTex = fs->tex;
+    x->fbTexels[0] = (float)width / x->uMax;
+    x->fbTexels[1] = (float)(fs->height ? fs->height : 240) / x->vMax;
+    return 1;
+}
+
 static void tex_rect(Xenos *x, const u32 *w, int flip)
 {
     int fullWidth = 0;   // set below: a rectangle across the whole image (a background) stays full width
@@ -1672,7 +1821,8 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     float z = st->usePrimDepth ? (float)(st->primDepth >> 16) / 32767.0f : 0.0f;
     TexBinding tb0, tb1;
     XVtx q[4];
-    int i;
+    int i, fbSrc;
+    float fbMap[4];
     if (copy)
     {
         dsdx /= 4.0f;
@@ -1682,7 +1832,8 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     if (xh <= xl || yh <= yl) return;
     select_framebuffer(x);
     x->win.active = 0;
-    if (!t0->shiftS && !t0->shiftT)
+    fbSrc = fb_rect_source(x, t0, flip, s, t, dsdx, dtdy, xh - xl, yh - yl, fbMap);
+    if (!fbSrc && !t0->shiftS && !t0->shiftT)
     {
         // The texels sampled, tile-relative, with a texel of margin (bilinear).
         float spanS = flip ? yh - yl : xh - xl, spanT = flip ? xh - xl : yh - yl;
@@ -1756,11 +1907,19 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         q[i].v0 = tex_coord(tt, t0->shiftT, (s32)t0->tlo + 4 * tb0.oy, tb0.h);
         q[i].u1 = tex_coord(ss, t1->shiftS, t1->slo, tb1.w);
         q[i].v1 = tex_coord(tt, t1->shiftT, t1->tlo, tb1.h);
+        if (fbSrc)
+        {
+            // Tile texel -> pixel of the source image -> its texture.
+            q[i].u0 = (fbMap[0] + ss / 32.0f - t0->slo / 4.0f) * fbMap[2];
+            q[i].v0 = (fbMap[1] + tt / 32.0f - t0->tlo / 4.0f) * fbMap[3];
+        }
     }
     x->win.active = 0;
+    x->fbTex = NULL;
     x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
     x->stats.rects++;
     x->stats.draws++;
+    if (fbSrc) x->stats.fbTexRects++;
 }
 
 // A raw RDP triangle (LLE graphics): drawn from its rebuilt vertices.
@@ -1788,6 +1947,7 @@ static void xenos_reset(void *user)
     x->shownSlot = -1;
     x->targetBound = 0;
     x->tmemGen++;
+    x->fbLoad.valid = 0;
     x->stateDirty = 1;
 }
 
@@ -1811,6 +1971,12 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     }
     if (op == 0x3C) x->combineRaw = words[0];
     if (op == 0x33 || op == 0x34) check_texture_source(x);
+    if (op == 0x30 || op == 0x33 || op == 0x34)
+    {
+        x->tmemDataGen++;
+        x->fbLoad.valid = 0;
+        if (op != 0x30) fb_load(x, w, op == 0x33);
+    }
     // State and TMEM: the software RDP (state only).
     t0 = h64_prof_now(x->sys);
     h64_rdp_command(x->sys, words, count);
@@ -2021,6 +2187,10 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->stateDirty = 1;
     x->batchFlags = x->batchTile = 0xFFFFFFFF;
     x->tmemGen = 1;
+    x->tmemDataGen = 0;
+    memset(&x->fbLoad, 0, sizeof(x->fbLoad));
+    x->fbTex = NULL;
+    x->usesT1 = 1;
     memset(x->memo, 0, sizeof(x->memo));
     x->batch.reserve(BATCH_VERTICES);
     x->curSlot = -1;
