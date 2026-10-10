@@ -1009,6 +1009,16 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
                      st->primColor, st->envColor, st->fogColor, st->blendColor, pc->ts.tile & 7, st->tiles[pc->ts.tile & 7].fmt,
                      st->tiles[pc->ts.tile & 7].size, combined[0], combined[1], combined[2], combined[3], shadeAlpha, coverageCount,
                      z, before[0], before[1], before[2], before[3], p.c[0], p.c[1], p.c[2], p.c[3]);
+            {
+                u32 k;
+                for (k = 0; k < 2; k++)
+                {
+                    const H64RdpTile *tt = &st->tiles[(pc->ts.tile + k) & 7];
+                    H64_INFO("[probe]   tile %u: fmt %u size %u pal %u off %03X stride %u mask %u/%u shift %u/%u flags %X s %u..%u t %u..%u",
+                             (pc->ts.tile + k) & 7, tt->fmt, tt->size, tt->palette, tt->offset, tt->stride, tt->maskS, tt->maskT,
+                             tt->shiftS, tt->shiftT, tt->flags, tt->slo, tt->shi, tt->tlo, tt->thi);
+                }
+            }
         }
         else
             depth_blend(st, d, &p, combined, z, rgbDith, coverageCount, shadeAlpha);

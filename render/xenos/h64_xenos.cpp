@@ -2023,7 +2023,10 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         if (op == 0x30 || op == 0x32 || op == 0x33 || op == 0x34 || op == 0x35 || op == 0x2F) x->tmemGen++;
     }
     if (op == 0x3C) x->combineRaw = words[0];
-    if (op == 0x33 || op == 0x34) check_texture_source(x);
+    // Loads from a colour image the GPU drew: copied back first. Palettes too:
+    // Paper Mario draws its characters' shaded palette into a 16x1 image and
+    // loads it with LOAD_TLUT (they were black silhouettes at night).
+    if (op == 0x30 || op == 0x33 || op == 0x34) check_texture_source(x);
     if (op == 0x30 || op == 0x33 || op == 0x34)
     {
         x->tmemDataGen++;
