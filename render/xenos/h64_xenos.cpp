@@ -46,10 +46,13 @@
 #define MAX_POOL_BYTES (24u * 1024u * 1024u)
 #define BATCH_VERTICES 3000
 
+// The colour as floats (0..1, clamped by the vertex shader): a D3DCOLOR took
+// four float-to-integer conversions a vertex, each a load-hit-store stall on
+// the Xbox 360's CPU.
 struct XVtx
 {
     float x, y, z, w;
-    D3DCOLOR color;
+    float col[4];
     float u0, v0, u1, v1;
 };
 
@@ -133,6 +136,7 @@ struct Xenos
     int stateDirty;     // an RDP command arrived since the state was last set up
     u32 batchFlags, batchTile;
     TexBinding batchTb0, batchTb1;
+    float batchA[4], batchB[4];   // u0, v0, u1, v1 = s or t * A + B for the batch's tiles
 
     // Texture of each tile until TMEM or the tile changes.
     u32 tmemGen;
@@ -253,7 +257,8 @@ static const char s_vsSource[] =
     "  VOUT o; float w = i.pos.w;\n"
     "  o.pos = float4((i.pos.x * scale.x - 1.0) * w, (i.pos.y * scale.y + 1.0) * w, 0.0, w);\n"
     "  o.pos.z = saturate(i.pos.z) * w;\n"
-    "  o.col = i.col; o.tc = i.tc; o.lcol = i.col * w; o.lw = float4(w, i.pos.z * w, 0.0, 0.0); return o; }\n";
+    "  float4 c = saturate(i.col);\n"
+    "  o.col = c; o.tc = i.tc; o.lcol = c * w; o.lw = float4(w, i.pos.z * w, 0.0, 0.0); return o; }\n";
 
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
@@ -873,6 +878,15 @@ static float tex_coord(float s, u32 shift, s32 lo, u32 size)
     return (v + 0.5f) / (float)size;
 }
 
+// tex_coord(s, shift, lo, size) = s * A + B.
+static void tc_affine(u32 shift, s32 lo, u32 size, float *a, float *b)
+{
+    float scale = shift > 10 ? (float)(1 << (16 - shift)) : shift ? 1.0f / (float)(1 << shift) : 1.0f;
+    float sz = (float)(size ? size : 1);
+    *a = scale / 32.0f / sz;
+    *b = (0.5f - (float)lo / 4.0f) / sz;
+}
+
 // ---------------------------------------------------------------- framebuffers
 static u32 fb_height(u32 width) { return width <= 320 ? 240 : width * 3 / 4; }
 
@@ -923,7 +937,7 @@ static void draw_textured_uv(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTextu
         q[i].y = y0 + ((i & 2) ? h : 0.0f);
         q[i].z = 0;
         q[i].w = 1;
-        q[i].color = 0xFFFFFFFF;
+        q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
         q[i].u0 = (i & 1) ? u1 : u0;
         q[i].v0 = (i & 2) ? v1 : v0;
         q[i].u1 = q[i].v1 = 0;
@@ -1583,12 +1597,6 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     x->dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 }
 
-static D3DCOLOR rgba_to_d3d(float r, float g, float b, float a)
-{
-    u32 R = r < 0 ? 0 : r > 255 ? 255 : (u32)r, G = g < 0 ? 0 : g > 255 ? 255 : (u32)g;
-    u32 B = b < 0 ? 0 : b > 255 ? 255 : (u32)b, A = a < 0 ? 0 : a > 255 ? 255 : (u32)a;
-    return D3DCOLOR_ARGB(A, R, G, B);
-}
 
 // ---------------------------------------------------------------- primitives
 static void flush_batch(Xenos *x)
@@ -1627,8 +1635,13 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         x->batchFlags = flags;
         x->batchTile = tile;
         x->stateDirty = 0;
+        // tex_coord as s * A + B, once a batch (it took int-to-float
+        // conversions and divisions, four times a vertex).
+        tc_affine(t0->shiftS, (s32)t0->slo, x->batchTb0.w, &x->batchA[0], &x->batchB[0]);
+        tc_affine(t0->shiftT, (s32)t0->tlo, x->batchTb0.h, &x->batchA[1], &x->batchB[1]);
+        tc_affine(t1->shiftS, (s32)t1->slo, x->batchTb1.w, &x->batchA[2], &x->batchB[2]);
+        tc_affine(t1->shiftT, (s32)t1->tlo, x->batchTb1.h, &x->batchA[3], &x->batchB[3]);
     }
-    const TexBinding &tb0 = x->batchTb0, &tb1 = x->batchTb1;
     v[0] = a; v[1] = b; v[2] = c;
     {
         // 16:9 widescreen: a triangle from one screen edge exactly to the
@@ -1646,11 +1659,19 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         q[i].y = v[i]->y;
         q[i].z = z / 32767.0f;
         q[i].w = w;
-        q[i].color = (flags & H64_TRI_SHADE) ? rgba_to_d3d(v[i]->r, v[i]->g, v[i]->b, v[i]->a) : 0;
-        q[i].u0 = tex_coord(v[i]->s, t0->shiftS, t0->slo, tb0.w);
-        q[i].v0 = tex_coord(v[i]->t, t0->shiftT, t0->tlo, tb0.h);
-        q[i].u1 = tex_coord(v[i]->s, t1->shiftS, t1->slo, tb1.w);
-        q[i].v1 = tex_coord(v[i]->t, t1->shiftT, t1->tlo, tb1.h);
+        if (flags & H64_TRI_SHADE)
+        {
+            q[i].col[0] = v[i]->r * (1.0f / 255.0f);
+            q[i].col[1] = v[i]->g * (1.0f / 255.0f);
+            q[i].col[2] = v[i]->b * (1.0f / 255.0f);
+            q[i].col[3] = v[i]->a * (1.0f / 255.0f);
+        }
+        else
+            q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 0.0f;
+        q[i].u0 = v[i]->s * x->batchA[0] + x->batchB[0];
+        q[i].v0 = v[i]->t * x->batchA[1] + x->batchB[1];
+        q[i].u1 = v[i]->s * x->batchA[2] + x->batchB[2];
+        q[i].v1 = v[i]->t * x->batchA[3] + x->batchB[3];
     }
     x->batch.push_back(q[0]);
     x->batch.push_back(q[1]);
@@ -1911,7 +1932,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         q[i].y = py;
         q[i].z = z;
         q[i].w = 1.0f;
-        q[i].color = 0;
+        q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 0.0f;
         q[i].u0 = tex_coord(ss, t0->shiftS, (s32)t0->slo + 4 * tb0.ox, tb0.w);
         q[i].v0 = tex_coord(tt, t0->shiftT, (s32)t0->tlo + 4 * tb0.oy, tb0.h);
         q[i].u1 = tex_coord(ss, t1->shiftS, t1->slo, tb1.w);
@@ -2171,8 +2192,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
 {
     static const D3DVERTEXELEMENT9 decl[] = {
         { 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
-        { 0, 16, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0 },
-        { 0, 20, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+        { 0, 16, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0 },
+        { 0, 32, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
         D3DDECL_END()
     };
     D3DSURFACE_PARAMETERS sp;

@@ -11,7 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
+#include <algorithm>
 
+#if defined(_XBOX)
+#include <ppcintrinsics.h>
+#endif
 #include "../common/h64_crc32.h"
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
@@ -130,6 +134,7 @@ struct H64Gfx
     // Deferred rendering: what texture loads read (snapshot), colour images seen.
     u32 timgAddr, timgWidth, timgSize;
     std::vector<u32> loadRanges;   // start, end pairs
+    std::vector<u64> rangeSort;    // the same as start << 32 | end, sorted (h64_gfx_parse_task)
     u32 cimg[8][2];                // recent colour images: start, end
     u32 cimgNext;
     int texFromCimg;
@@ -150,6 +155,28 @@ static u32 rd32(H64Gfx *g, u32 a)
 
 static s16 rd16(H64Gfx *g, u32 a) { return (s16)h64_load_be16(g->sys->rdram + (a & 0x7FFFFE)); }
 static u8 rd8(H64Gfx *g, u32 a) { return g->sys->rdram[a & 0x7FFFFF]; }
+
+// Integers to floats through tables: on the Xbox 360's CPU each conversion
+// goes through memory (a load-hit-store stall of ~40 cycles), a dozen per
+// vertex (Conker's cutscenes: ~11 ms a frame loading vertices). Exact.
+static float s_u8f[256], s_s8f[256], s_s8n[256];   // b, (s8)b, (s8)b / 128
+static void init_tables(void)
+{
+    int i;
+    for (i = 0; i < 256; i++)
+    {
+        s_u8f[i] = (float)i;
+        s_s8f[i] = (float)(s8)i;
+        s_s8n[i] = (float)(s8)i / 128.0f;
+    }
+}
+static float rdf16(H64Gfx *g, u32 a)
+{
+    const u8 *p = g->sys->rdram + (a & 0x7FFFFE);
+    return s_s8f[p[0]] * 256.0f + s_u8f[p[1]];
+}
+static float rdf8(H64Gfx *g, u32 a) { return s_u8f[g->sys->rdram[a & 0x7FFFFF]]; }
+static float rdn8(H64Gfx *g, u32 a) { return s_s8n[g->sys->rdram[a & 0x7FFFFF]]; }
 
 static void load_matrix(H64Gfx *g, u32 phys, float m[4][4])
 {
@@ -228,7 +255,7 @@ static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
             u32 pixels = ((sh >> 2) - (sl >> 2) + 1) & 0xFFF;
             start = g->timgAddr + (((tl >> 2) * g->timgWidth + (sl >> 2)) << (sz - 1));
             end = start + (lines - 1) * (g->timgWidth << (sz - 1)) + ((((pixels << sz) + 15) >> 4) * 8);
-            if (op == 0x30) end = start + lines * (g->timgWidth << 1) + 4096;   // TLUT: generous
+            if (op == 0x30) end = start + pixels * 2 + 16;   // TLUT: one line of 16-bit entries
         }
         start &= ~7u;
         end = (end + 15) & ~7u;
@@ -432,72 +459,104 @@ enum { VF_STD = 0, VF_PD, VF_DKR, VF_CBFD };
 // plus in the advanced mode the last light as a directional one. Normals come
 // from the G_MV_NORMALES table (x, y) and the vertex's flag (z); a negative
 // flag leaves the colour unlit.
-static void cbfd_light(H64Gfx *g, GfxVtx *v, u32 a, u32 index, u32 gm, float ldir[][3])
+// a >= 0 ? b : c without a branch on the Xbox 360 (fsel): a branch on a float
+// compare waits for the FPU and often mispredicts (~30 cycles there).
+static H64_INLINE float fsel(float a, float b, float c)
 {
-    s16 flag = rd16(g, a + 6);
+#if defined(_XBOX)
+    return (float)__fsel(a, b, c);
+#else
+    return a >= 0.0f ? b : c;
+#endif
+}
+
+// Conker's lighting (after GLideN64): ambient + point lights + in the
+// advanced mode a directional one. Returns the factors the vertex colour is
+// multiplied by. Scalars in and out, inlined: see load_vertices_body.
+static H64_INLINE void cbfd_light(const H64Gfx *g, float x, float y, float z, float nx, float ny, float nz, const float ldir[][3],
+                                  const float lc[][3], float *fr, float *fg, float *fb)
+{
     int nl = g->numLights > 8 ? 8 : g->numLights, l;
-    float r, gg, b, p[3];
+    float r, gg, b, p0, p1, p2;
     const float *cm = g->coordMod;
-    v->nx = (s8)rd8(g, g->normalBase + index * 2) / 128.0f;
-    v->ny = (s8)rd8(g, g->normalBase + index * 2 + 1) / 128.0f;
-    v->nz = (s8)(flag & 0xFF) / 128.0f;
-    v->r = rd8(g, a + 12);
-    v->g = rd8(g, a + 13);
-    v->b = rd8(g, a + 14);
-    if (flag < 0) return;
-    r = g->lightCol[nl][0] / 255.0f;
-    gg = g->lightCol[nl][1] / 255.0f;
-    b = g->lightCol[nl][2] / 255.0f;
-    p[0] = (v->x + cm[8]) * cm[12];
-    p[1] = (v->y + cm[9]) * cm[13];
-    p[2] = (v->z + cm[10]) * cm[14];
+    r = lc[nl][0];
+    gg = lc[nl][1];
+    b = lc[nl][2];
+    p0 = (x + cm[8]) * cm[12];
+    p1 = (y + cm[9]) * cm[13];
+    p2 = (z + cm[10]) * cm[14];
+    // Branch-free, the same results: min(x, 1) = fsel(x - 1, 1, x); a
+    // contribution that is not positive adds an exact zero (colours are >= 0).
     l = nl - 1;
     if (g->advLighting && l >= 0)
     {
-        float d = v->nx * ldir[l][0] + v->ny * ldir[l][1] + v->nz * ldir[l][2];
-        if (d > 1.0f) d = 1.0f;
-        if (d > 0)
-        {
-            r += g->lightCol[l][0] / 255.0f * d;
-            gg += g->lightCol[l][1] / 255.0f * d;
-            b += g->lightCol[l][2] / 255.0f * d;
-        }
+        float d = nx * ldir[l][0] + ny * ldir[l][1] + nz * ldir[l][2];
+        d = fsel(d - 1.0f, 1.0f, d);
+        d = fsel(-d, 0.0f, d);
+        r += lc[l][0] * d;
+        gg += lc[l][1] * d;
+        b += lc[l][2] * d;
     }
-    for (l = nl - 2; l >= 0; l--)
     {
-        float dx = p[0] - g->lightPos[l][0], dy = p[1] - g->lightPos[l][1], dz = p[2] - g->lightPos[l][2];
-        float len = 2.0f * (dx * dx + dy * dy + dz * dz) / 65536.0f;
-        float in = len > 0 ? g->lightCa[l] / len : 1.0f;
-        if (in > 1.0f) in = 1.0f;
-        if (g->advLighting && (g->geomRaw & 0x00400000u))   // G_POINT_LIGHTING: also facing the light
+        int facing = g->advLighting && (g->geomRaw & 0x00400000u);   // G_POINT_LIGHTING: also facing the light
+        for (l = nl - 2; l >= 0; l--)
         {
-            float d = v->nx * ldir[l][0] + v->ny * ldir[l][1] + v->nz * ldir[l][2];
-            in *= d > 1.0f ? 1.0f : d;
-        }
-        if (in > 0)
-        {
-            r += g->lightCol[l][0] / 255.0f * in;
-            gg += g->lightCol[l][1] / 255.0f * in;
-            b += g->lightCol[l][2] / 255.0f * in;
+            float dx = p0 - g->lightPos[l][0], dy = p1 - g->lightPos[l][1], dz = p2 - g->lightPos[l][2];
+            float len = (dx * dx + dy * dy + dz * dz) * (1.0f / 32768.0f);   // 2 / 65536: exact
+            float in = fsel(-len, 1.0f, g->lightCa[l] / len);                // len > 0 ? ca / len : 1
+            in = fsel(in - 1.0f, 1.0f, in);
+            if (facing)
+            {
+                float d = nx * ldir[l][0] + ny * ldir[l][1] + nz * ldir[l][2];
+                in *= fsel(d - 1.0f, 1.0f, d);
+            }
+            in = fsel(-in, 0.0f, in);
+            r += lc[l][0] * in;
+            gg += lc[l][1] * in;
+            b += lc[l][2] * in;
         }
     }
-    v->r *= r > 1.0f ? 1.0f : r;
-    v->g *= gg > 1.0f ? 1.0f : gg;
-    v->b *= b > 1.0f ? 1.0f : b;
+    *fr = r > 1.0f ? 1.0f : r;
+    *fg = gg > 1.0f ? 1.0f : gg;
+    *fb = b > 1.0f ? 1.0f : b;
 }
 
+static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt);
 static void load_vertices_fmt(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
+{
+    u64 t0 = h64_prof_now(g->sys);
+    load_vertices_body(g, phys, n, v0, fmt);
+    g->sys->prof[H64_PROF_GFX_VTX] += h64_prof_now(g->sys) - t0;
+    g->sys->prof[H64_PROF_GFX_NVTX] += n;
+}
+
+// Each vertex is read (bytes) and computed in locals, and written once at the
+// end: byte reads may alias anything, so with the results stored as they were
+// computed the compiler read each one back from memory right after storing it
+// (load-hit-store stalls, ~40 cycles each on the Xbox 360: ~3000 cycles a
+// vertex in Conker's cutscenes).
+static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
 {
     u32 i, stride = fmt == VF_PD ? 12 : fmt == VF_DKR ? 10 : 16;
     u32 gm = geom(g);
+    float ldir[10][3], look[2][3], lc[10][3], m[4][4];
+    float texS = g->texScaleS, texT = g->texScaleT, fogMul = g->fogMul, fogOff = g->fogOff;
+    int l, lighting = (gm & GM_LIGHTING) && fmt != VF_DKR, cbfd = (gm & GM_LIGHTING) && fmt == VF_CBFD;
+    int billboard = fmt == VF_DKR && g->billboard, nLights = g->numLights;
     g->nVerts += n;
-    float ldir[10][3], look[2][3];
-    int l;
     if (v0 >= GFX_VTX_MAX) return;
     if (v0 + n > GFX_VTX_MAX) n = GFX_VTX_MAX - v0;
     update_combined(g);
+    memcpy(m, g->combined, sizeof(m));
     if (gm & GM_LIGHTING)
-        for (l = 0; l < g->numLights && l < 8; l++) to_model_dir(g->mv[g->mvi], g->lightDir[l], ldir[l]);
+        for (l = 0; l < nLights && l < 8; l++) to_model_dir(g->mv[g->mvi], g->lightDir[l], ldir[l]);
+    if (cbfd)
+        for (l = 0; l < 10; l++)
+        {
+            lc[l][0] = g->lightCol[l][0] / 255.0f;
+            lc[l][1] = g->lightCol[l][1] / 255.0f;
+            lc[l][2] = g->lightCol[l][2] / 255.0f;
+        }
     if (gm & GM_TEXGEN)
     {
         to_model_dir(g->mv[g->mvi], g->lookat[0], look[0]);
@@ -506,45 +565,75 @@ static void load_vertices_fmt(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
     for (i = 0; i < n; i++)
     {
         GfxVtx *v = &g->vtx[v0 + i];
-        u32 a = phys + i * stride;
-        float px = rd16(g, a), py = rd16(g, a + 2), pz = rd16(g, a + 4);
-        const float (*m)[4] = g->combined;
-        float s = 0, t = 0;
+        u32 a = phys + i * stride, clip = 0;
+        float px = rdf16(g, a), py = rdf16(g, a + 2), pz = rdf16(g, a + 4);
+        float s = 0, t = 0, x, y, z, w, r, gg, b, al, nx = 0, ny = 0, nz = 0;
         u32 c = fmt == VF_PD ? g->colorBase + (h64_load_be16(g->sys->rdram + ((a + 6) & 0x7FFFFE)) & 0xFF) :
                 fmt == VF_DKR ? a + 6 : a + 12;   // colour, or normal with lighting
+        int unlit = 0;
         if (fmt != VF_DKR)
         {
-            s = rd16(g, a + 8);
-            t = rd16(g, a + 10);
+            s = rdf16(g, a + 8);
+            t = rdf16(g, a + 10);
         }
-        v->x = px * m[0][0] + py * m[1][0] + pz * m[2][0] + m[3][0];
-        v->y = px * m[0][1] + py * m[1][1] + pz * m[2][1] + m[3][1];
-        v->z = px * m[0][2] + py * m[1][2] + pz * m[2][2] + m[3][2];
-        v->w = px * m[0][3] + py * m[1][3] + pz * m[2][3] + m[3][3];
-        if (fmt == VF_DKR && g->billboard)
+        al = rdf8(g, c + 3);
+        if (cbfd)
         {
-            // Billboards: positions relative to vertex 0 (GLideN64 gSPBillboardVertex).
-            v->x += g->vtx[0].x;
-            v->y += g->vtx[0].y;
-            v->z += g->vtx[0].z;
-            v->w += g->vtx[0].w;
+            nx = rdn8(g, g->normalBase + (v0 + i) * 2);
+            ny = rdn8(g, g->normalBase + (v0 + i) * 2 + 1);
+            nz = rdn8(g, a + 7);
+            r = rdf8(g, a + 12);
+            gg = rdf8(g, a + 13);
+            b = rdf8(g, a + 14);
+            unlit = rd8(g, a + 6) >= 0x80;   // the flag halfword's sign
         }
-        v->xyOverride = v->zOverride = 0;
-        v->a = rd8(g, c + 3);
-        if ((gm & GM_LIGHTING) && fmt == VF_CBFD)
-            cbfd_light(g, v, a, v0 + i, gm, ldir);
-        else if ((gm & GM_LIGHTING) && fmt != VF_DKR)
+        else if (lighting)
         {
-            float r, gg, b;
-            v->nx = (s8)rd8(g, c) / 128.0f;
-            v->ny = (s8)rd8(g, c + 1) / 128.0f;
-            v->nz = (s8)rd8(g, c + 2) / 128.0f;
-            r = g->lightCol[g->numLights][0];
-            gg = g->lightCol[g->numLights][1];
-            b = g->lightCol[g->numLights][2];
-            for (l = 0; l < g->numLights && l < 8; l++)
+            nx = rdn8(g, c);
+            ny = rdn8(g, c + 1);
+            nz = rdn8(g, c + 2);
+            r = gg = b = 0;
+        }
+        else
+        {
+            r = rdf8(g, c);
+            gg = rdf8(g, c + 1);
+            b = rdf8(g, c + 2);
+        }
+        // From here on, no memory read can alias what is computed.
+        x = px * m[0][0] + py * m[1][0] + pz * m[2][0] + m[3][0];
+        y = px * m[0][1] + py * m[1][1] + pz * m[2][1] + m[3][1];
+        z = px * m[0][2] + py * m[1][2] + pz * m[2][2] + m[3][2];
+        w = px * m[0][3] + py * m[1][3] + pz * m[2][3] + m[3][3];
+        if (billboard)
+        {
+            // Billboards: positions relative to vertex 0 (GLideN64 gSPBillboardVertex),
+            // as it is now (vertex 0 itself: its new position, doubled).
+            if (v0 + i == 0) { x += x; y += y; z += z; w += w; }
+            else { x += g->vtx[0].x; y += g->vtx[0].y; z += g->vtx[0].z; w += g->vtx[0].w; }
+        }
+        if (cbfd)
+        {
+            if (!unlit)
             {
-                float d = v->nx * ldir[l][0] + v->ny * ldir[l][1] + v->nz * ldir[l][2];
+                float fr, fg, fb;
+                u64 lt0 = h64_prof_now(g->sys);
+                cbfd_light(g, x, y, z, nx, ny, nz, ldir, lc, &fr, &fg, &fb);
+                g->sys->prof[H64_PROF_GFX_LIGHT] += h64_prof_now(g->sys) - lt0;
+                g->sys->prof[H64_PROF_GFX_NLIGHT] += (u64)nLights;
+                r *= fr;
+                gg *= fg;
+                b *= fb;
+            }
+        }
+        else if (lighting)
+        {
+            r = g->lightCol[nLights][0];
+            gg = g->lightCol[nLights][1];
+            b = g->lightCol[nLights][2];
+            for (l = 0; l < nLights && l < 8; l++)
+            {
+                float d = nx * ldir[l][0] + ny * ldir[l][1] + nz * ldir[l][2];
                 if (d > 0)
                 {
                     r += g->lightCol[l][0] * d;
@@ -552,56 +641,50 @@ static void load_vertices_fmt(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
                     b += g->lightCol[l][2] * d;
                 }
             }
-            v->r = r > 255.0f ? 255.0f : r;
-            v->g = gg > 255.0f ? 255.0f : gg;
-            v->b = b > 255.0f ? 255.0f : b;
+            r = r > 255.0f ? 255.0f : r;
+            gg = gg > 255.0f ? 255.0f : gg;
+            b = b > 255.0f ? 255.0f : b;
         }
-        if ((gm & GM_LIGHTING) && fmt != VF_DKR)
+        if (lighting && (gm & GM_TEXGEN))
         {
-            if (gm & GM_TEXGEN)
+            float tx = look[0][0] * nx + look[0][1] * ny + look[0][2] * nz;
+            float ty = look[1][0] * nx + look[1][1] * ny + look[1][2] * nz;
+            // GLideN64's formulas give texels (0..1024 before the
+            // G_TEXTURE scale); s and t here are in the vertex's s10.5
+            // units, hence x32 (MK64's and GoldenEye's shiny Nintendo
+            // logos sampled about one texel: dark).
+            if (gm & GM_TEXGEN_LINEAR)
             {
-                float x = look[0][0] * v->nx + look[0][1] * v->ny + look[0][2] * v->nz;
-                float y = look[1][0] * v->nx + look[1][1] * v->ny + look[1][2] * v->nz;
-                // GLideN64's formulas give texels (0..1024 before the
-                // G_TEXTURE scale); s and t here are in the vertex's s10.5
-                // units, hence x32 (MK64's and GoldenEye's shiny Nintendo
-                // logos sampled about one texel: dark).
-                if (gm & GM_TEXGEN_LINEAR)
-                {
-                    if (x < -1.0f) x = -1.0f;
-                    if (x > 1.0f) x = 1.0f;
-                    if (y < -1.0f) y = -1.0f;
-                    if (y > 1.0f) y = 1.0f;
-                    s = acosf(-x) * 325.94931f * 32.0f;
-                    t = acosf(-y) * 325.94931f * 32.0f;
-                }
-                else
-                {
-                    s = (x + 1.0f) * 512.0f * 32.0f;
-                    t = (y + 1.0f) * 512.0f * 32.0f;
-                }
+                if (tx < -1.0f) tx = -1.0f;
+                if (tx > 1.0f) tx = 1.0f;
+                if (ty < -1.0f) ty = -1.0f;
+                if (ty > 1.0f) ty = 1.0f;
+                s = acosf(-tx) * 325.94931f * 32.0f;
+                t = acosf(-ty) * 325.94931f * 32.0f;
+            }
+            else
+            {
+                s = (tx + 1.0f) * 512.0f * 32.0f;
+                t = (ty + 1.0f) * 512.0f * 32.0f;
             }
         }
-        else
+        if ((gm & GM_FOG) && w > 0)
         {
-            v->r = rd8(g, c);
-            v->g = rd8(g, c + 1);
-            v->b = rd8(g, c + 2);
-            v->nx = v->ny = v->nz = 0;
+            float f = z / w * fogMul + fogOff;
+            al = f < 0 ? 0.0f : f > 255.0f ? 255.0f : f;
         }
-        v->s = s * g->texScaleS;
-        v->t = t * g->texScaleT;
-        if ((gm & GM_FOG) && v->w > 0)
-        {
-            float f = v->z / v->w * g->fogMul + g->fogOff;
-            v->a = f < 0 ? 0.0f : f > 255.0f ? 255.0f : f;
-        }
-        v->clip = 0;
-        if (v->x > v->w) v->clip |= CL_POSX;
-        if (v->x < -v->w) v->clip |= CL_NEGX;
-        if (v->y > v->w) v->clip |= CL_POSY;
-        if (v->y < -v->w) v->clip |= CL_NEGY;
-        if (v->w < 0.01f) v->clip |= CL_W;
+        if (x > w) clip |= CL_POSX;
+        if (x < -w) clip |= CL_NEGX;
+        if (y > w) clip |= CL_POSY;
+        if (y < -w) clip |= CL_NEGY;
+        if (w < 0.01f) clip |= CL_W;
+        v->x = x; v->y = y; v->z = z; v->w = w;
+        v->r = r; v->g = gg; v->b = b; v->a = al;
+        v->s = s * texS;
+        v->t = t * texT;
+        v->nx = nx; v->ny = ny; v->nz = nz;
+        v->clip = clip;
+        v->xyOverride = v->zOverride = 0;
     }
 }
 
@@ -1567,6 +1650,7 @@ static void run_s2dex2(H64Gfx *g, u32 w0, u32 w1)
 // ---------------------------------------------------------------- task
 H64Gfx *h64_gfx_create(H64System *sys)
 {
+    init_tables();
     H64Gfx *g = new H64Gfx;
     int i;
     g->sys = sys;
@@ -1699,8 +1783,25 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
     *mustSync = 0;
     if (!g->snapshot) g->snapshot = (u8 *)malloc(H64_RDRAM_SIZE);
     if (!g->snapshot) { *mustSync = 1; return 1; }
-    for (k = 0; k + 1 < g->loadRanges.size(); k += 2)
-        memcpy(g->snapshot + g->loadRanges[k], sys->rdram + g->loadRanges[k], g->loadRanges[k + 1] - g->loadRanges[k]);
+    {
+        // Ranges sorted and merged first: a display list loads the same
+        // texels many times (Conker's cutscenes: thousands of loads a frame).
+        u64 t0 = h64_prof_now(sys);
+        std::vector<u64> &r = g->rangeSort;
+        size_t n = 0;
+        r.clear();
+        for (k = 0; k + 1 < g->loadRanges.size(); k += 2) r.push_back((u64)g->loadRanges[k] << 32 | g->loadRanges[k + 1]);
+        std::sort(r.begin(), r.end());
+        while (n < r.size())
+        {
+            u32 lo = (u32)(r[n] >> 32), hi = (u32)r[n];
+            for (n++; n < r.size() && (u32)(r[n] >> 32) <= hi; n++)
+                if ((u32)r[n] > hi) hi = (u32)r[n];
+            memcpy(g->snapshot + lo, sys->rdram + lo, hi - lo);
+            sys->prof[H64_PROF_SNAP_BYTES] += hi - lo;
+        }
+        sys->prof[H64_PROF_GFX_SNAPSHOT] += h64_prof_now(sys) - t0;
+    }
     return 1;
 }
 

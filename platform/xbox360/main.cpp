@@ -710,11 +710,13 @@ static void PadHook(H64System *sys)
     }
 }
 
+// The profiling clock: the time base register (49.875 MHz; the [prof] lines
+// divide by the performance counter's 50 MHz, 0.25 % off). Read thousands of
+// times a frame (each vertex batch); QueryPerformanceCounter cost enough to
+// show in what it measured.
 static u64 ProfClock(void)
 {
-    LARGE_INTEGER t;
-    QueryPerformanceCounter(&t);
-    return (u64)t.QuadPart;
+    return __mftb();
 }
 
 static int s_crashed;
@@ -1381,6 +1383,10 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                              xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
                              xs.bigRect ? "rectangle" : "triangle");
                 PcSamplerReport();
+                H64_INFO("[gprof] ms/frame on the graphics worker: snapshots %.1f (%u KB a frame), vertices %.1f (%u a frame; lighting %.1f, %u lights a frame)",
+                         pr[H64_PROF_GFX_SNAPSHOT] * k, (u32)(sys->prof[H64_PROF_SNAP_BYTES] / framesSincePerf / 1024),
+                         pr[H64_PROF_GFX_VTX] * k, (u32)(sys->prof[H64_PROF_GFX_NVTX] / framesSincePerf),
+                         pr[H64_PROF_GFX_LIGHT] * k, (u32)(sys->prof[H64_PROF_GFX_NLIGHT] / framesSincePerf));
                 H64_INFO("[cprof] ms/frame inside cpu: generated code %.1f (helper %.1f), scheduler events %.1f, TLB changes %.1f; waiting for the graphics worker %.1f (task end %.1f, RDP via DPC %.1f, task start %.1f)%s",
                          pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_TLB] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          pr[H64_PROF_WAIT_TASK] * k, pr[H64_PROF_WAIT_DPC] * k, pr[H64_PROF_WAIT_START] * k,

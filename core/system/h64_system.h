@@ -65,6 +65,12 @@ enum
     H64_PROF_WAIT_TASK,      // inside ASYNC_WAIT: at a graphics task's end
     H64_PROF_WAIT_DPC,       // inside ASYNC_WAIT: before RDP commands sent through DPC_END
     H64_PROF_WAIT_START,     // inside ASYNC_WAIT: before starting a task
+    H64_PROF_GFX_SNAPSHOT,   // inside GFX_HLE: copying what a task's texture loads read (prof[H64_PROF_SNAP_BYTES]: bytes)
+    H64_PROF_SNAP_BYTES,
+    H64_PROF_GFX_VTX,        // inside GFX_HLE: vertex loading (transform, lighting)
+    H64_PROF_GFX_NVTX,       // vertices loaded (a count)
+    H64_PROF_GFX_LIGHT,      // inside GFX_VTX: Conker's lighting (temporary measure)
+    H64_PROF_GFX_NLIGHT,     // lights summed over the vertices lit
     H64_PROF_COUNT
 };
 
