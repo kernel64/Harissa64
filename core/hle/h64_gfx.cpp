@@ -15,6 +15,8 @@
 
 #if defined(_XBOX)
 #include <ppcintrinsics.h>
+#include <xtl.h>        // the Win32 types xboxmath.h needs
+#include <xboxmath.h>
 #endif
 #include "../common/h64_crc32.h"
 #include "../common/h64_endian.h"
@@ -614,6 +616,106 @@ static H64_INLINE void cbfd_light(const H64Gfx *g, float x, float y, float z, fl
     *fb = b > 1.0f ? 1.0f : b;
 }
 
+#if defined(_XBOX)
+// Conker's point lights four at a time on VMX128 (the console only; the hosts
+// keep the scalar code above). Per vertex the scalar loop took ~200 cycles a
+// light (dependent chains with a division each on the in-order core); results
+// differ from it by rounding only (reciprocal estimate refined, sums in
+// another order). Lanes past the last light have no colour: they add zero.
+struct CbfdVec
+{
+    XMVECTOR px[2], py[2], pz[2], ca[2], dx[2], dy[2], dz[2], cr[2], cg[2], cb[2];
+    int groups, facing;
+};
+
+static void cbfd_prepare(const H64Gfx *g, const float ldir[][3], const float lc[][3], CbfdVec *v)
+{
+    __declspec(align(16)) float t[10][8];
+    int nl = g->numLights > 8 ? 8 : g->numLights, np = nl - 1, k, j;
+    if (np < 0) np = 0;
+    memset(t, 0, sizeof(t));
+    for (k = 0; k < np; k++)
+    {
+        t[0][k] = g->lightPos[k][0];
+        t[1][k] = g->lightPos[k][1];
+        t[2][k] = g->lightPos[k][2];
+        t[3][k] = g->lightCa[k];
+        t[4][k] = ldir[k][0];
+        t[5][k] = ldir[k][1];
+        t[6][k] = ldir[k][2];
+        t[7][k] = lc[k][0];
+        t[8][k] = lc[k][1];
+        t[9][k] = lc[k][2];
+    }
+    v->groups = (np + 3) / 4;
+    v->facing = g->advLighting && (g->geomRaw & 0x00400000u);
+    for (j = 0; j < 2; j++)
+    {
+        v->px[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[0][4 * j]);
+        v->py[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[1][4 * j]);
+        v->pz[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[2][4 * j]);
+        v->ca[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[3][4 * j]);
+        v->dx[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[4][4 * j]);
+        v->dy[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[5][4 * j]);
+        v->dz[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[6][4 * j]);
+        v->cr[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[7][4 * j]);
+        v->cg[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[8][4 * j]);
+        v->cb[j] = XMLoadFloat4A((const XMFLOAT4A *)&t[9][4 * j]);
+    }
+}
+
+static H64_INLINE void cbfd_light_vmx(const H64Gfx *g, const CbfdVec *v, float x, float y, float z, float nx, float ny,
+                                      float nz, const float ldir[][3], const float lc[][3], float *fr, float *fg, float *fb)
+{
+    int nl = g->numLights > 8 ? 8 : g->numLights, l, k;
+    const float *cm = g->coordMod;
+    float r = lc[nl][0], gg = lc[nl][1], b = lc[nl][2];
+    XMVECTOR one = XMVectorSplatOne(), zero = XMVectorZero(), scale = XMVectorReplicate(1.0f / 32768.0f);
+    XMVECTOR P0 = XMVectorReplicate((x + cm[8]) * cm[12]), P1 = XMVectorReplicate((y + cm[9]) * cm[13]);
+    XMVECTOR P2 = XMVectorReplicate((z + cm[10]) * cm[14]);
+    XMVECTOR NX = XMVectorReplicate(nx), NY = XMVectorReplicate(ny), NZ = XMVectorReplicate(nz);
+    XMVECTOR aR = zero, aG = zero, aB = zero, sums;
+    __declspec(align(16)) float out[4];
+    l = nl - 1;
+    if (g->advLighting && l >= 0)
+    {
+        float d = nx * ldir[l][0] + ny * ldir[l][1] + nz * ldir[l][2];
+        d = fsel(d - 1.0f, 1.0f, d);
+        d = fsel(-d, 0.0f, d);
+        r += lc[l][0] * d;
+        gg += lc[l][1] * d;
+        b += lc[l][2] * d;
+    }
+    for (k = 0; k < v->groups; k++)
+    {
+        XMVECTOR dx = XMVectorSubtract(P0, v->px[k]), dy = XMVectorSubtract(P1, v->py[k]), dz = XMVectorSubtract(P2, v->pz[k]);
+        XMVECTOR len = XMVectorMultiply(XMVectorMultiplyAdd(dz, dz, XMVectorMultiplyAdd(dy, dy, XMVectorMultiply(dx, dx))), scale);
+        XMVECTOR in = XMVectorMultiply(v->ca[k], XMVectorReciprocal(len));
+        in = XMVectorSelect(in, one, XMVectorLessOrEqual(len, zero));   // len <= 0: 1
+        in = XMVectorMin(in, one);
+        if (v->facing)
+        {
+            XMVECTOR d = XMVectorMultiplyAdd(NZ, v->dz[k], XMVectorMultiplyAdd(NY, v->dy[k], XMVectorMultiply(NX, v->dx[k])));
+            in = XMVectorMultiply(in, XMVectorMin(d, one));
+        }
+        in = XMVectorMax(in, zero);
+        aR = XMVectorMultiplyAdd(v->cr[k], in, aR);
+        aG = XMVectorMultiplyAdd(v->cg[k], in, aG);
+        aB = XMVectorMultiplyAdd(v->cb[k], in, aB);
+    }
+    // The three sums at once: x = R, y = G, z = B.
+    sums = XMVectorSelect(XMVector4Dot(aG, one), XMVector4Dot(aR, one), XMVectorSelectControl(1, 0, 0, 0));
+    sums = XMVectorSelect(sums, XMVector4Dot(aB, one), XMVectorSelectControl(0, 0, 1, 0));
+    XMStoreFloat4A((XMFLOAT4A *)out, sums);
+    r += out[0];
+    gg += out[1];
+    b += out[2];
+    *fr = fsel(r - 1.0f, 1.0f, r);
+    *fg = fsel(gg - 1.0f, 1.0f, gg);
+    *fb = fsel(b - 1.0f, 1.0f, b);
+}
+#endif
+
 static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt);
 static void load_vertices_fmt(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
 {
@@ -638,6 +740,9 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
     int billboard = fmt == VF_DKR && g->billboard, nLights = g->numLights, noNear = g->uc->noNear;
     float vs0 = g->vscale[0], vs1 = g->vscale[1], vs2 = g->vscale[2], vt0 = g->vtrans[0], vt1 = g->vtrans[1], vt2 = g->vtrans[2];
     u32 vpGen = g->vpGen;
+#if defined(_XBOX)
+    CbfdVec cvec;
+#endif
     g->nVerts += n;
     if (v0 >= GFX_VTX_MAX) return;
     if (v0 + n > GFX_VTX_MAX) n = GFX_VTX_MAX - v0;
@@ -652,6 +757,9 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
             lc[l][1] = g->lightCol[l][1] / 255.0f;
             lc[l][2] = g->lightCol[l][2] / 255.0f;
         }
+#if defined(_XBOX)
+    if (cbfd) cbfd_prepare(g, ldir, lc, &cvec);
+#endif
     if (gm & GM_TEXGEN)
     {
         to_model_dir(g->mv[g->mvi], g->lookat[0], look[0]);
@@ -712,7 +820,11 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
             if (!unlit)
             {
                 float fr, fg, fb;
+#if defined(_XBOX)
+                cbfd_light_vmx(g, &cvec, x, y, z, nx, ny, nz, ldir, lc, &fr, &fg, &fb);
+#else
                 cbfd_light(g, x, y, z, nx, ny, nz, ldir, lc, &fr, &fg, &fb);
+#endif
                 g->pNlight += (u64)nLights;
                 r *= fr;
                 gg *= fg;
