@@ -45,7 +45,7 @@ struct Config
     u32 audioCycles;    // audiocycles=N: CPU cycles an asynchronous audio task keeps the RSP busy
     u32 gfxCycles;      // gfxcycles=N: CPU cycles an asynchronous graphics task keeps the RSP busy
     int gfxTiming;      // gfxtiming=1: graphics tasks last the real microcode's estimated time (at least gfxcycles)
-    int lateParse;      // lateparse=1: graphics tasks end without waiting for their parse (experimental)
+    int lateParse;      // lateparse=0/1: graphics tasks end without waiting for their parse (experimental; -1: per game)
     int cpi;            // cpi=N: CPU cycles per instruction (2 by default; mupen64plus's CountPerOp N is 2N)
     int audioMs;        // audioms=N: audio queue target in ms (pacing threshold)
     int stateSlot;      // stateslot=N: save state slot at start (1..9)

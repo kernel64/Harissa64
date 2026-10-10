@@ -1082,7 +1082,11 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
     sys->options.gfxTiming = c->gfxTiming;
-    sys->options.gfxLateParse = c->lateParse;
+    // Late parse (see H64Options.gfxLateParse): on by default only for the
+    // games checked with it (Conker's cutscenes 50 -> 60 VI/s); SM64, MK64 and
+    // Majora's Mask rewrite their display lists right after a task ends.
+    sys->options.gfxLateParse = c->lateParse >= 0 ? c->lateParse : !memcmp(sys->rom.gameCode, "NFU", 3);
+    if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
     sys->profClock = ProfClock;
