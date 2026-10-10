@@ -71,6 +71,11 @@ enum
     H64_PROF_GFX_NVTX,       // vertices loaded (a count)
     H64_PROF_GFX_LIGHT,      // inside GFX_VTX: Conker's lighting (temporary measure)
     H64_PROF_GFX_NLIGHT,     // lights summed over the vertices lit
+    H64_PROF_TMEM_LOADS,     // RDP texture loads (a count)
+    H64_PROF_TMEM_WORDS,     // 64-bit words they wrote
+    H64_PROF_TMEM_TLUT,      // time in palette loads (temporary measure)
+    H64_PROF_TMEM_NTLUT,     // palette loads (a count)
+    H64_PROF_TMEM_TIME,      // time in block and tile loads
     H64_PROF_COUNT
 };
 

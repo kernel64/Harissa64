@@ -43,7 +43,21 @@ static u8 rd8(H64System *sys, u32 a)
     return ram[a & (H64_RDRAM_SIZE - 1)];
 }
 
+static void load_body(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th, int mode);
 void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th, int mode)
+{
+    u64 t0 = h64_prof_now(sys);
+    load_body(sys, tileIndex, sl, tl, sh, th, mode);
+    if (mode == 1)
+    {
+        sys->prof[H64_PROF_TMEM_TLUT] += h64_prof_now(sys) - t0;
+        sys->prof[H64_PROF_TMEM_NTLUT]++;
+    }
+    else
+        sys->prof[H64_PROF_TMEM_TIME] += h64_prof_now(sys) - t0;
+}
+
+static void load_body(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th, int mode)
 {
     H64RdpState *st = sys->rdpState;
     H64RdpTile *tile = &st->tiles[tileIndex & 7];
@@ -94,6 +108,41 @@ void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th,
             srcStride = st->texWidth << (texSize - 1);
         }
 
+        sys->prof[H64_PROF_TMEM_LOADS]++;
+        sys->prof[H64_PROF_TMEM_WORDS] += (u64)lines * wordsPerLine;
+        if (!split && !(srcBase & 3) && !(srcStride & 3) &&
+            (u64)srcBase + (u64)(lines - 1) * srcStride + (u64)wordsPerLine * 8 <= H64_RDRAM_SIZE)
+        {
+            // The common case, as two 32-bit copies a word: the XDK compiler
+            // turns an 8-byte memcpy into a byte loop (~190 cycles a word
+            // with the rest, 3.7 ms a frame in Conker's cutscenes).
+            for (y = 0; y < lines; y++)
+            {
+                const u8 *s = ram + srcBase + y * srcStride;
+                u32 lineOff = tmemBase + y * tile->stride, oddLine = y & 1;
+                for (w = 0; w < wordsPerLine; w++, s += 8)
+                {
+                    u32 t, off, v0 = h64_load_be32(s), v1 = h64_load_be32(s + 4);
+                    u8 *d;
+                    if (mode == 2)
+                    {
+                        t = dxtCounter >> 11;
+                        dxtCounter += th;
+                        off = tmemBase + t * tile->stride + w * 8;
+                    }
+                    else
+                    {
+                        t = oddLine;
+                        off = lineOff + w * 8;
+                    }
+                    d = st->tmem + (off & 0xFF8);
+                    if (t & 1) { u32 k = v0; v0 = v1; v1 = k; }   // odd lines swap halves
+                    h64_store_be32(d, v0);
+                    h64_store_be32(d + 4, v1);
+                }
+            }
+            return;
+        }
         for (y = 0; y < lines; y++)
         {
             u32 src = srcBase + y * srcStride;

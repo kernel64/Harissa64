@@ -19,6 +19,7 @@
 #include "../common/h64_crc32.h"
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
+#include "../common/h64_mem.h"
 #include "../rdp/h64_rdp.h"
 #include "../rdp/h64_rdp_state.h"
 #include "../system/h64_system.h"
@@ -762,9 +763,9 @@ static int clip_plane(ClipVtx *in, int n, ClipVtx *out, const float p[4])
     return m;
 }
 
-static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
+static void project_iw(H64Gfx *g, const ClipVtx *c, float iw, H64RenderVertex *o)
 {
-    float iw = 1.0f / c->w, z;
+    float z;
     o->x = g->vtrans[0] + g->vscale[0] * c->x * iw;
     o->y = g->vtrans[1] - g->vscale[1] * c->y * iw;
     // Not clamped per vertex: the RDP clamps Z per pixel. With the ".NoN"
@@ -783,6 +784,11 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
     o->t = c->t;
 }
 
+static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
+{
+    project_iw(g, c, 1.0f / c->w, o);
+}
+
 static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
 {
     const GfxVtx *v[3];
@@ -790,7 +796,7 @@ static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     H64RenderVertex sv[16];
     u32 gm = geom(g), flags = 0;
     int n = 3, cur = 0, k, needClip = 0;
-    float area = 0;
+    float area = 0, iw[3];
     g->nTris++;
     if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || i2 >= GFX_VTX_MAX) return;
     v[0] = &g->vtx[i0];
@@ -828,11 +834,14 @@ static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         }
     if (!needClip)
     {
-        // Keep the projected positions inside the RDP's range.
+        // Keep the projected positions inside the RDP's range (1 / w kept
+        // for project: one division a vertex, ~30 cycles each on the Xbox 360).
         for (k = 0; k < 3; k++)
         {
-            float sx = g->vtrans[0] + g->vscale[0] * poly[0][k].x / poly[0][k].w;
-            float sy = g->vtrans[1] - g->vscale[1] * poly[0][k].y / poly[0][k].w;
+            float sx, sy;
+            iw[k] = 1.0f / poly[0][k].w;
+            sx = g->vtrans[0] + g->vscale[0] * poly[0][k].x * iw[k];
+            sy = g->vtrans[1] - g->vscale[1] * poly[0][k].y * iw[k];
             if (sx < -1000.0f || sx > 2000.0f || sy < -1000.0f || sy > 2000.0f) needClip = 2;
         }
     }
@@ -861,7 +870,8 @@ static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     }
     for (k = 0; k < n; k++)
     {
-        project(g, &poly[cur][k], &sv[k]);
+        if (!needClip) project_iw(g, &poly[cur][k], iw[k], &sv[k]);
+        else project(g, &poly[cur][k], &sv[k]);
         if (!needClip && k < 3)
         {
             if (v[k]->xyOverride) { sv[k].x = v[k]->sx; sv[k].y = v[k]->sy; }
@@ -872,7 +882,7 @@ static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     // points down, so their signed area is negative here.
     for (k = 0; k < n; k++)
     {
-        const H64RenderVertex *a = &sv[k], *b = &sv[(k + 1) % n];
+        const H64RenderVertex *a = &sv[k], *b = &sv[k + 1 < n ? k + 1 : 0];
         area += a->x * b->y - b->x * a->y;
     }
     if (area == 0) return;
@@ -1696,7 +1706,7 @@ H64Gfx *h64_gfx_create(H64System *sys)
 
 void h64_gfx_free(H64Gfx *g)
 {
-    free(g->snapshot);
+    h64_big_free(g->snapshot);
     delete g;
 }
 
@@ -1781,7 +1791,7 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
     // A task that reads a colour image as a texture renders from the snapshot
     // too: the renderer copies the image back into both (h64_gfx_render).
     *mustSync = 0;
-    if (!g->snapshot) g->snapshot = (u8 *)malloc(H64_RDRAM_SIZE);
+    if (!g->snapshot) g->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
     if (!g->snapshot) { *mustSync = 1; return 1; }
     {
         // Ranges sorted and merged first: a display list loads the same

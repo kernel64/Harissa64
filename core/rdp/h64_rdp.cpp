@@ -10,6 +10,7 @@
 
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
+#include "../common/h64_mem.h"
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 #include "../hle/h64_hle.h"
@@ -72,8 +73,8 @@ struct H64DpcAsync
 void h64_rdp_async_free(H64System *sys)
 {
     if (!sys->dpcAsync) return;   // the caller waited for the worker
-    free(sys->dpcAsync->batch[0].snap);
-    free(sys->dpcAsync->batch[1].snap);
+    h64_big_free(sys->dpcAsync->batch[0].snap);
+    h64_big_free(sys->dpcAsync->batch[1].snap);
     delete sys->dpcAsync;
     sys->dpcAsync = 0;
 }
@@ -180,7 +181,7 @@ static void run_commands_async(H64System *sys)
         }
     }
     if (b->words.empty()) return;
-    if (!sync && !b->snap) b->snap = (u8 *)malloc(H64_RDRAM_SIZE);
+    if (!sync && !b->snap) b->snap = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
     if (sync || !b->snap)
     {
         u64 t0 = h64_prof_now(sys);

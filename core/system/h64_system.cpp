@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "../common/h64_fenv.h"
+#include "../common/h64_mem.h"
 #include "../common/h64_log.h"
 #include "../hle/h64_hle.h"
 
@@ -12,14 +13,14 @@ int h64_system_init(H64System *sys, const u8 *romFile, u32 romSize, const H64Opt
     memset(sys, 0, sizeof(*sys));
     if (opt) sys->options = *opt;
     else { sys->options.hleBoot = 1; sys->options.emux = 1; }
-    sys->rdram = (u8 *)malloc(H64_RDRAM_SIZE);
+    sys->rdram = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);   // large pages on the Xbox 360
     if (!sys->rdram)
         return -1;
     sys->save = (H64SaveMem *)malloc(sizeof(H64SaveMem));
     if (!sys->save || h64_rom_load(&sys->rom, romFile, romSize))
     {
         free(sys->save);
-        free(sys->rdram);
+        h64_big_free(sys->rdram);
         sys->save = 0;
         sys->rdram = 0;
         return -1;
@@ -41,7 +42,7 @@ void h64_system_free(H64System *sys)
     h64_jit_free(sys);
     if (sys->hle) h64_hle_free(sys->hle);
     sys->hle = 0;
-    free(sys->rdram);
+    h64_big_free(sys->rdram);
     sys->rdram = 0;
     free(sys->save);
     sys->save = 0;
