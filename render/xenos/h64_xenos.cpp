@@ -159,7 +159,14 @@ struct Xenos
 
     FbSlot fb[FB_SLOTS];
     int curSlot;        // slot whose image is in the N64 render target (-1: none)
-    int edramOwner;     // slot whose colour and depth the N64 EDRAM target holds (-1: none)
+    int edramOwner;     // slot whose colour the N64 EDRAM target holds (-1: none)
+    // The depth image (RDRAM address) the EDRAM depth holds (0xFFFFFFFF:
+    // unknown). As on the N64, where the Z buffer is an RDRAM image, the
+    // depth stays when the game draws into another colour image; it is
+    // cleared only when a primitive uses another depth image. Clearing it at
+    // each change of colour image let the characters inside Conker's pub
+    // show through the closed door (it draws small images mid-frame).
+    u32 edramDepthAddr;
     std::vector<u32> copyBuf;
     IDirect3DSurface9 *rbSurf;     // EDRAM target at EDRAM_READBACK
     IDirect3DTexture9 *rbTex;      // its resolve, in CPU-cached memory (D3DUSAGE_CPU_CACHED_MEMORY)
@@ -1232,13 +1239,13 @@ static void select_framebuffer(Xenos *x)
         s->addr = addr;
         s->valid = 0;
         s->drawnH = 0;
-        x->dev->Clear(0, NULL, D3DCLEAR_TARGET | D3DCLEAR_ZBUFFER, x->debug == 1 ? 0xFF0000FF : 0xFF000000, 1.0f, 0);
+        x->dev->Clear(0, NULL, D3DCLEAR_TARGET, x->debug == 1 ? 0xFF0000FF : 0xFF000000, 1.0f, 0);
     }
     else if (best != x->edramOwner)
     {
-        // The EDRAM target holds another image: restore this one (its depth is lost).
+        // The EDRAM target holds another image: restore this one's colour
+        // (the depth is the depth image's: kept, see edramDepthAddr).
         s = &x->fb[best];
-        x->dev->Clear(0, NULL, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         draw_fullscreen(x, s->tex, 1.0f, 1.0f);
     }
     else
@@ -1473,6 +1480,12 @@ static void set_depth(Xenos *x, int hasDepth)
     const H64RdpState *st = x->st;
     int test = hasDepth && (st->depthBlendFlags & DB_DEPTH_TEST);
     int update = hasDepth && (st->depthBlendFlags & DB_DEPTH_UPDATE);
+    if ((test || update) && (st->depthAddr & 0xFFFFFF) != x->edramDepthAddr)
+    {
+        // Another depth image than the one in EDRAM: its content is unknown.
+        x->dev->Clear(0, NULL, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
+        x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
+    }
     x->dev->SetRenderState(D3DRS_ZENABLE, test || update ? TRUE : FALSE);
     x->dev->SetRenderState(D3DRS_ZFUNC, test ? D3DCMP_LESSEQUAL : D3DCMP_ALWAYS);
     x->dev->SetRenderState(D3DRS_ZWRITEENABLE, update && st->zMode != 3 ? TRUE : FALSE);
@@ -1511,10 +1524,12 @@ static void set_alpha_test(Xenos *x)
     }
     else if (st->rasterFlags & RS_CVG_TIMES_ALPHA)
     {
-        // Coverage times alpha without blending: texels with alpha below one half drop out.
+        // Coverage times alpha: the RDP's coverage becomes alpha * 8 / 256
+        // subsamples and only a pixel left with none is dropped (colour and
+        // depth): alpha below 32 (one half dropped parts of Conker's pub door).
         x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
         x->dev->SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATEREQUAL);
-        x->dev->SetRenderState(D3DRS_ALPHAREF, 0x80);
+        x->dev->SetRenderState(D3DRS_ALPHAREF, 0x20);
     }
     else
         x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
@@ -1699,7 +1714,14 @@ static void fill_rect(Xenos *x, const u32 *w)
     if ((st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF))
     {
         // Filling the depth image: a depth clear of the frame being drawn.
-        if (x->curSlot >= 0 && x->targetBound) x->dev->Clear(1, &r, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
+        // Whatever colour image the EDRAM target holds (the depth is separate
+        // EDRAM): it is bound again first (unbound after a present or a copy
+        // back, which used to skip the clear; harmless while every change of
+        // colour image cleared the depth too).
+        flush_batch(x);
+        bind_n64_target(x);
+        x->dev->Clear(1, &r, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
+        x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
         return;
     }
     select_framebuffer(x);
@@ -1974,6 +1996,7 @@ static void xenos_reset(void *user)
     }
     x->curSlot = -1;
     x->edramOwner = -1;
+    x->edramDepthAddr = 0xFFFFFFFFu;
     x->shownSlot = -1;
     x->targetBound = 0;
     x->tmemGen++;
@@ -2226,6 +2249,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->batch.reserve(BATCH_VERTICES);
     x->curSlot = -1;
     x->edramOwner = -1;
+    x->edramDepthAddr = 0xFFFFFFFFu;
     x->shownSlot = -1;
     x->drewFrame = 0;
     x->blankPresents = 0;
@@ -2332,8 +2356,10 @@ void h64_xenos_free(H64Renderer *r)
     for (it = x->shaders.begin(); it != x->shaders.end(); ++it)
         if (it->second) it->second->Release();
     for (i = 0; i < FB_SLOTS; i++)
+    {
         if (x->fb[i].tex) x->fb[i].tex->Release();
         if (x->fb[i].front) x->fb[i].front->Release();
+    }
     for (i = 0; i < 2; i++)
         if (x->cpuFb[i]) x->cpuFb[i]->Release();
     if (x->dummy) x->dummy->Release();
