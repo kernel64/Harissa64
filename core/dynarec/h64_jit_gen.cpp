@@ -32,7 +32,7 @@
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
 
-// 112-byte ELFv1 area, 112..151 rtSlow's saves, 152..295 f14..f31,
+// 112-byte ELFv1 area, 112..143 rtSlow's saves, 144 the caller's CR, 152..295 f14..f31,
 // 296..439 r14..r31, 440 LR.
 #define FRAME 448
 #define FRAME_FPR(r) (152 + 8 * ((s32)(r) - 14))
@@ -48,8 +48,11 @@ static_assert(offsetof(H64Jit, indBody) < 32768, "jit->indBody out of displaceme
 // The cold part: each slow path writes back and reloads cached registers.
 #define MAX_COLD_BYTES (H64_JIT_MAX_INSNS * 1024 + 4096)
 
-// Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r27 branch taken, r26 jump target.
-enum { R_COND = 27, R_TARGET = 26 };
+// Registers: r31 sys, r30 cpu, r29 RDRAM, r28 helper, r26 jump target. A
+// branch's condition stays in CR field 2 (non-volatile: C calls keep it; the
+// shared prologue saves the caller's), as one bit and the value meaning "taken".
+enum { R_TARGET = 26, CR_BR = 2 };
+#define FRAME_CR 144
 
 #define OFF_GPR(i) ((s32)(offsetof(H64Cpu, gpr) + 8 * (i)))
 #define OFF_HI ((s32)offsetof(H64Cpu, hi))
@@ -187,6 +190,8 @@ struct Gen
     int fpuKnown, rmNearest;
     u32 fpuFr;
     int tailExit;     // the current instruction's slow path leaves the block afterwards (a guard failed)
+    int condAlways;   // the branch being compiled is always taken (J, JAL, JR, JALR)
+    u32 condBit, condBo;   // else: taken when CR field 2 bit condBit (PPC_LT...) is set (BO 12) or clear (BO 4)
     u32 ftouch;       // FGRs the current instruction reads or writes through the FPR cache
 };
 
@@ -511,7 +516,10 @@ static void load_ptr(Gen *g, u32 rt, s32 off, u32 ra)
 
 static struct { u32 patchAt, target; } s_linkTails[H64_JIT_MAX_INSNS * 2];
 static u32 s_nLinkTails;
-static int s_tailSetsPc[H64_JIT_MAX_INSNS * 2];   // the tail also writes pc, nextPc, branchPending (compact exits)
+// The tail also writes pc, nextPc, branchPending: 1 compact exits (and the
+// word before the patch site goes to the same tail on an event), 2 the exits
+// of a conditional branch (events go to a TAIL_EVENT cold tail).
+static int s_tailSetsPc[H64_JIT_MAX_INSNS * 2];
 
 static void link_exit(Gen *g, u32 targetPc)
 {
@@ -592,7 +600,18 @@ static void emit_cold_links(Gen *g, H64PpcCode *hot)
         u32 patchAt = s_linkTails[k].patchAt;
         s32 off = (s32)((const u8 *)(c->buf + c->pos) - (const u8 *)(hot->buf + patchAt));
         if (patchAt < hot->cap) hot->buf[patchAt] = 0x48000000u | ((u32)off & 0x03FFFFFCu);
-        if (s_tailSetsPc[k])
+        if (s_tailSetsPc[k] == 2)
+        {
+            ppc_li64(c, 3, sext32(s_linkTails[k].target));
+            ppc_std(c, 3, OFF_PC, JR_CPU);
+            ppc_addi(c, 3, 3, 4);
+            ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
+            ppc_li(c, 3, 0);
+            ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+            s_tailSetsPc[k] = 0;
+            load_ptr(g, 5, (s32)offsetof(H64System, jit), JR_SYS);
+        }
+        else if (s_tailSetsPc[k])
         {
             // Compact exits: on an event or the run's end (rtLink said ne) the
             // exit leaves without offering itself for linking: it may be
@@ -633,6 +652,21 @@ static void emit_cold_links(Gen *g, H64PpcCode *hot)
     s_nLinkTails = 0;
 }
 
+// Conditional branches on the compiled branch's condition (emit_branch_head);
+// NO_BRANCH: never taken (nothing emitted).
+#define NO_BRANCH 0xFFFFFFFFu
+static u32 bc_taken(Gen *g)
+{
+    if (g->condAlways) return ppc_b_fwd(&g->c);
+    return ppc_bc_fwd(&g->c, g->condBo, CR_BR, g->condBit);
+}
+
+static u32 bc_not_taken(Gen *g)
+{
+    if (g->condAlways) return NO_BRANCH;
+    return ppc_bc_fwd(&g->c, g->condBo ^ 8, CR_BR, g->condBit);
+}
+
 // The exit after a native branch: linked per outcome when the target is fixed.
 static void branch_exit(Gen *g, int dynamicTarget, u64 target, u32 fallthrough)
 {
@@ -651,9 +685,9 @@ static void branch_exit(Gen *g, int dynamicTarget, u64 target, u32 fallthrough)
         exit_block(g);
         return;
     }
-    ppc_cmpdi(&g->c, 0, R_COND, 0);
-    notTaken = ppc_bc_fwd(&g->c, 12, 0, PPC_EQ);
+    notTaken = bc_not_taken(g);
     link_exit(g, (u32)target);
+    if (notTaken == NO_BRANCH) return;
     ppc_patch_here(&g->c, notTaken);
     link_exit(g, fallthrough);
 }
@@ -718,6 +752,8 @@ static void emit_prologue(Gen *g)
 #endif
     ppc_mflr(c, 0);
     ppc_std(c, 0, FRAME - 8, 1);
+    ppc_mfcr(c, 0);
+    ppc_stw(c, 0, FRAME_CR, 1);
     for (r = RC_FIRST; r < 32; r++) ppc_std(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
     for (r = 14; r < 32; r++) ppc_stfd(c, r, FRAME_FPR(r), 1);   // the FPR cache's non-volatile registers
     ppc_mr(c, JR_SYS, 3);
@@ -740,6 +776,8 @@ static void emit_epilogue(Gen *g)
     u32 r;
     ppc_ld(c, 0, FRAME - 8, 1);
     ppc_mtlr(c, 0);
+    ppc_lwz(c, 0, FRAME_CR, 1);
+    ppc_mtcrf(c, 0x20, 0);   // CR field 2
     for (r = RC_FIRST; r < 32; r++) ppc_ld(c, r, FRAME - 16 - 8 * (s32)(31 - r), 1);
     for (r = 14; r < 32; r++) ppc_lfd(c, r, FRAME_FPR(r), 1);
     ppc_addi(c, 1, 1, FRAME);
@@ -1556,17 +1594,19 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
     }
     else
     {
+        // Straight into the cached register (the slow path reloads it).
+        u32 d = rt ? dst_gpr(g, rt, 5) : 5;
         switch (opc)
         {
-        case 0x20: ppc_lbzx(c, 5, JR_RDRAM, 4); ppc_extsb(c, 5, 5); break;
-        case 0x24: ppc_lbzx(c, 5, JR_RDRAM, 4); break;
-        case 0x21: ppc_lhax(c, 5, JR_RDRAM, 4); break;
-        case 0x25: ppc_lhzx(c, 5, JR_RDRAM, 4); break;
-        case 0x23: ppc_lwax(c, 5, JR_RDRAM, 4); break;
-        case 0x27: ppc_lwzx(c, 5, JR_RDRAM, 4); break;
-        default: ppc_ldx(c, 5, JR_RDRAM, 4); break;
+        case 0x20: ppc_lbzx(c, d, JR_RDRAM, 4); ppc_extsb(c, d, d); break;
+        case 0x24: ppc_lbzx(c, d, JR_RDRAM, 4); break;
+        case 0x21: ppc_lhax(c, d, JR_RDRAM, 4); break;
+        case 0x25: ppc_lhzx(c, d, JR_RDRAM, 4); break;
+        case 0x23: ppc_lwax(c, d, JR_RDRAM, 4); break;
+        case 0x27: ppc_lwzx(c, d, JR_RDRAM, 4); break;
+        default: ppc_ldx(c, d, JR_RDRAM, 4); break;
         }
-        store_gpr(g, 5, rt);
+        dst_done(g, d, rt);
     }
     *nSlowOut = nSlow;
     return 1;
@@ -1578,8 +1618,17 @@ static int emit_mem_fast(Gen *g, u32 op, u32 *slow, u32 *nSlowOut)
 // The slow paths are emitted after the block's body (emit_cold_tails), so the
 // fast paths stay contiguous in the instruction cache; each one branches back
 // to the instruction after its fast path.
+enum { TAIL_SLOW, TAIL_SLOT, TAIL_TLB, TAIL_EVENT };
 struct ColdTail
 {
+    int kind;             // TAIL_SLOW: an instruction's slow path; TAIL_SLOT: a branch's delay slot left
+                          // its fast path (the interpreter runs it as a delay slot, then the block ends);
+                          // TAIL_TLB: the block's page check failed; TAIL_EVENT: a conditional
+                          // branch's exits stop for an event or the run's end (counters added)
+    int dyn, condAlways;  // TAIL_SLOT: the branch (see emit_branch_head)
+    u32 condBit, condBo;
+    u64 target;
+    const void *block;    // TAIL_TLB: the H64JitBlock
     u32 slow[16], nSlow;
     u32 pc, pend, back;
     u32 veneer;           // hot word: b <the tail in the cold region>
@@ -1608,6 +1657,7 @@ static void emit_slow_tail(Gen *g, u32 pc, const u32 *slow, u32 nSlow)
     u32 i;
     if (s_nTails >= H64_JIT_MAX_INSNS + 2) { g->c.overflow = 1; return; }
     t = &s_tails[s_nTails++];
+    t->kind = TAIL_SLOW;
     for (i = 0; i < nSlow && i < 16; i++) t->slow[i] = slow[i];
     t->nSlow = nSlow < 16 ? nSlow : 16;
     t->pc = pc;
@@ -1674,6 +1724,9 @@ static void fc_slow_call(Gen *g, const u32 *routine, const RegCache *r, u32 mask
     }
 }
 
+static void emit_slot_interp(Gen *g, int dynamicTarget, u64 target, u32 dsPc);
+static void store_branch_pc(Gen *g, int dynamicTarget, u64 target, u32 fallthrough);
+
 // Cold side (g->c is the cold buffer here, hot the block's buffer).
 static void emit_cold_tails(Gen *g, H64PpcCode *hot)
 {
@@ -1684,6 +1737,38 @@ static void emit_cold_tails(Gen *g, H64PpcCode *hot)
         ColdTail *t = &s_tails[k];
         u32 m, reload = 0;
         t->coldStart = c->buf + c->pos;
+        if (t->kind == TAIL_TLB)
+        {
+#if defined(H64_JIT_ABI_XBOX)
+            ppc_li32u(c, 3, (u32)(uintptr_t)t->block);
+#else
+            ppc_li64(c, 3, (u64)(uintptr_t)t->block);
+#endif
+            ppc_li32u(c, 4, t->pc);
+            ppc_branch_to(c, g->sys->jit->rtTlbStale, 0);
+            continue;
+        }
+        if (t->kind == TAIL_EVENT)
+        {
+            g->condAlways = t->condAlways;
+            g->condBit = t->condBit;
+            g->condBo = t->condBo;
+            store_branch_pc(g, 0, t->target, t->pc);   // t->pc: the fall-through
+            ppc_li(c, 3, 0);
+            ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+            add_exit(g, ppc_b_fwd(c));
+            continue;
+        }
+        if (t->kind == TAIL_SLOT)
+        {
+            g->rc = t->pre;
+            g->pending = t->pend;
+            g->condAlways = t->condAlways;
+            g->condBit = t->condBit;
+            g->condBo = t->condBo;
+            emit_slot_interp(g, t->dyn, t->target, t->pc);
+            continue;
+        }
         if (g->cacheOn)
         {
             rc_writeback_gpr(g, &t->pre);
@@ -2128,7 +2213,8 @@ static int emit_fpu(Gen *g, u32 op, u32 pc)
 }
 
 // ---- Branches ----
-// Computes R_COND (1: taken) and R_TARGET for a native branch; writes the link.
+// Sets the condition (CR field 2, g->condBit/condBo/condAlways) and R_TARGET
+// for a native branch; writes the link.
 // Returns 0 when the branch is not handled natively (BC1x).
 // The exits after a native branch with a fixed target and its slot: compact
 // linked exits per outcome; J/JAL and BEQ rs,rs only have the taken one.
@@ -2141,14 +2227,47 @@ static void branch_exit_n(Gen *g, u32 op, u32 pending, u64 target, u32 fallthrou
         exit_block(g);
         return;
     }
-    if (always)
+    if (always || g->condAlways)
     {
         link_exit_n(g, pending, (u32)target);
         return;
     }
-    ppc_cmpdi(&g->c, 0, R_COND, 0);
-    notTaken = ppc_bc_fwd(&g->c, 12, 0, PPC_EQ);
+    if (s_nTails < H64_JIT_MAX_INSNS + 2 && s_nLinkTails + 2 <= sizeof(s_linkTails) / sizeof(s_linkTails[0]) &&
+        !g->sys->jit->noLink && !g->sys->jit->fullExits)
+    {
+        // Both outcomes at once: one write-back, one rtLink (it keeps CR field
+        // 2), then the patchable branch of each outcome (7 words instead of 12
+        // and the write-back twice).
+        H64PpcCode *c = &g->c;
+        ColdTail *t = &s_tails[s_nTails++];
+        u32 k;
+        if (g->cacheOn) rc_writeback(g, &g->rc);
+        ppc_li(c, 3, (s32)(pending * g->cpi));
+        ppc_li(c, 4, (s32)pending);
+        ppc_branch_to(c, g->sys->jit->rtLink, 1);
+        t->kind = TAIL_EVENT;
+        t->slow[0] = ppc_bc_fwd(c, 4, 0, PPC_EQ);   // bne: an event or the run's end (cold)
+        t->nSlow = 1;
+        t->pc = fallthrough;
+        t->target = target;
+        t->condAlways = 0;
+        t->condBit = g->condBit;
+        t->condBo = g->condBo;
+        notTaken = bc_not_taken(g);
+        for (k = 0; k < 2; k++)
+        {
+            if (k) ppc_patch_here(c, notTaken);
+            s_linkTails[s_nLinkTails].patchAt = c->pos;
+            s_linkTails[s_nLinkTails].target = k ? fallthrough : (u32)target;
+            s_tailSetsPc[s_nLinkTails] = 2;
+            s_nLinkTails++;
+            ppc_put(c, 0x48000000u);   // to the cold tail; linked: b <next block's body>
+        }
+        return;
+    }
+    notTaken = bc_not_taken(g);
     link_exit_n(g, pending, (u32)target);
+    if (notTaken == NO_BRANCH) return;
     ppc_patch_here(&g->c, notTaken);
     link_exit_n(g, pending, fallthrough);
 }
@@ -2162,6 +2281,7 @@ static int emit_branch_head(Gen *g, u32 op, u32 pc, int *likely, int *dynamicTar
     *likely = 0;
     *dynamicTarget = 0;
     *target = branchTarget;
+    g->condAlways = 0;
     switch (opc)
     {
     case 0x00:   // JR, JALR
@@ -2171,74 +2291,74 @@ static int emit_branch_head(Gen *g, u32 op, u32 pc, int *likely, int *dynamicTar
             ppc_li64(c, 3, (sext32(pc) + 8));
             store_gpr(g, 3, rd);
         }
-        ppc_li(c, R_COND, 1);
+        g->condAlways = 1;
         *dynamicTarget = 1;
         return 1;
     case 0x02: case 0x03:   // J, JAL
         *target = ((sext32(pc) + 4) & 0xFFFFFFFFF0000000ull) | ((u64)(op & 0x03FFFFFF) << 2);
         if (opc == 0x03) { ppc_li64(c, 3, (sext32(pc) + 8)); store_gpr(g, 3, 31); }
-        ppc_li(c, R_COND, 1);
+        g->condAlways = 1;
         return 1;
     case 0x01:   // REGIMM: BLTZ BGEZ BLTZL BGEZL BLTZAL BGEZAL BLTZALL BGEZALL
-    {
-        int ge = rt & 1;
         *likely = (rt & 2) != 0;
-        load_gpr(g, 3, rs);
-        ppc_cmpdi(c, 0, 3, 0);
-        ppc_li(c, R_COND, 1);
-        at = ppc_bc_fwd(c, ge ? 4 : 12, 0, PPC_LT);   // BGEZ: taken unless < 0; BLTZ: taken if < 0
-        ppc_li(c, R_COND, 0);
-        ppc_patch_here(c, at);
+        ppc_cmpdi(c, CR_BR, src_gpr(g, rs, 3), 0);
+        g->condBit = PPC_LT;
+        g->condBo = (rt & 1) ? 4 : 12;   // BGEZ: taken unless < 0; BLTZ: taken if < 0
         if (rt & 0x10) { ppc_li64(c, 3, (sext32(pc) + 8)); store_gpr(g, 3, 31); }   // BxxAL: link even when not taken
         return 1;
-    }
     case 0x04: case 0x05: case 0x14: case 0x15:   // BEQ BNE BEQL BNEL
         *likely = opc >= 0x14;
-        load_gpr(g, 3, rs);
-        load_gpr(g, 4, rt);
-        ppc_cmpd(c, 0, 3, 4);
-        ppc_li(c, R_COND, 1);
-        at = ppc_bc_fwd(c, (opc & 1) ? 4 : 12, 0, PPC_EQ);   // BEQ: skip if equal; BNE: skip if not equal
-        ppc_li(c, R_COND, 0);
-        ppc_patch_here(c, at);
+        if (rt == 0) ppc_cmpdi(c, CR_BR, src_gpr(g, rs, 3), 0);
+        else if (rs == 0) ppc_cmpdi(c, CR_BR, src_gpr(g, rt, 4), 0);
+        else
+        {
+            u32 a = src_gpr(g, rs, 3);
+            ppc_cmpd(c, CR_BR, a, src_gpr(g, rt, 4));
+        }
+        g->condBit = PPC_EQ;
+        g->condBo = (opc & 1) ? 4 : 12;   // BNE: taken if not equal; BEQ: if equal
         return 1;
     case 0x11:   // BC1F BC1T BC1FL BC1TL: COP1 must be usable, else the interpreter (bc1Slow)
         if (rs != 0x08) return 0;
-        ppc_ld(c, 3, OFF_COP0(CP0_STATUS), JR_CPU);
-        ppc_andis_(c, 3, 3, 0x2000);
-        g->bc1Slow = ppc_bc_fwd(c, 12, 0, PPC_EQ);
-        g->hasBc1Slow = 1;
+        if (!g->fpuKnown)   // else checked by the block's first COP1 instruction (fpu_guard)
+        {
+            ppc_ld(c, 3, OFF_COP0(CP0_STATUS), JR_CPU);
+            ppc_andis_(c, 3, 3, 0x2000);
+            g->bc1Slow = ppc_bc_fwd(c, 12, 0, PPC_EQ);
+            g->hasBc1Slow = 1;
+        }
         *likely = (rt & 2) != 0;
         ppc_lwz(c, 3, OFF_FCR31, JR_CPU);
-        ppc_rlwinm(c, R_COND, 3, 9, 31, 31);        // C
-        if (!(rt & 1)) ppc_xori(c, R_COND, R_COND, 1);
+        ppc_rlwinm(c, 3, 3, 9, 31, 31);        // C
+        ppc_cmpwi(c, CR_BR, 3, 0);
+        g->condBit = PPC_EQ;
+        g->condBo = (rt & 1) ? 4 : 12;   // BC1T: taken if C is set; BC1F: if clear
         return 1;
     case 0x06: case 0x07: case 0x16: case 0x17:   // BLEZ BGTZ BLEZL BGTZL
         *likely = opc >= 0x16;
-        load_gpr(g, 3, rs);
-        ppc_cmpdi(c, 0, 3, 0);
-        ppc_li(c, R_COND, 1);
-        at = ppc_bc_fwd(c, (opc & 1) ? 12 : 4, 0, PPC_GT);   // BGTZ: skip if > 0; BLEZ: skip unless > 0
-        ppc_li(c, R_COND, 0);
-        ppc_patch_here(c, at);
+        ppc_cmpdi(c, CR_BR, src_gpr(g, rs, 3), 0);
+        g->condBit = PPC_GT;
+        g->condBo = (opc & 1) ? 12 : 4;   // BGTZ: taken if > 0; BLEZ: unless > 0
         return 1;
     }
     return 0;
 }
 
-// Stores pc = (R_COND ? target : fallthrough), nextPc = pc + 4.
+// Stores pc = (taken ? target : fallthrough), nextPc = pc + 4.
 static void store_branch_pc(Gen *g, int dynamicTarget, u64 target, u32 fallthrough)
 {
     H64PpcCode *c = &g->c;
     u32 at, done;
-    ppc_cmpdi(c, 0, R_COND, 0);
-    at = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // not taken
+    at = bc_not_taken(g);
     if (dynamicTarget) ppc_mr(c, 3, R_TARGET);
     else ppc_li64(c, 3, target);
-    done = ppc_b_fwd(c);
-    ppc_patch_here(c, at);
-    ppc_li64(c, 3, sext32(fallthrough));
-    ppc_patch_here(c, done);
+    if (at != NO_BRANCH)
+    {
+        done = ppc_b_fwd(c);
+        ppc_patch_here(c, at);
+        ppc_li64(c, 3, sext32(fallthrough));
+        ppc_patch_here(c, done);
+    }
     ppc_std(c, 3, OFF_PC, JR_CPU);
     ppc_addi(c, 3, 3, 4);
     ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
@@ -2285,6 +2405,27 @@ static int emit_native(Gen *g, u32 op, u32 pc)
 // A native branch and its delay slot; the block ends after them.
 static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds);
 
+// The interpreter runs the delay slot at dsPc as it would after the branch
+// (pc = slot, nextPc = target or fall-through, branchPending = 1: an exception
+// there gets the branch's EPC and BD), then the block ends. g->pending counts
+// the instructions before the slot, the branch included.
+static void emit_slot_interp(Gen *g, int dynamicTarget, u64 target, u32 dsPc)
+{
+    H64PpcCode *c = &g->c;
+    add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
+    add_to(g, OFF_INSNS, (s32)g->pending);
+    g->pending = 0;
+    store_branch_pc(g, dynamicTarget, target, dsPc + 4);   // pc = target/fallthrough (temporarily)
+    ppc_ld(c, 3, OFF_PC, JR_CPU);
+    ppc_std(c, 3, OFF_NEXTPC, JR_CPU);                      // nextPc = target/fallthrough
+    ppc_li64(c, 3, sext32(dsPc));
+    ppc_std(c, 3, OFF_PC, JR_CPU);                          // pc = the slot
+    ppc_li(c, 3, 1);
+    ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+    call_interp_raw(g);
+    exit_block(g);
+}
+
 // A native branch and its delay slot. BC1 with COP1 unusable falls back to the
 // interpreter for the branch and the slot (it raises the exception).
 static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
@@ -2317,68 +2458,68 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
     if (likely)
     {
         // Not taken: the delay slot is skipped, the block ends at pc + 8.
-        u32 takenAt;
-        ppc_cmpdi(c, 0, R_COND, 0);
-        takenAt = ppc_bc_fwd(c, 4, 0, PPC_EQ);   // taken: go on with the slot
+        u32 takenAt = bc_taken(g);   // taken: go on with the slot
         link_exit_n(g, g->pending, pc + 8);
         ppc_patch_here(c, takenAt);
     }
     // The delay slot.
     begin_insn(g);
     slotPre = g->rc;
-    if (g->native && !is_branch(ds) && !ends_block(ds) && (emit_alu(g, ds) ? (g->pending++, 1) : 0))
-    {
-        if (!dynamicTarget && !g->sys->jit->noLink && !g->sys->jit->fullExits)
-        {
-            branch_exit_n(g, op, g->pending, target, dsPc + 4);
-            g->pending = 0;
-            return;
-        }
-        add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
-        add_to(g, OFF_INSNS, (s32)g->pending);
-        store_branch_pc(g, dynamicTarget, target, dsPc + 4);
-        ppc_li(c, 3, 0);
-        ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
-        g->pending = 0;
-        branch_exit(g, dynamicTarget, target, dsPc + 4);
-        return;
-    }
-    // A load or store in the slot: native fast path; its slow path is the
-    // interpreted slot below.
     if (g->native && !is_branch(ds) && !ends_block(ds))
     {
         u32 slow[16], nSlow = 0, i;
         u32 pend = g->pending;
-        if (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) || emit_fpu_fast(g, ds, slow, &nSlow))
+        int done = emit_alu(g, ds);
+        if (!done && (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) ||
+                      emit_fpu_fast(g, ds, slow, &nSlow)))
         {
-            // The compact exits diverged here (Conker, lockstep under QEMU,
-            // cause not found yet): the full exits after a load/store, FPU or
-            // overflow-checked slot.
-            add_to(g, OFF_CYCLES, (s32)((pend + 1) * g->cpi));
-            add_to(g, OFF_INSNS, (s32)(pend + 1));
+            // A load, store, FPU or overflow-checked slot: its slow path (cold)
+            // runs the slot in the interpreter as a delay slot, so that an
+            // exception there (TLB misses in Perfect Dark, GoldenEye, Conker)
+            // gets the branch's EPC and BD. Run as a plain instruction, a
+            // faulting slot returned to the instruction after it: that made the
+            // compact exits look wrong here (Conker under lockstep), and these
+            // branches had kept ~100 words of full exits and inline fallback.
+            ColdTail *t;
+            done = 1;
+            if (s_nTails >= H64_JIT_MAX_INSNS + 2) g->c.overflow = 1;
+            else
+            {
+                t = &s_tails[s_nTails++];
+                t->kind = TAIL_SLOT;
+                for (i = 0; i < nSlow && i < 16; i++) t->slow[i] = slow[i];
+                t->nSlow = nSlow < 16 ? nSlow : 16;
+                t->pc = dsPc;
+                t->pend = pend;
+                t->pre = slotPre;   // the slow paths leave before the slot changed anything
+                t->dyn = dynamicTarget;
+                t->target = target;
+                t->condAlways = g->condAlways;
+                t->condBit = g->condBit;
+                t->condBo = g->condBo;
+            }
+        }
+        if (done)
+        {
+            g->pending = pend + 1;
+            if (!dynamicTarget && !g->sys->jit->noLink && !g->sys->jit->fullExits)
+            {
+                branch_exit_n(g, op, g->pending, target, dsPc + 4);
+                g->pending = 0;
+                return;
+            }
+            add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
+            add_to(g, OFF_INSNS, (s32)g->pending);
             store_branch_pc(g, dynamicTarget, target, dsPc + 4);
             ppc_li(c, 3, 0);
             ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
+            g->pending = 0;
             branch_exit(g, dynamicTarget, target, dsPc + 4);
-            for (i = 0; i < nSlow; i++) ppc_patch_here(c, slow[i]);
-            g->pending = pend;
-            g->rc = slotPre;   // the slow paths left before the slot changed anything
+            return;
         }
     }
-    // Otherwise the interpreter runs the slot, as it would after the branch:
-    // pc = slot, nextPc = target or fall-through, branchPending = 1.
-    add_to(g, OFF_CYCLES, (s32)(g->pending * g->cpi));
-    add_to(g, OFF_INSNS, (s32)g->pending);
-    g->pending = 0;
-    store_branch_pc(g, dynamicTarget, target, dsPc + 4);   // pc = target/fallthrough (temporarily)
-    ppc_ld(c, 3, OFF_PC, JR_CPU);
-    ppc_std(c, 3, OFF_NEXTPC, JR_CPU);                      // nextPc = target/fallthrough
-    ppc_li64(c, 3, sext32(dsPc));
-    ppc_std(c, 3, OFF_PC, JR_CPU);                          // pc = the slot
-    ppc_li(c, 3, 1);
-    ppc_stw(c, 3, OFF_BRANCH, JR_CPU);
-    call_interp_raw(g);
-    exit_block(g);
+    // Otherwise the interpreter runs the slot, as it would after the branch.
+    emit_slot_interp(g, dynamicTarget, target, dsPc);
 }
 
 // ---- Idle loops ----
@@ -2485,20 +2626,27 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         // the TLB entry it came from). GoldenEye refills its TLB ~260 times a
         // frame: undoing and redoing the links into its code cost ~5400 icache
         // flushes and as many dispatcher trips a frame.
-        const H64JitBlock *self = &j->blocks[j->blockCount];
-        u32 ok;
+        ColdTail *t = &s_tails[s_nTails++];
         ppc_li32u(&g.c, 3, H64_JIT_PAGE_KEY(pc, paddr));
         ppc_lwz(&g.c, 4, (s32)(offsetof(H64Cpu, jitPage) + 4 * ((pc >> 12) & 255)), JR_CPU);
         ppc_cmpw(&g.c, 0, 4, 3);
-        ok = ppc_bc_fwd(&g.c, 12, 0, PPC_EQ);
+        t->kind = TAIL_TLB;
+        t->slow[0] = ppc_bc_fwd(&g.c, 4, 0, PPC_EQ);   // bne: to rtTlbStale (cold)
+        t->nSlow = 1;
+        t->pc = pc;
+        t->block = &j->blocks[j->blockCount];
+    }
+    if (j->prof)
+    {
+        u32 *cnt = &j->blocks[j->blockCount].execCount;
 #if defined(H64_JIT_ABI_XBOX)
-        ppc_li32u(&g.c, 3, (u32)(uintptr_t)self);
+        ppc_li32u(&g.c, 3, (u32)(uintptr_t)cnt);
 #else
-        ppc_li64(&g.c, 3, (u64)(uintptr_t)self);
+        ppc_li64(&g.c, 3, (u64)(uintptr_t)cnt);
 #endif
-        ppc_li32u(&g.c, 4, pc);
-        ppc_branch_to(&g.c, j->rtTlbStale, 0);
-        ppc_patch_here(&g.c, ok);
+        ppc_lwz(&g.c, 4, 0, 3);
+        ppc_addi(&g.c, 4, 4, 1);
+        ppc_stw(&g.c, 4, 0, 3);
     }
     for (i = 0; i < n; i++)
     {
@@ -2518,9 +2666,9 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
                 call_interp(&g, ipc);
                 call_interp_raw(&g);
                 j->stats.helperInsns += 2;
+                exit_block(&g);
             }
-            exit_block(&g);
-            break;
+            break;   // a native branch's code leaves by its own exits
         }
         if (g.native && !ends_block(op) && emit_native(&g, op, ipc))
         {
@@ -2577,6 +2725,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     b->body = (u32 *)start + bodyAt;
     b->linkHead = -1;
     b->valid = 1;
+    b->hotWords = g.c.pos;
     if (g.native) classify_idle(b, ops, n);
     b->fn = 0;
     if (j->dumpFile)

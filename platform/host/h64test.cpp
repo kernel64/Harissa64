@@ -23,6 +23,7 @@
 #include "../../core/common/h64_version.h"
 #include "../../core/system/h64_system.h"
 #include "../../core/dynarec/h64_lockstep.h"
+#include "../../core/dynarec/h64_jit_internal.h"
 #include "../../core/vi/h64_vi.h"
 #include "../../core/rdp/h64_rdp.h"
 #include "../../core/rdp/h64_rdp_state.h"
@@ -95,6 +96,54 @@ static int s_traceExc = 0;
 
 // --trace-exc: prints the first N non-interrupt exceptions.
 static unsigned long long s_excCount[32];   // every exception, by code (printed at the end)
+
+// --jit-prof FILE: the blocks by PowerPC words fetched (entries x hot words),
+// the hot code they cover, and the top blocks' MIPS and PowerPC words into
+// FILE (vpc, MIPS count, PowerPC count, MIPS words, PowerPC words; host order).
+static int prof_cmp(const void *a, const void *b)
+{
+    const H64JitBlock *x = *(const H64JitBlock *const *)a, *y = *(const H64JitBlock *const *)b;
+    double wx = (double)x->execCount * x->hotWords, wy = (double)y->execCount * y->hotWords;
+    return wx < wy ? 1 : wx > wy ? -1 : 0;
+}
+
+static void jit_prof_report(H64System *sys, const char *file)
+{
+    H64Jit *j = sys->jit;
+    H64JitBlock **v = (H64JitBlock **)malloc(sizeof(H64JitBlock *) * (j->blockCount + 1));
+    u32 i, n = 0;
+    double words = 0, insns = 0, hotSet = 0, liveHot = 0;
+    FILE *f = fopen(file, "wb");
+    for (i = 0; i < j->blockCount; i++)
+    {
+        H64JitBlock *b = &j->blocks[i];
+        if (!b->execCount) continue;
+        v[n++] = b;
+        words += (double)b->execCount * b->hotWords;
+        insns += (double)b->execCount * b->insns;
+        hotSet += b->hotWords * 4.0;
+    }
+    for (i = 0; i < j->blockCount; i++) liveHot += j->blocks[i].hotWords * 4.0;
+    qsort(v, n, sizeof(v[0]), prof_cmp);
+    printf("[jprof] %u blocks entered (of %u), hot code entered %.0f KB (all %.0f KB); entries x MIPS instructions %.0f, x hot words %.0f (%.1f words per MIPS instruction)\n",
+           n, j->blockCount, hotSet / 1024, liveHot / 1024, insns, words, insns ? words / insns : 0.0);
+    for (i = 0; i < n && i < 40; i++)
+    {
+        H64JitBlock *b = v[i];
+        printf("[jprof] %08X %2u insns %4u words (%.1f/insn) entered %8u  %.1f%% of fetched words\n", b->vpc, b->insns, b->hotWords,
+               (double)b->hotWords / b->insns, b->execCount, 100.0 * b->execCount * b->hotWords / words);
+        if (f)
+        {
+            u32 hdr[3], k;
+            hdr[0] = b->vpc; hdr[1] = b->insns; hdr[2] = b->hotWords;
+            fwrite(hdr, 4, 3, f);
+            for (k = 0; k < b->insns; k++) { u32 w = h64_load_be32(sys->rdram + b->paddr + 4 * k); fwrite(&w, 4, 1, f); }
+            fwrite(b->body, 4, b->hotWords, f);
+        }
+    }
+    if (f) fclose(f);
+    free(v);
+}
 static void exc_hook(void *user, int code)
 {
     H64System *sys = (H64System *)user;
@@ -331,7 +380,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 rdpLogFrame = 0, peekVa = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
-    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0;
+    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0, *jitProf = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 asyncCycles = 0;
     u32 traceFrames = 0, traceStep = 0;
@@ -371,6 +420,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--raw-png") && i + 1 < argc) rawPng = argv[++i];
         else if (!strcmp(argv[i], "--dump-ram") && i + 1 < argc) dumpRam = argv[++i];
         else if (!strcmp(argv[i], "--jit-dump") && i + 1 < argc) jitDump = argv[++i];
+        else if (!strcmp(argv[i], "--jit-prof") && i + 1 < argc) jitProf = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
         else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) saveDir = argv[++i];
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) loadState = argv[++i];
@@ -489,6 +539,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (fastFpu && sys->jit) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
     if (fullExits && sys->jit) sys->jit->fullExits = 1;
     if (jitDump && sys->jit) sys->jit->dumpFile = fopen(jitDump, "wb");
+    if (jitProf && sys->jit) { sys->jit->prof = 1; h64_jit_reset(sys); }
     sys->isvSink = isv_sink;
     sys->isvUser = sys;
     sys->cpu.excHook = exc_hook;
@@ -682,6 +733,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         for (k = 0; k < 32; k++) if (s_excCount[k]) printf(" code %d: %llu", k, s_excCount[k]);
         printf("\n");
     }
+    if (sys->jit && jitProf) jit_prof_report(sys, jitProf);
     if (sys->jit)
         printf("[jit] links: %u of %u records used, %llu made; TLB checks failed %llu, remapped blocks unlinked %llu\n",
                sys->jit->linkCount, sys->jit->linkCap, (unsigned long long)sys->jit->stats.linksMade,

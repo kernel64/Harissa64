@@ -121,6 +121,7 @@ struct H64Jit
     int noFpCache;                  // debugging: no COP1 registers kept in host FPRs
     int noFpuGuard;                 // debugging: COP1 state checked at every instruction
     void *dumpFile;                 // debugging (h64test --jit-dump): a FILE * receiving each compiled block
+    int prof;                       // debugging (h64test --jit-prof): each block counts its entries (execCount)
     int fastFpu;                    // native COP1 without reading FPSCR: FCR31's Inexact cause/flag not kept
                                     // (values unchanged); set before h64_jit_reset, which emits the runtime
 

@@ -23,6 +23,8 @@ struct H64JitBlock
     H64JitFn fn;         // callable (an ELFv1 function descriptor on ppc64 Linux)
     u32 *body;           // first instruction after the prologue (linked exits jump here)
     int linkHead;        // first link into this block (-1: none)
+    u32 hotWords;        // PowerPC words in the hot region (body, exits, veneers)
+    u32 execCount;       // entries (H64Jit.prof only: counted by the block itself)
     H64JitBlock *hashNext, *pageNext;
 };
 

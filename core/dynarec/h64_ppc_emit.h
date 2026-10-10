@@ -163,6 +163,8 @@ static inline void ppc_mtlr(H64PpcCode *c, u32 rs) { ppc_put(c, (31u << 26) | (r
 static inline void ppc_mtctr(H64PpcCode *c, u32 rs) { ppc_put(c, (31u << 26) | (rs << 21) | ppc_spr(9) | (467u << 1)); }
 static inline void ppc_blr(H64PpcCode *c) { ppc_put(c, 0x4E800020u); }
 static inline void ppc_bctr(H64PpcCode *c) { ppc_put(c, 0x4E800420u); }
+static inline void ppc_mfcr(H64PpcCode *c, u32 rt) { ppc_put(c, 0x7C000026u | (rt << 21)); }
+static inline void ppc_mtcrf(H64PpcCode *c, u32 fxm, u32 rs) { ppc_put(c, 0x7C000120u | (rs << 21) | ((fxm & 0xFF) << 12)); }
 static inline void ppc_bctrl(H64PpcCode *c) { ppc_put(c, 0x4E800421u); }
 static inline void ppc_nop(H64PpcCode *c) { ppc_put(c, 0x60000000u); }
 
