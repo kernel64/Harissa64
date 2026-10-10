@@ -240,6 +240,8 @@ static void print_state(H64System *sys)
     printf("status=%08X cause=%08X epc=%08X%08X badvaddr=%08X%08X mi_intr=%02X mi_mask=%02X\n",
            (u32)c->cop0[CP0_STATUS], (u32)c->cop0[CP0_CAUSE], (u32)(c->cop0[CP0_EPC] >> 32), (u32)c->cop0[CP0_EPC],
            (u32)(c->cop0[CP0_BADVADDR] >> 32), (u32)c->cop0[CP0_BADVADDR], sys->mi.intr, sys->mi.mask);
+    printf("sp status=%08X pc=%03X | dpc start=%06X end=%06X current=%06X status=%08X hleSyncPending=%u\n", sys->rsp.status,
+           sys->rsp.pc & 0xFFF, sys->dp.start, sys->dp.end, sys->dp.current, sys->dp.status, sys->dp.hleSyncPending);
     printf("last jumps:");
     for (i = 0; i < 16; i++)
         printf("%s%08X->%08X", (i % 4) ? " " : "\n  ", c->jumpFrom[(c->jumpPos + i) & 15], c->jumpTo[(c->jumpPos + i) & 15]);
