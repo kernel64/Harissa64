@@ -63,7 +63,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | ClayFighter 63 1/3 | Not tested yet | - | |
 | ClayFighter: Sculptor's Cut | Not tested yet | - | |
 | Command & Conquer | Not tested yet | - | |
-| Conker's Bad Fur Day | Runs | 55-60 | Full speed almost everywhere, the busiest moments of the cutscene after the intro dip to about 55. Black screen for about 4 seconds at start, that's normal. |
+| Conker's Bad Fur Day | Runs | 55-60 | Full speed almost everywhere, the busiest moments of the cutscene after the intro dip to about 55. Black screen for about 4 seconds at start, that's normal. (Needs more testing). |
 | Cruis'n Exotica | Not tested yet | - | |
 | Cruis'n USA | Not tested yet | - | |
 | Cruis'n World | Not tested yet | - | |
@@ -163,7 +163,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Monaco Grand Prix | Not tested yet | - | |
 | Monopoly | Not tested yet | - | |
 | Monster Truck Madness 64 | Not tested yet | - | |
-| Mortal Kombat 4 | Runs | 57-60 | Intro and title screen at full speed. Gameplay needs more testing. |
+| Mortal Kombat 4 | Not tested yet | - | Needs more testing. |
 | Mortal Kombat Mythologies: Sub-Zero | Not tested yet | - | |
 | Mortal Kombat Trilogy | Not tested yet | - | |
 | MRC: Multi-Racing Championship | Not tested yet | - | |
@@ -202,7 +202,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Off Road Challenge | Not tested yet | - | |
 | Ogre Battle 64: Person of Lordly Caliber | Not tested yet | - | |
 | Olympic Hockey Nagano '98 | Not tested yet | - | |
-| Paper Mario | Playable | 60 | Some screen transitions drop to about 40 for a moment. |
+| Paper Mario | Not tested yet | - | |
 | Paperboy | Not tested yet | - | |
 | Penny Racers | Not tested yet | - | |
 | Perfect Dark | Runs | 50-60 | 60 in the intro and menus, 50-60 in the cutscene after the intro. Black screen for about 4 seconds at start, that's normal. |
@@ -229,7 +229,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Re-Volt | Not tested yet | - | |
 | Ready 2 Rumble Boxing | Not tested yet | - | |
 | Ready 2 Rumble Boxing: Round 2 | Not tested yet | - | |
-| Resident Evil 2 | Problems | ~15 | Menus at full speed, but the intro video is slow (about 15). |
+| Resident Evil 2 | Problems | ~15 | . |
 | Ridge Racer 64 | Not tested yet | - | |
 | Road Rash 64 | Not tested yet | - | |
 | Roadsters Trophy | Not tested yet | - | |
