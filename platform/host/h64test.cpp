@@ -326,7 +326,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
     int logPc = 0, gfxCostLog = 0, gfxTiming = 0, padCount = 1;
-    u32 rdpLogFrame = 0;
+    u32 rdpLogFrame = 0, peekVa = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0;
@@ -351,6 +351,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--watch-pc") && i + 1 < argc) watchPc = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--gfx-cost-log")) gfxCostLog = 1;
         else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--peek") && i + 1 < argc) peekVa = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--log-from") && i + 1 < argc) s_logFrom = (u32)atoi(argv[++i]);
@@ -645,6 +646,17 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         u32 ch, rh;
         h64_system_state_hash(sys, &ch, &rh);
         printf("[run] state hash cpu=%08X ram=%08X\n", ch, rh);
+        if (peekVa)
+        {
+            // --peek VA: 48 words from VA - 0x40, through the current TLB.
+            u32 k;
+            for (k = 0; k < 48; k++)
+            {
+                u32 p, v = 0, va = peekVa - 0x40 + 4 * k;
+                if (h64_cpu_translate_debug(&sys->cpu, (u64)(s64)(s32)va, &p)) h64_bus_read32(sys, p, &v);
+                printf("[peek] %08X: %08X\n", va, v);
+            }
+        }
         if (sys->ai.statBuffers)
             printf("[run] AI: %u buffers, %.1f samples each; %llu AI_LEN reads, %.1f samples left on average\n", sys->ai.statBuffers,
                    sys->ai.statQueued / 4.0 / sys->ai.statBuffers, (unsigned long long)sys->ai.statReads,
