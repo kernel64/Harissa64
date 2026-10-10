@@ -89,7 +89,7 @@
   </ItemDefinitionGroup>
   <!-- The portable core and the unit tests are picked up by wildcard: object
        files share one directory, so source file names must be unique across
-       core/ and tests/unit/ (see docs/DEVELOPMENT.md). -->
+       core/ and tests/unit/ (see the developer notes). -->
   <ItemGroup>
     <ClCompile Include="..\..\core\**\*.cpp" />
     <ClCompile Include="..\..\render\xenos\*.cpp" />
