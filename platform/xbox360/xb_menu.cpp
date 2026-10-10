@@ -1,6 +1,7 @@
 // Harissa64 V2 - front-end menus (see xb_menu.h).
 #include "xb_menu.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,13 +17,56 @@
 #include "../../core/common/h64_version.h"
 #include "xb_ui.h"
 
-#define COL_BG       D3DCOLOR_XRGB(14, 16, 26)
-#define COL_PANEL    D3DCOLOR_XRGB(24, 28, 44)
-#define COL_EDGE     D3DCOLOR_XRGB(220, 40, 30)
-#define COL_SELECT   D3DCOLOR_XRGB(60, 70, 120)
-#define COL_TEXT     D3DCOLOR_XRGB(230, 230, 230)
-#define COL_DIM      D3DCOLOR_XRGB(140, 140, 160)
-#define COL_VALUE    D3DCOLOR_XRGB(255, 220, 60)
+// Moves an animated value towards its target (exponential, ~70 ms), or
+// jumps there when the animation restarts.
+struct UiAnim
+{
+    float value, last;
+    int live;
+};
+
+static float anim_step(UiAnim *a, float target, int restart)
+{
+    float now = UiTime(), dt = now - a->last;
+    a->last = now;
+    if (restart || !a->live || dt > 0.3f || dt < 0.0f)
+    {
+        a->value = target;
+        a->live = 1;
+        return target;
+    }
+    {
+        float k = dt * 16.0f;
+        if (k > 1.0f) k = 1.0f;
+        a->value += (target - a->value) * k;
+        if (fabsf(target - a->value) < 0.25f) a->value = target;
+    }
+    return a->value;
+}
+
+// The selection highlight of a list row: an accent-tinted pill with a bar on its left.
+static void selection_bar(float x, float y, float w, float h)
+{
+    UiRoundRect(x, y, w, h, 12, D3DCOLOR_ARGB(78, 234, 76, 58), D3DCOLOR_ARGB(54, 234, 76, 58));
+    UiRoundRing(x, y, w, h, 12, 1.0f, D3DCOLOR_ARGB(60, 255, 120, 96));
+    UiRoundRect(x + 7, y + h * 0.25f, 4, h * 0.5f, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+}
+
+// A paragraph wrapped to `w` (top at y); returns its height.
+static float paragraph(int font, float size, float x, float y, float w, int maxLines, D3DCOLOR color, const char *text)
+{
+    char buf[1024];
+    int lines = UiTextWrap(font, size, w, maxLines, text, buf, sizeof(buf));
+    float lineH = size * 1.35f;
+    UiText(font, size, x, y + lineH * 0.5f, color, buf, UI_LEFT);
+    return lines * lineH;
+}
+
+// A small section title in capitals, in the accent colour.
+static void heading(float x, float cy, const char *text)
+{
+    UiText(UI_BOLD, 15, x, cy, UI_COL_ACCENT_HI, text, UI_LEFT);
+}
 
 // ---- Generic list panel ----
 void UiMenuClear(UiMenu *m, const char *title, const char *footer)
@@ -40,23 +84,55 @@ int UiMenuAdd(UiMenu *m, const char *label, const char *value)
     return m->count++;
 }
 
-void UiMenuDraw(IDirect3DDevice9 *dev, const UiMenu *m)
+// A value shown "< 250 ms >" (DPAD changes it): drawn as the text between two
+// chevrons. Returns the left end.
+static float draw_value(float right, float cy, const char *value, int selected)
 {
-    const int w = 760, rowH = 40, x = (UI_WIDTH - w) / 2;
-    int h = 110 + m->count * rowH + 64, y = (UI_HEIGHT - h) / 2, i;
-    UiRect(dev, x - 4, y - 4, w + 8, h + 8, COL_EDGE);
-    UiRect(dev, x, y, w, h, COL_PANEL);
-    UiText(dev, x + 30, y + 24, 4, COL_TEXT, m->title);
+    size_t n = strlen(value);
+    D3DCOLOR text = selected ? UI_COL_TEXT : UI_COL_TEXT2;
+    if (n >= 4 && value[0] == '<' && value[1] == ' ' && value[n - 1] == '>' && value[n - 2] == ' ')
+    {
+        char inner[32];
+        float cw = UiTextWidth(UI_BOLD, 30, UI_CH_RCHEVRON), x = right;
+        D3DCOLOR chev = selected ? UI_COL_ACCENT_HI : UI_COL_TEXT3;
+        size_t k = n - 4 < sizeof(inner) - 1 ? n - 4 : sizeof(inner) - 1;
+        memcpy(inner, value + 2, k);
+        inner[k] = 0;
+        UiText(UI_BOLD, 30, x, cy - 1, chev, UI_CH_RCHEVRON, UI_RIGHT);
+        x -= cw + 10;
+        x -= UiText(selected ? UI_BOLD : UI_REGULAR, 21, x, cy, text, inner, UI_RIGHT);
+        x -= 10;
+        UiText(UI_BOLD, 30, x, cy - 1, chev, UI_CH_LCHEVRON, UI_RIGHT);
+        return x - cw;
+    }
+    return right - UiText(UI_REGULAR, 21, right, cy, text, value, UI_RIGHT);
+}
+
+void UiMenuDraw(const UiMenu *m)
+{
+    static UiAnim sel;
+    static char lastTitle[64];
+    static int lastCount;
+    const float w = 660, rowH = 48, head = 100, foot = 78;
+    float h = head + m->count * rowH + 18 + foot, x = (UI_WIDTH - w) * 0.5f, y = (UI_HEIGHT - h) * 0.5f, sy;
+    int i, restart = strcmp(lastTitle, m->title) != 0 || lastCount != m->count;
+    strncpy(lastTitle, m->title, sizeof(lastTitle) - 1);
+    lastCount = m->count;
+    UiDim();
+    UiPanel(x, y, w, h, 22);
+    UiText(UI_BOLD, 30, x + 40, y + 50, UI_COL_TEXT, m->title, UI_LEFT);
+    UiRoundRect(x + 40, y + 74, 30, 4, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    sy = anim_step(&sel, y + head + m->sel * rowH, restart);
+    if (m->count) selection_bar(x + 18, sy + 3, w - 36, rowH - 6);
     for (i = 0; i < m->count; i++)
     {
-        int ry = y + 96 + i * rowH;
-        if (i == m->sel) UiRect(dev, x + 16, ry - 8, w - 32, rowH - 4, COL_SELECT);
-        UiText(dev, x + 40, ry, 3, COL_TEXT, m->label[i]);
-        if (m->value[i][0])
-            UiText(dev, x + w - 40 - UiTextWidth(3, m->value[i]), ry, 3, COL_VALUE, m->value[i]);
+        float cy = y + head + i * rowH + rowH * 0.5f;
+        int s = i == m->sel;
+        UiText(s ? UI_BOLD : UI_REGULAR, 22, x + 44, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_LEFT);
+        if (m->value[i][0]) draw_value(x + w - 40, cy, m->value[i], s);
     }
-    UiRect(dev, x + 16, y + h - 58, w - 32, 2, COL_EDGE);
-    UiFooter(dev, x + 30, y + h - 30, m->footer);
+    UiRect(x + 24, y + h - foot, w - 48, 1, UI_COL_LINE);
+    UiFooter(x + 40, y + h - foot * 0.5f, m->footer);
 }
 
 void UiMenuNavigate(UiMenu *m, WORD down)
@@ -257,14 +333,16 @@ static int confirm_quit(IDirect3DDevice9 *dev)
     for (;;)
     {
         WORD down = UiInputPoll(&in);
-        const int w = 640, h = 220, x = (1280 - w) / 2, y = (720 - h) / 2;
+        const float w = 640, h = 220, x = (UI_WIDTH - w) / 2, y = (UI_HEIGHT - h) / 2;
         if (down & XINPUT_GAMEPAD_A) return 1;
         if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK)) return 0;
-        dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(8, 9, 16), 1.0f, 0);
-        UiRect(dev, x - 4, y - 4, w + 8, h + 8, COL_EDGE);
-        UiRect(dev, x, y, w, h, COL_BG);
-        UiText(dev, x + 40, y + 40, 3, COL_TEXT, "Quit to the dashboard?");
-        UiFooter(dev, x + 40, y + h - 50, "A:Quit|B:Stay");
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+        UiBegin(dev);
+        UiBackdrop();
+        UiPanel(x, y, w, h, 22);
+        UiText(UI_BOLD, 30, x + 48, y + 70, UI_COL_TEXT, "Quit to the dashboard?", UI_LEFT);
+        UiFooter(x + 48, y + h - 50, "A:Quit|B:Stay");
+        UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
     }
@@ -272,36 +350,42 @@ static int confirm_quit(IDirect3DDevice9 *dev)
 
 // ---- About ----
 // The credits panel: from the ROM browser (X) and the in-game menu.
-void AboutDraw(IDirect3DDevice9 *dev)
+void AboutDraw(void)
 {
-    const int x = 140, y = 40, w = 1000, h = 640;
-    int tx, ty;
-    UiRect(dev, x - 4, y - 4, w + 8, h + 8, COL_EDGE);
-    UiRect(dev, x, y, w, h, COL_BG);
-    tx = x + 40 + UiLogo(dev, x + 40, y + 30, 4) + 20;
-    UiText(dev, tx, y + 42, 5, COL_EDGE, "HARISSA64 V2");
-    UiText(dev, tx + UiTextWidth(5, "HARISSA64 V2") + 24, y + 66, 2, COL_DIM, H64_VERSION_STRING);
-    ty = y + 120;
-    UiText(dev, x + 40, ty, 2, COL_TEXT, "A Nintendo 64 emulator for the Xbox 360");
-    UiText(dev, x + 40, ty + 28, 2, COL_VALUE, "Created by Mohamed Aymen (kernel64)");
-    UiText(dev, x + 40, ty + 56, 2, COL_DIM, "github.com/kernel64/Harissa64   -   built " __DATE__);
-    ty += 104;
-    UiText(dev, x + 40, ty, 2, COL_EDGE, "ENGINE");
-    UiText(dev, x + 40, ty + 26, 2, COL_TEXT, "MIPS R4300i to PowerPC dynamic recompiler");
-    UiText(dev, x + 40, ty + 50, 2, COL_TEXT, "RSP: high-level graphics and audio, low-level interpreter");
-    UiText(dev, x + 40, ty + 74, 2, COL_TEXT, "RDP on the Xenos GPU, software RDP for reference");
-    ty += 112;
-    UiText(dev, x + 40, ty, 2, COL_EDGE, "ACKNOWLEDGEMENTS");
-    UiText(dev, x + 40, ty + 26, 2, COL_TEXT, "Thanks to the ares, ParaLLEl-RDP, mupen64plus,");
-    UiText(dev, x + 40, ty + 50, 2, COL_TEXT, "GLideN64, libdragon and zlib projects, and to");
-    UiText(dev, x + 40, ty + 74, 2, COL_TEXT, "Timothy Lottes and AMD for their display filters.");
-    UiText(dev, x + 40, ty + 98, 2, COL_DIM, "Details and licences: THIRD_PARTY.md");
-    ty += 136;
-    UiText(dev, x + 40, ty, 2, COL_DIM, "Free software under the GNU GPL v2.");
-    UiText(dev, x + 40, ty + 24, 2, COL_DIM, "Nintendo 64 is a trademark of Nintendo; this");
-    UiText(dev, x + 40, ty + 48, 2, COL_DIM, "project is not affiliated with Nintendo. Play");
-    UiText(dev, x + 40, ty + 72, 2, COL_DIM, "only games dumped from cartridges you own.");
-    UiFooter(dev, x + 40, y + h - 30, "B:Back");
+    const float x = 150, y = 46, w = 980, h = 628, cx = x + 52, col2 = x + 560;
+    float ty;
+    UiDim();
+    UiPanel(x, y, w, h, 24);
+    UiBrand(cx, y + 72, 44);
+    UiText(UI_REGULAR, 18, x + w - 52, y + 62, UI_COL_TEXT2, "Version " H64_VERSION_STRING, UI_RIGHT);
+    UiText(UI_REGULAR, 16, x + w - 52, y + 88, UI_COL_TEXT3, "Built " __DATE__, UI_RIGHT);
+    UiText(UI_REGULAR, 24, cx, y + 146, UI_COL_TEXT, "A Nintendo 64 emulator for the Xbox 360", UI_LEFT);
+    {
+        float a = UiText(UI_REGULAR, 20, cx, y + 184, UI_COL_TEXT2, "Created by ", UI_LEFT);
+        UiText(UI_BOLD, 20, cx + a, y + 184, UI_COL_TEXT, "Mohamed Aymen (kernel64)", UI_LEFT);
+    }
+    UiText(UI_REGULAR, 18, cx, y + 214, UI_COL_TEXT3, "github.com/kernel64/Harissa64", UI_LEFT);
+    UiRect(x + 32, y + 246, w - 64, 1, UI_COL_LINE);
+
+    ty = y + 280;
+    heading(cx, ty, "ENGINE");
+    paragraph(UI_REGULAR, 19, cx, ty + 16, 460, 6, UI_COL_TEXT2,
+              "MIPS R4300i to PowerPC dynamic recompiler.\nRSP: high-level graphics and audio, low-level interpreter.\n"
+              "RDP on the Xenos GPU, software RDP for reference.");
+    heading(col2, ty, "ACKNOWLEDGEMENTS");
+    ty += 16 + paragraph(UI_REGULAR, 19, col2, ty + 16, 368, 6, UI_COL_TEXT2,
+                         "Thanks to the ares, ParaLLEl-RDP, mupen64plus, GLideN64, libdragon and zlib projects, "
+                         "and to Timothy Lottes and AMD for their display filters.");
+    UiText(UI_REGULAR, 17, col2, ty + 18, UI_COL_TEXT3, "Details and licences: THIRD_PARTY.md", UI_LEFT);
+
+    ty = y + 474;
+    heading(cx, ty, "LICENCE");
+    paragraph(UI_REGULAR, 17, cx, ty + 14, w - 104, 4, UI_COL_TEXT3,
+              "Free software under the GNU GPL v2. Interface font: Inter (SIL Open Font License).\n"
+              "Nintendo 64 is a trademark of Nintendo; this project is not affiliated with Nintendo. "
+              "Play only games dumped from cartridges you own.");
+    UiRect(x + 32, y + h - 72, w - 64, 1, UI_COL_LINE);
+    UiFooter(cx, y + h - 36, "B:Back");
 }
 
 void AboutScreen(IDirect3DDevice9 *dev)
@@ -312,8 +396,11 @@ void AboutScreen(IDirect3DDevice9 *dev)
     {
         WORD down = UiInputPoll(&in);
         if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_BACK)) return;
-        dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(8, 9, 16), 1.0f, 0);
-        AboutDraw(dev);
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+        UiBegin(dev);
+        UiBackdrop();
+        AboutDraw();
+        UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
     }
@@ -336,7 +423,6 @@ static void scan_roms(std::vector<RomEntry> *out)
         if (!dot || (_stricmp(dot, ".z64") && _stricmp(dot, ".n64") && _stricmp(dot, ".v64") && _stricmp(dot, ".zip"))) continue;
         e.file = std::string("game:\\roms\\") + fd.cFileName;
         e.shown = std::string(fd.cFileName, dot - fd.cFileName);
-        if (e.shown.size() > 52) e.shown = e.shown.substr(0, 49) + "...";
         out->push_back(e);
     } while (FindNextFileA(f, &fd));
     FindClose(f);
@@ -419,18 +505,69 @@ int RomFolderName(const char *path, char *out, size_t size)
     return 1;
 }
 
-// The header of one ROM, for the details line.
-static void rom_details(const char *path, char *out, size_t size)
+// The header of one ROM, for the details card.
+struct RomInfo
+{
+    int ok;
+    char name[24], code[8], size[16], save[48], folder[64];
+};
+
+static void rom_details(const char *path, RomInfo *info)
 {
     H64Rom rom;
     u32 len = read_header(path, &rom);
     int pak, type;
-    if (!len) { _snprintf(out, size, "Not an N64 ROM"); out[size - 1] = 0; return; }
+    memset(info, 0, sizeof(*info));
+    if (!len) return;
+    info->ok = 1;
     type = h64_save_type_for_rom(&rom, &pak);
-    _snprintf(out, size, "%s  %s  %u MB\nSave: %s%s", rom.name, rom.gameCode, len >> 20, h64_save_type_name(type),
-              pak ? ", Controller Pak" : "");
-    out[size - 1] = 0;
+    strncpy(info->name, rom.name, sizeof(info->name) - 1);
+    strncpy(info->code, rom.gameCode, sizeof(info->code) - 1);
+    if (len >= (1u << 20)) _snprintf(info->size, sizeof(info->size), "%u MB", len >> 20);
+    else _snprintf(info->size, sizeof(info->size), "%u KB", len >> 10);
+    _snprintf(info->save, sizeof(info->save), "%s%s", h64_save_type_name(type), pak ? " + Controller Pak" : "");
+    h64_save_folder_name(&rom, info->folder, (int)sizeof(info->folder));
+    info->size[sizeof(info->size) - 1] = 0;
+    info->save[sizeof(info->save) - 1] = 0;
     h64_rom_free(&rom);
+}
+
+// Up to two initials of a game's name ("Super Mario 64 (USA)" -> "SM") for its tile.
+static void initials(const char *name, char *out)
+{
+    int n = 0, start = 1;
+    for (; *name && n < 2; name++)
+    {
+        char c = *name;
+        if (c == '(' || c == '[') break;
+        if (start && ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+            out[n++] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+        start = c == ' ' || c == '-' || c == '_';
+    }
+    if (!n) out[n++] = '?';
+    out[n] = 0;
+}
+
+// The tile above the details: a gradient picked from the name, with its initials.
+static void game_tile(float x, float y, float w, float h, const char *name)
+{
+    static const D3DCOLOR tops[6] = { D3DCOLOR_ARGB(255, 240, 92, 66), D3DCOLOR_ARGB(255, 245, 150, 60), D3DCOLOR_ARGB(255, 150, 100, 235),
+                                      D3DCOLOR_ARGB(255, 70, 140, 240), D3DCOLOR_ARGB(255, 40, 180, 170), D3DCOLOR_ARGB(255, 110, 190, 80) };
+    static const D3DCOLOR bottoms[6] = { D3DCOLOR_ARGB(255, 150, 28, 30), D3DCOLOR_ARGB(255, 180, 70, 20), D3DCOLOR_ARGB(255, 80, 40, 150),
+                                         D3DCOLOR_ARGB(255, 30, 70, 160), D3DCOLOR_ARGB(255, 16, 100, 110), D3DCOLOR_ARGB(255, 40, 110, 50) };
+    char ini[4];
+    u32 hsh = 2166136261u;
+    const char *p;
+    int k;
+    for (p = name; *p; p++) hsh = (hsh ^ (u8)*p) * 16777619u;
+    k = (int)(hsh % 6);
+    initials(name, ini);
+    UiShadow(x, y + 6, w, h, 16, 20, D3DCOLOR_ARGB(110, 0, 0, 0));
+    UiRoundRect(x, y, w, h, 16, tops[k], bottoms[k]);
+    UiRoundRing(x, y, w, h, 16, 1.0f, D3DCOLOR_ARGB(50, 255, 255, 255));
+    // A soft sheen along the top half.
+    UiRoundRect(x + 2, y + 2, w - 4, h * 0.5f, 14, D3DCOLOR_ARGB(34, 255, 255, 255), D3DCOLOR_ARGB(0, 255, 255, 255));
+    UiTextShadowed(UI_BOLD, h * 0.46f, x + 28, y + h * 0.5f, D3DCOLOR_ARGB(240, 255, 255, 255), ini, UI_LEFT);
 }
 
 static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsPath)
@@ -448,11 +585,93 @@ static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settings
             H64_INFO("[menu] settings for all games %s", ConfigWriteMenuKeys(c, settingsPath, 1) ? "saved" : "NOT saved");
             return;
         }
-        dev->Clear(0, NULL, D3DCLEAR_TARGET, COL_BG, 1.0f, 0);
-        UiMenuDraw(dev, &m);
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+        UiBegin(dev);
+        UiBackdrop();
+        UiMenuDraw(&m);
+        UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
     }
+}
+
+// One label / value pair of the details card.
+static void detail(float x, float y, float w, const char *label, const char *value)
+{
+    char fit[96];
+    UiText(UI_BOLD, 14, x, y, UI_COL_TEXT3, label, UI_LEFT);
+    UiTextFit(UI_REGULAR, 20, w, value, fit, sizeof(fit));
+    UiText(UI_REGULAR, 20, x, y + 26, UI_COL_TEXT, fit, UI_LEFT);
+}
+
+static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, int rows, const RomInfo *info)
+{
+    static UiAnim selAnim;
+    const float listX = UI_SAFE_X, listY = 128, listW = 700, rowH = 36, pad = 12;
+    const float listH = rows * rowH + 2 * pad, cardX = 788, cardW = UI_WIDTH - UI_SAFE_X - cardX;
+    int n = (int)roms.size(), i;
+    char buf[160];
+    UiBackdrop();
+    UiBrand(UI_SAFE_X, 72, 34);
+    if (n)
+    {
+        sprintf(buf, "%d / %d", sel + 1, n);
+        UiText(UI_REGULAR, 19, UI_WIDTH - UI_SAFE_X, 64, UI_COL_TEXT2, buf, UI_RIGHT);
+        UiText(UI_REGULAR, 15, UI_WIDTH - UI_SAFE_X, 88, UI_COL_TEXT3, "game:\\roms\\", UI_RIGHT);
+    }
+    UiPanel(listX, listY, listW, listH, 20);
+    if (!n)
+    {
+        float cy = listY + listH * 0.5f;
+        UiText(UI_BOLD, 30, listX + listW * 0.5f, cy - 50, UI_COL_TEXT, "No ROM found", UI_CENTER);
+        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy, UI_COL_TEXT2, "Copy .z64, .n64, .v64 or .zip files", UI_CENTER);
+        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy + 32, UI_COL_TEXT2, "into game:\\roms\\", UI_CENTER);
+    }
+    else
+    {
+        float sy = anim_step(&selAnim, listY + pad + (sel - top) * rowH, 0), textW = listW - 72;
+        selection_bar(listX + 10, sy + 1, listW - (n > rows ? 36 : 20), rowH - 2);
+        for (i = 0; i < rows && top + i < n; i++)
+        {
+            float cy = listY + pad + i * rowH + rowH * 0.5f;
+            int s = top + i == sel;
+            UiTextFit(s ? UI_BOLD : UI_REGULAR, 21, textW, roms[top + i].shown.c_str(), buf, sizeof(buf));
+            UiText(s ? UI_BOLD : UI_REGULAR, 21, listX + 30, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, buf, UI_LEFT);
+        }
+        if (n > rows)
+        {
+            // Scroll bar: the visible part of the list.
+            float tx = listX + listW - 16, ty = listY + pad + 4, th = listH - 2 * pad - 8;
+            float hh = th * rows / n, yy;
+            if (hh < 28) hh = 28;
+            yy = ty + (th - hh) * top / (float)(n - rows);
+            UiRoundRect(tx, ty, 4, th, 2, D3DCOLOR_ARGB(20, 255, 255, 255), D3DCOLOR_ARGB(20, 255, 255, 255));
+            UiRoundRect(tx, yy, 4, hh, 2, D3DCOLOR_ARGB(150, 255, 255, 255), D3DCOLOR_ARGB(110, 255, 255, 255));
+        }
+
+        // Details card.
+        UiPanel(cardX, listY, cardW, listH, 20);
+        game_tile(cardX + 20, listY + 20, cardW - 40, 118, roms[sel].shown.c_str());
+        {
+            float ty = listY + 162;
+            int lines = UiTextWrap(UI_BOLD, 25, cardW - 40, 2, roms[sel].shown.c_str(), buf, sizeof(buf));
+            UiText(UI_BOLD, 25, cardX + 20, ty + 17, UI_COL_TEXT, buf, UI_LEFT);
+            ty += lines * 25 * 1.35f + 6;
+            if (!info->ok)
+                UiText(UI_REGULAR, 19, cardX + 20, ty + 12, UI_COL_ACCENT_HI, "Not an N64 ROM", UI_LEFT);
+            else
+            {
+                float half = (cardW - 40) * 0.5f, gy = listY + listH - 186;
+                UiText(UI_REGULAR, 18, cardX + 20, ty + 12, UI_COL_TEXT2, info->name, UI_LEFT);
+                UiRect(cardX + 20, gy - 24, cardW - 40, 1, UI_COL_LINE);
+                detail(cardX + 20, gy, half - 12, "GAME CODE", info->code);
+                detail(cardX + 20 + half, gy, half - 12, "SIZE", info->size);
+                detail(cardX + 20, gy + 62, cardW - 40, "SAVE", info->save);
+                detail(cardX + 20, gy + 124, cardW - 40, "SAVE FOLDER", info->folder);
+            }
+        }
+    }
+    UiScreenFooter(n ? "A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard" : "Y:Settings|X:About|BACK:Dashboard");
 }
 
 int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char *path, size_t pathSize)
@@ -460,8 +679,8 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     std::vector<RomEntry> roms;
     UiInput in;
     int sel = 0, top = 0, detailsFor = -1, i;
-    char details[160];
-    const int rows = 13, rowH = 30, listY = 140;
+    RomInfo details;
+    const int rows = 13;
     scan_roms(&roms);
     for (i = 0; i < (int)roms.size(); i++)
         if (!_stricmp(roms[i].file.c_str(), c->lastRom)) sel = i;
@@ -475,7 +694,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         return 1;
     }
     UiInputInit(&in);
-    details[0] = 0;
+    memset(&details, 0, sizeof(details));
     for (;;)
     {
         WORD down = UiInputPoll(&in);
@@ -497,7 +716,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             }
             if (sel < top) top = sel;
             if (sel >= top + rows) top = sel - rows + 1;
-            if (detailsFor != sel) { rom_details(roms[sel].file.c_str(), details, sizeof(details)); detailsFor = sel; }
+            if (detailsFor != sel) { rom_details(roms[sel].file.c_str(), &details); detailsFor = sel; }
         }
         if (down & XINPUT_GAMEPAD_Y)
         {
@@ -510,28 +729,10 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             UiInputInit(&in);
         }
 
-        dev->Clear(0, NULL, D3DCLEAR_TARGET, COL_BG, 1.0f, 0);
-        {
-            int tx = 96 + UiLogo(dev, 96, 38, 4) + 20;   // 64 px pepper, centred on the 40 px title
-            UiText(dev, tx, 50, 5, COL_EDGE, "HARISSA64 V2");
-            UiText(dev, tx + UiTextWidth(5, "HARISSA64 V2") + 24, 74, 2, COL_DIM, H64_VERSION_STRING);
-        }
-        if (!n)
-            UiText(dev, 96, listY, 3, COL_TEXT, "No ROM found.\n\nCopy .z64, .n64, .v64 or .zip files\ninto game:\\roms\\");
-        for (i = 0; i < rows && top + i < n; i++)
-        {
-            int y = listY + i * rowH;
-            if (top + i == sel) UiRect(dev, 80, y - 6, 1120, rowH - 2, COL_SELECT);
-            UiText(dev, 96, y, 2, top + i == sel ? COL_TEXT : COL_DIM, roms[top + i].shown.c_str());
-        }
-        if (n)
-        {
-            char count[32];
-            sprintf(count, "%d / %d", sel + 1, n);
-            UiText(dev, 1184 - UiTextWidth(2, count), 110, 2, COL_DIM, count);
-            UiText(dev, 96, listY + rows * rowH + 16, 2, COL_VALUE, details);
-        }
-        UiScreenFooter(dev, n ? "A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard" : "Y:Settings|X:About|BACK:Dashboard");
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+        UiBegin(dev);
+        browser_draw(roms, sel, top, rows, &details);
+        UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
     }

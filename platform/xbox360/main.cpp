@@ -199,11 +199,19 @@ static void MessageScreen(IDirect3DDevice9 *dev, const char *title, const char *
         XINPUT_STATE in;
         if (dev)
         {
-            dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(14, 16, 26), 1.0f, 0);
-            UiText(dev, 96, 80, 6, D3DCOLOR_XRGB(220, 40, 30), "HARISSA64 V2");
-            UiText(dev, 100, 170, 3, D3DCOLOR_XRGB(230, 230, 230), title);
-            UiText(dev, 100, 240, 2, color, text);
-            UiScreenFooter(dev, "BACK:Continue");
+            static char wrapped[2048];
+            const float x = UI_SAFE_X, y = 140, w = UI_WIDTH - 2 * UI_SAFE_X, h = 470;
+            dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+            UiBegin(dev);
+            UiBackdrop();
+            UiBrand(UI_SAFE_X, 72, 34);
+            UiPanel(x, y, w, h, 22);
+            UiRoundRect(x + 28, y + 34, 5, 40, 2.5f, color, color);
+            UiText(UI_BOLD, 30, x + 52, y + 54, UI_COL_TEXT, title, UI_LEFT);
+            UiTextWrap(UI_REGULAR, 21, w - 104, 12, text, wrapped, sizeof(wrapped));
+            UiText(UI_REGULAR, 21, x + 52, y + 120, UI_COL_TEXT2, wrapped, UI_LEFT);
+            UiScreenFooter("BACK:Continue");
+            UiEnd();
             dev->Present(NULL, NULL, NULL, NULL);
         }
         if (XInputGetState(0, &in) == ERROR_SUCCESS && (in.Gamepad.wButtons & XINPUT_GAMEPAD_BACK))
@@ -781,12 +789,13 @@ static int s_stateSlot = 1;
 static int s_statePending;          // a save waits for a quiet point (no HLE task in progress)
 static char s_osd[64];
 static DWORD s_osdUntil;
+#define OSD_MS 2000                 // how long a toast stays
 
 static void Osd(const char *text)
 {
     strncpy(s_osd, text, sizeof(s_osd) - 1);
     s_osd[sizeof(s_osd) - 1] = 0;
-    s_osdUntil = GetTickCount() + 2000;
+    s_osdUntil = GetTickCount() + OSD_MS;
     H64_INFO("[main] %s", text);
 }
 
@@ -799,10 +808,16 @@ static int s_aboutOpen;             // ... showing the About panel
 // Drawn by the renderer just before each present (on the graphics worker when it runs).
 static void OverlayHook(void *, IDirect3DDevice9 *dev)
 {
-    if (s_showFps && s_fpsText[0]) UiText(dev, 1180 - UiTextWidth(2, s_fpsText), 40, 2, D3DCOLOR_XRGB(255, 220, 60), s_fpsText);
-    if (s_menuOpen && s_aboutOpen) AboutDraw(dev);
-    else if (s_menuOpen) UiMenuDraw(dev, &s_menu);
-    if (s_osd[0] && (s32)(GetTickCount() - s_osdUntil) <= 0) UiText(dev, 64, 620, 3, D3DCOLOR_XRGB(255, 220, 60), s_osd);
+    // Nothing to show (the usual case in play): no state change at all.
+    s32 left = (s32)(s_osdUntil - GetTickCount());
+    int fps = s_showFps && s_fpsText[0], osd = s_osd[0] && left >= 0;
+    if (!fps && !osd && !s_menuOpen) return;
+    UiBegin(dev);
+    if (fps) UiFpsBadge(s_fpsText);
+    if (s_menuOpen && s_aboutOpen) AboutDraw();
+    else if (s_menuOpen) UiMenuDraw(&s_menu);
+    if (osd) UiToast(s_osd, (float)(OSD_MS - left), (float)OSD_MS);
+    UiEnd();
 }
 
 static void StatePath(char *out, size_t size)
@@ -855,21 +870,20 @@ static void LoadStateNow(H64System *sys)
 // margin, smoothing, FPS) or at the next start (CPU, RSP); they are saved
 // for all games (config\settings.ini) or for this game (config\<game>.ini).
 enum { RG_DASHBOARD = 0, RG_BROWSER, RG_CONTINUE };
-enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_SETTINGS, M_ABOUT, M_RESET, M_ROMS, M_DASHBOARD };
+enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_SETTINGS, M_RESET, M_ROMS, M_DASHBOARD };   // X opens About
 static char s_settingsPath[160];    // <drive>:\config\settings.ini ("" when the menu files are not used)
 static char s_profilePath[160];     // <drive>:\config\<game>.ini
 
 static void BuildGameMenu(void)
 {
     char slot[16];
-    UiMenuClear(&s_menu, "Paused", "A:Select|DPAD:Change|B/START:Resume");
+    UiMenuClear(&s_menu, "Paused", "A:Select|DPAD:Change|X:About|B/START:Resume");
     UiMenuAdd(&s_menu, "Resume", "");
     UiMenuAdd(&s_menu, "Save state", "");
     UiMenuAdd(&s_menu, "Load state", "");
     sprintf(slot, "< %d >", s_stateSlot);
     UiMenuAdd(&s_menu, "State slot", slot);
     UiMenuAdd(&s_menu, "Settings", "");
-    UiMenuAdd(&s_menu, "About Harissa64", "");
     UiMenuAdd(&s_menu, "Reset the game", "");
     UiMenuAdd(&s_menu, "Back to the ROM list", "");
     UiMenuAdd(&s_menu, "Quit to the dashboard", "");
@@ -898,7 +912,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
         WORD down = UiInputPoll(&in);
         if (s_aboutOpen)
         {
-            if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START)) s_aboutOpen = 0;
+            if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_X)) s_aboutOpen = 0;
         }
         else if (settings)
         {
@@ -928,6 +942,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
             UiMenuNavigate(&s_menu, down);
             sel = s_menu.sel;
             if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)) result = RG_CONTINUE;
+            else if (down & XINPUT_GAMEPAD_X) s_aboutOpen = 1;   // the About panel (X, as in the ROM browser)
             if (sel == M_SLOT && (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_A)))
             {
                 s_stateSlot += (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 1;
@@ -943,7 +958,6 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
                 case M_SAVE: s_statePending = 1; result = RG_CONTINUE; break;   // at the next quiet point
                 case M_LOAD: LoadStateNow(sys); result = RG_CONTINUE; break;
                 case M_SETTINGS: settings = 1; SettingsBuild(&s_menu, c, s_profilePath[0] != 0); break;
-                case M_ABOUT: s_aboutOpen = 1; break;
                 case M_RESET: ResetGame(sys); result = RG_CONTINUE; break;
                 case M_ROMS: result = RG_BROWSER; break;
                 case M_DASHBOARD: result = RG_DASHBOARD; break;
@@ -1487,8 +1501,12 @@ int __cdecl main()
     {
         if (dev)
         {
-            dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(14, 16, 26), 1.0f, 0);
-            UiText(dev, 100, 300, 3, D3DCOLOR_XRGB(230, 230, 230), "Recompiler test running...");
+            dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+            UiBegin(dev);
+            UiBackdrop();
+            UiBrand(UI_SAFE_X, 72, 34);
+            UiText(UI_REGULAR, 26, UI_WIDTH * 0.5f, UI_HEIGHT * 0.5f, UI_COL_TEXT, "Recompiler test running" UI_CH_ELLIPSIS, UI_CENTER);
+            UiEnd();
             dev->Present(NULL, NULL, NULL, NULL);
         }
         RunDynarecTest(&cfg, jitReport, sizeof(jitReport));

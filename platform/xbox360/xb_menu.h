@@ -21,7 +21,7 @@ struct UiMenu
 void UiMenuClear(UiMenu *m, const char *title, const char *footer);
 int UiMenuAdd(UiMenu *m, const char *label, const char *value);   // returns the item's index
 // A centred panel over whatever is on the target (the frozen game frame in game).
-void UiMenuDraw(IDirect3DDevice9 *dev, const UiMenu *m);
+void UiMenuDraw(const UiMenu *m);   // between UiBegin and UiEnd
 // Up/down move the selection (wrapping).
 void UiMenuNavigate(UiMenu *m, WORD down);
 
@@ -41,8 +41,8 @@ u8 *RomFileLoad(const char *path, u32 *size);
 int RomFolderName(const char *path, char *out, size_t size);
 
 // ---- About ----
-// The credits panel (centred, opaque), and a full screen showing it until B.
-void AboutDraw(IDirect3DDevice9 *dev);
+// The credits panel (centred, over a veil), and a full screen showing it until B.
+void AboutDraw(void);   // between UiBegin and UiEnd
 void AboutScreen(IDirect3DDevice9 *dev);
 
 // ---- ROM browser ----

@@ -2475,7 +2475,16 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             if ((int)k != found) x->fb[k].showFront = 0;
         x->shownSlot = found;
     }
-    if (x->overlay) x->overlay(x->overlayUser, x->dev);
+    if (x->overlay)
+    {
+        // The front end draws with its own shaders, declaration and texture:
+        // the renderer's are bound again (they are set only once otherwise).
+        x->overlay(x->overlayUser, x->dev);
+        x->dev->SetVertexDeclaration(x->decl);
+        x->dev->SetVertexShader(x->vs);
+        x->dev->SetTexture(0, x->dummy);
+        x->dev->SetTexture(1, x->dummy);
+    }
     x->dev->Present(NULL, NULL, NULL, NULL);
     x->stats.presents++;
     x->presentCount++;

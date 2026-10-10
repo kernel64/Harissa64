@@ -109,7 +109,7 @@
     <ClInclude Include="..\..\core\**\*.h" />
     <ClInclude Include="..\..\render\**\*.h" />
     <ClInclude Include="..\..\tests\unit\*.h" />
-    <ClInclude Include="font8x8_basic.h" />
+    <ClInclude Include="xb_ui_atlas.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="title\xex.xml" />
