@@ -74,6 +74,7 @@ void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th,
         u32 lines, wordsPerLine, srcStride, y, w;
         u32 srcBase, tmemBase = tile->offset;
         u32 dxtCounter = 0;
+        const u8 *ram = st->loadRam ? st->loadRam : sys->rdram;
         if (mode == 2)   // LOAD_BLOCK: sh is the last texel, th is dxt (1.11)
         {
             u32 texels = (sh - sl + 1) & 0xFFF;
@@ -98,9 +99,15 @@ void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th,
             u32 src = srcBase + y * srcStride;
             for (w = 0; w < wordsPerLine; w++)
             {
-                u32 t, odd, b;
+                u32 t, odd, b, a = src + w * 8;
                 u8 word[8];
-                for (b = 0; b < 8; b++) word[b] = rd8(sys, src + w * 8 + b);
+                const u8 *p;
+                if (a + 8 <= H64_RDRAM_SIZE) p = ram + a;   // the whole word at once (Conker: 6 ms a frame byte by byte)
+                else
+                {
+                    for (b = 0; b < 8; b++) word[b] = rd8(sys, a + b);
+                    p = word;
+                }
                 if (mode == 2)
                 {
                     t = dxtCounter >> 11;
@@ -111,9 +118,11 @@ void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th,
                 odd = t & 1;
                 if (!split)
                 {
-                    // Word w of line t goes to offset + t * stride + w * 8; odd lines swap halves.
-                    u32 dst = (tmemBase + t * tile->stride + w * 8) & 0xFFF;
-                    for (b = 0; b < 8; b++) st->tmem[(dst + (b ^ (odd << 2))) & 0xFFF] = word[b];
+                    // Word w of line t goes to offset + t * stride + w * 8 (8-byte
+                    // aligned: offsets and strides are in words); odd lines swap halves.
+                    u8 *d = st->tmem + ((tmemBase + t * tile->stride + w * 8) & 0xFF8);
+                    if (!odd) memcpy(d, p, 8);
+                    else { memcpy(d, p + 4, 4); memcpy(d + 4, p, 4); }
                 }
                 else
                 {
@@ -121,7 +130,7 @@ void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th,
                     u32 u;
                     for (u = 0; u < 2; u++)
                     {
-                        const u8 *s = word + u * 4;
+                        const u8 *s = p + u * 4;
                         u32 lo, hi, idx;
                         if (tile->fmt == TEX_YUV) { lo = (u32)s[0] << 8 | s[2]; hi = (u32)s[1] << 8 | s[3]; }
                         else { lo = (u32)s[0] << 8 | s[1]; hi = (u32)s[2] << 8 | s[3]; }

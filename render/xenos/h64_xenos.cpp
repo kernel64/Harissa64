@@ -1377,7 +1377,12 @@ static void check_texture_source(Xenos *x)
             found = (int)i;
     }
     if (found < 0 || !x->fb[found].gpuDirty) return;
-    if (x->debug != 5) copy_back(x, found);   // xenosdebug=5: no copy backs (diagnosis)
+    if (x->debug != 5)   // xenosdebug=5: no copy backs (diagnosis)
+    {
+        u64 t0 = h64_prof_now(x->sys);
+        copy_back(x, found);
+        x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
+    }
     else x->fb[found].gpuDirty = 0;
 }
 
@@ -1985,6 +1990,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     t0 = h64_prof_now(x->sys);
     h64_rdp_command(x->sys, words, count);
     x->stats.tState += h64_prof_now(x->sys) - t0;
+    if (op == 0x30 || op == 0x33 || op == 0x34) x->stats.tLoads += h64_prof_now(x->sys) - t0;
     switch (op)
     {
     case 0x24: tex_rect(x, w, 0); break;
