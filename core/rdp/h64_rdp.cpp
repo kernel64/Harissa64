@@ -98,6 +98,7 @@ static void dpc_job(void *arg)
     H64DpcBatch *b = (H64DpcBatch *)arg;
     H64RdpState *st = h64_rdp_state(b->sys);
     st->loadRam = b->snap;
+    st->loadRamGen++;
     run_batch(b->sys, b->words);
     st->loadRam = 0;
 }

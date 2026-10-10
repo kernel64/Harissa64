@@ -1915,6 +1915,7 @@ void h64_gfx_render(H64System *sys, H64Gfx *g)
     // the snapshot as well as RDRAM, so the task need not finish rendering
     // before the CPU goes on (PD's cutscenes: the CPU waited ~12 ms a frame).
     st->loadRam = g->snapshot;
+    st->loadRamGen++;
     flush_output(g);
     st->loadRam = 0;
 }

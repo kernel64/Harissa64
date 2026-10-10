@@ -73,6 +73,8 @@ struct FbSlot
     int valid;
     int gpuDirty;      // drawn by the GPU since the last copy back to RDRAM
     u32 cleanLo, cleanHi;   // while gpuDirty: the lines copied back since (a copy back of part of the image)
+    int cleanSnap;          // they went into the RDRAM snapshot of job cleanGen only (not RDRAM)
+    u32 cleanGen;
     u32 lastUse;
 };
 
@@ -171,6 +173,7 @@ struct Xenos
     // previous frame (motion blur) every frame: copy backs took 18 ms.
     std::vector<LoadRec> loadLog;
     const u8 *logRam;   // the RDRAM snapshot the logged loads read
+    u32 logGen;         // and its job (H64RdpState.loadRamGen)
     u8 staleTmem[512];  // per 64-bit TMEM word: written by a logged load from a GPU image, not since by another
     u32 staleCount;     // words set in staleTmem
     IDirect3DTexture9 *fbTex;   // set: bind_texture puts this image on unit 0 instead of decoding the tile
@@ -1298,6 +1301,7 @@ static void select_framebuffer(Xenos *x)
     }
     s->gpuDirty = 1;
     s->cleanLo = s->cleanHi = 0;
+    s->cleanSnap = 0;
     s->drawnAt = x->presentCount;
     s->width = x->st->colorWidth;
     s->height = fb_height(s->width);
@@ -1330,9 +1334,13 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
     FbSlot *s = &x->fb[slot];
     D3DLOCKED_RECT lr;
     u32 y, xx, w = s->width ? s->width : 320, h = s->height ? s->height : 240, hc = h;
-    u8 *ram = x->sys->rdram;
-    // Texture loads may read a snapshot of RDRAM (graphics HLE on the worker): the copy goes there too.
+    // Deferred rendering (the graphics worker, after the CPU went on) reads a
+    // snapshot of RDRAM: the copy goes there only. Written into RDRAM after
+    // the task, it overwrote whatever the game had put there meanwhile:
+    // Perfect Dark reuses its cutscene frames' memory when START skips the
+    // cutscene, and hung for good. Without a snapshot: RDRAM.
     u8 *snap = (u8 *)x->st->loadRam;
+    u8 *ram = snap ? NULL : x->sys->rdram;
     // Only the lines drawn (hc): an offscreen image (Conker's small render
     // targets) is not as tall as the guess h, which still sets the scale.
     if (s->drawnH && s->drawnH < h) hc = s->drawnH;
@@ -1383,8 +1391,7 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
             {
                 u32 a = s->addr + (y * w + xx) * s->bytes;
                 if (a + s->bytes > H64_RDRAM_SIZE) break;
-                store_pixel(ram + a, s->fmt, src[xx]);
-                if (snap) store_pixel(snap + a, s->fmt, src[xx]);
+                store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx]);
             }
         }
     }
@@ -1402,12 +1409,13 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
         {
             u32 a = s->addr + (y * w + xx) * s->bytes;
             if (a + s->bytes > H64_RDRAM_SIZE) break;
-            store_pixel(ram + a, s->fmt, src[xx * x->rtW / w]);
-            if (snap) store_pixel(snap + a, s->fmt, src[xx * x->rtW / w]);
+            store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx * x->rtW / w]);
         }
     }
     }
-    if (x->deferNotify)
+    if (snap)
+        ;   // RDRAM unchanged: nothing for the recompiler
+    else if (x->deferNotify)
     {
         // On the graphics worker: the recompiler is the CPU thread's; tell it later.
         u32 lo = s->addr + w * r0 * s->bytes, hi = s->addr + w * r1 * s->bytes;
@@ -1416,7 +1424,11 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
     }
     else
         h64_jit_notify_write(x->sys, s->addr + w * r0 * s->bytes, w * (r1 - r0) * s->bytes);
-    // The lines copied back so far (one range: a separate one replaces it).
+    // The lines copied back so far (one range: a separate one replaces it),
+    // for this snapshot only if it went into one.
+    if (s->cleanSnap != (snap != NULL) || (snap && s->cleanGen != x->st->loadRamGen)) s->cleanLo = s->cleanHi = 0;
+    s->cleanSnap = snap != NULL;
+    s->cleanGen = x->st->loadRamGen;
     if (s->cleanHi > s->cleanLo && r0 <= s->cleanHi && r1 >= s->cleanLo)
     {
         if (r0 < s->cleanLo) s->cleanLo = r0;
@@ -1427,7 +1439,7 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
         s->cleanLo = r0;
         s->cleanHi = r1;
     }
-    if (s->cleanLo == 0 && s->cleanHi >= hc) s->gpuDirty = 0;
+    if (!snap && s->cleanLo == 0 && s->cleanHi >= hc) s->gpuDirty = 0;
     x->stats.copyBacks++;
 }
 
@@ -1466,7 +1478,9 @@ static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
     if (hi <= s->addr || x->debug == 5) { copy_back_timed(x, slot); return; }
     r0 = lo > s->addr ? (lo - s->addr) / rb : 0;
     r1 = (hi - s->addr + rb - 1) / rb;
-    if (s->cleanHi > s->cleanLo && r0 >= s->cleanLo && r1 <= s->cleanHi) return;   // copied back already
+    if (s->cleanHi > s->cleanLo && r0 >= s->cleanLo && r1 <= s->cleanHi &&
+        (!s->cleanSnap || (x->st->loadRam && s->cleanGen == x->st->loadRamGen)))
+        return;   // copied back already (into this job's snapshot, if it was one)
     {
         u64 t0 = h64_prof_now(x->sys);
         copy_back_rows(x, slot, r0, r1);
@@ -1495,6 +1509,13 @@ static int find_texture_slot(Xenos *x)
 static void copy_back_timed(Xenos *x, int slot)
 {
     if (slot < 0 || !x->fb[slot].gpuDirty) return;
+    {
+        // Already copied whole into this job's snapshot.
+        const FbSlot *s = &x->fb[slot];
+        u32 h = s->height ? s->height : 240;
+        if (s->drawnH && s->drawnH < h) h = s->drawnH;
+        if (s->cleanSnap && x->st->loadRam && s->cleanGen == x->st->loadRamGen && s->cleanLo == 0 && s->cleanHi >= h) return;
+    }
     if (x->debug != 5)   // xenosdebug=5: no copy backs (diagnosis)
     {
         u64 t0 = h64_prof_now(x->sys);
@@ -1508,7 +1529,7 @@ static void log_load(Xenos *x, const u32 *w, u32 op, int slot)
 {
     LoadRec r;
     const H64RdpState *st = x->st;
-    if (x->loadLog.empty()) x->logRam = st->loadRam;
+    if (x->loadLog.empty()) { x->logRam = st->loadRam; x->logGen = st->loadRamGen; }
     r.w0 = w[0];
     r.w1 = w[1];
     r.op = op;
@@ -1586,7 +1607,7 @@ static void resolve_loads(Xenos *x)
     u8 texFmt, texSize;
     if (x->loadLog.empty()) return;
     x->stats.loadResolves++;
-    if (st->loadRam != x->logRam)
+    if (st->loadRam != x->logRam || st->loadRamGen != x->logGen)
     {
         x->loadLog.clear();
         memset(x->staleTmem, 0, sizeof(x->staleTmem));
@@ -2260,7 +2281,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         if (op != 0x30) fb_load(x, w, op == 0x33);
         u32 lo, n;
         load_range(x->st, w, op, &lo, &n);
-        if (!x->loadLog.empty() && x->st->loadRam != x->logRam)
+        if (!x->loadLog.empty() && (x->st->loadRam != x->logRam || x->st->loadRamGen != x->logGen))
         {
             x->loadLog.clear();   // another task's
             memset(x->staleTmem, 0, sizeof(x->staleTmem));
