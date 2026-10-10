@@ -354,6 +354,14 @@ void h64_sp_write(H64System *sys, u32 reg, u32 v)
         }
 #undef SP_PAIR
         rsp->status = s;
+        if (rsp->hleBusy && rsp->hleExtended && (v & 0x0400))
+        {
+            // osSpTaskYield during a graphics task lengthened to its real
+            // time (gfx timing): the task ends now, so the audio task the
+            // game wants to run can (the real microcode would yield).
+            rsp->hleExtended = 0;
+            h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles);
+        }
         if (wasHalted && !(s & ST_HALT))
         {
             u32 busy = 0;
@@ -624,12 +632,14 @@ void h64_rsp_slice_event(H64System *sys)
                 if (end > sys->cpu.cycles)
                 {
                     h64_sched_set(&sys->sched, H64_EV_RSP, end);
+                    rsp->hleExtended = 1;
                     return;
                 }
             }
         }
         // End of an HLE task: halt with the bits the microcode would set.
         rsp->hleBusy = 0;
+        rsp->hleExtended = 0;
         rsp->status |= rsp->hleStatus | ST_HALT;
         if ((rsp->hleStatus & ST_BROKE) && (rsp->status & ST_INTBREAK))
             h64_mi_raise(sys, MI_INTR_SP);

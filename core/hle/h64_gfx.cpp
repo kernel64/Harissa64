@@ -575,21 +575,38 @@ static H64_INLINE void cbfd_light(const H64Gfx *g, float x, float y, float z, fl
     }
     {
         int facing = g->advLighting && (g->geomRaw & 0x00400000u);   // G_POINT_LIGHTING: also facing the light
-        for (l = nl - 2; l >= 0; l--)
+        // Two lights at a time: their intensities are independent (the in-order
+        // core runs both chains interleaved); summed in the same order as one
+        // at a time, so the results are the same.
+        for (l = nl - 2; l >= 0; l -= 2)
         {
+            int k = l > 0 ? l - 1 : l;
             float dx = p0 - g->lightPos[l][0], dy = p1 - g->lightPos[l][1], dz = p2 - g->lightPos[l][2];
+            float ex = p0 - g->lightPos[k][0], ey = p1 - g->lightPos[k][1], ez = p2 - g->lightPos[k][2];
             float len = (dx * dx + dy * dy + dz * dz) * (1.0f / 32768.0f);   // 2 / 65536: exact
+            float len2 = (ex * ex + ey * ey + ez * ez) * (1.0f / 32768.0f);
             float in = fsel(-len, 1.0f, g->lightCa[l] / len);                // len > 0 ? ca / len : 1
+            float in2 = fsel(-len2, 1.0f, g->lightCa[k] / len2);
             in = fsel(in - 1.0f, 1.0f, in);
+            in2 = fsel(in2 - 1.0f, 1.0f, in2);
             if (facing)
             {
                 float d = nx * ldir[l][0] + ny * ldir[l][1] + nz * ldir[l][2];
+                float d2 = nx * ldir[k][0] + ny * ldir[k][1] + nz * ldir[k][2];
                 in *= fsel(d - 1.0f, 1.0f, d);
+                in2 *= fsel(d2 - 1.0f, 1.0f, d2);
             }
             in = fsel(-in, 0.0f, in);
+            in2 = fsel(-in2, 0.0f, in2);
             r += lc[l][0] * in;
             gg += lc[l][1] * in;
             b += lc[l][2] * in;
+            if (l > 0)
+            {
+                r += lc[k][0] * in2;
+                gg += lc[k][1] * in2;
+                b += lc[k][2] * in2;
+            }
         }
     }
     *fr = r > 1.0f ? 1.0f : r;
@@ -881,9 +898,7 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
 static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2);
 static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
 {
-    u64 t0 = h64_prof_now(g->sys);
     triangle_body(g, i0, i1, i2);
-    g->pTri += h64_prof_now(g->sys) - t0;
     g->pNtri++;
 }
 

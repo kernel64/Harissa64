@@ -109,6 +109,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "asyncaudio")) c->asyncAudio = atoi(eq + 1);
         else if (!strcmp(line, "audiocycles")) c->audioCycles = (u32)atoi(eq + 1);
         else if (!strcmp(line, "gfxcycles")) c->gfxCycles = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "gfxtiming")) c->gfxTiming = atoi(eq + 1);
         else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);

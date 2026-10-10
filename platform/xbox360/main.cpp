@@ -1081,6 +1081,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     free(data);
     if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
+    sys->options.gfxTiming = c->gfxTiming;
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
     sys->profClock = ProfClock;
@@ -1434,8 +1435,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                              xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
                              xs.bigRect ? "rectangle" : "triangle");
                 PcSamplerReport();
-                H64_INFO("[gprof] ms/frame on the graphics workers: triangles %.1f (%u a frame), snapshots %.1f (%u KB a frame), vertices %.1f (%u a frame; lighting %.1f, %u lights a frame), TMEM loads %u (%u KB, %.1f ms), palettes %u (%.1f ms)",
-                         pr[H64_PROF_GFX_TRI] * k, (u32)(sys->prof[H64_PROF_GFX_NTRI] / framesSincePerf), pr[H64_PROF_GFX_SNAPSHOT] * k, (u32)(sys->prof[H64_PROF_SNAP_BYTES] / framesSincePerf / 1024),
+                H64_INFO("[gprof] ms/frame on the graphics workers: %u triangles a frame, snapshots %.1f (%u KB a frame), vertices %.1f (%u a frame; lighting %.1f, %u lights a frame), TMEM loads %u (%u KB, %.1f ms), palettes %u (%.1f ms)",
+                         (u32)(sys->prof[H64_PROF_GFX_NTRI] / framesSincePerf), pr[H64_PROF_GFX_SNAPSHOT] * k, (u32)(sys->prof[H64_PROF_SNAP_BYTES] / framesSincePerf / 1024),
                          pr[H64_PROF_GFX_VTX] * k, (u32)(sys->prof[H64_PROF_GFX_NVTX] / framesSincePerf),
                          pr[H64_PROF_GFX_LIGHT] * k, (u32)(sys->prof[H64_PROF_GFX_NLIGHT] / framesSincePerf),
                          (u32)(sys->prof[H64_PROF_TMEM_LOADS] / framesSincePerf), (u32)(sys->prof[H64_PROF_TMEM_WORDS] * 8 / framesSincePerf / 1024),

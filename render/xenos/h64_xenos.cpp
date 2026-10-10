@@ -145,7 +145,10 @@ struct Xenos
     u64 combineRaw;
 
     // Batching: triangles with the same state go to one draw.
-    std::vector<XVtx> batch;
+    // Triangles waiting for one draw call (written in place: a vector's
+    // push_back copied each 48-byte vertex byte by byte, ~6000 a frame in Conker).
+    XVtx batch[BATCH_VERTICES];
+    u32 batchN;
     int stateDirty;     // an RDP command arrived since the state was last set up
     u32 batchFlags, batchTile;
     TexBinding batchTb0, batchTb1;
@@ -1849,12 +1852,12 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
 static void flush_batch(Xenos *x)
 {
     u64 t0;
-    if (x->batch.empty()) return;
+    if (!x->batchN) return;
     t0 = h64_prof_now(x->sys);
-    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, (UINT)(x->batch.size() / 3), &x->batch[0], sizeof(XVtx));
+    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, x->batchN / 3, x->batch, sizeof(XVtx));
     x->stats.tDraw += h64_prof_now(x->sys) - t0;
     x->stats.draws++;
-    x->batch.clear();
+    x->batchN = 0;
 }
 
 static void xenos_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
@@ -1864,7 +1867,7 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     const H64RdpState *st = x->st;
     const H64RenderVertex *v[3];
     const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[(tile + 1) & 7];
-    XVtx q[3];
+    XVtx *q;
     int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0, wsFull;
     (void)levels;
     if (st->rasterFlags & (RS_FILL | RS_COPY)) return;
@@ -1874,7 +1877,7 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
             const H64RenderVertex *vv = i == 0 ? a : i == 1 ? b : c;
             if (vv->z < 0.0f || vv->z > 32767.0f) flags |= TRI_ZOUT;
         }
-    if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || x->batch.size() + 3 > BATCH_VERTICES)
+    if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || x->batchN + 3 > BATCH_VERTICES)
     {
         flush_batch(x);
         // TMEM as the loads left it (copy backs put off) before a texture is decoded from it.
@@ -1893,6 +1896,8 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         tc_affine(t1->shiftT, (s32)t1->tlo, x->batchTb1.h, &x->batchA[3], &x->batchB[3]);
     }
     v[0] = a; v[1] = b; v[2] = c;
+    wsFull = 1;
+    if (x->aspect == 1)
     {
         // 16:9 widescreen: a triangle from one screen edge exactly to the
         // other is a 2D background (MK64's sky gradient), stretched like the
@@ -1901,6 +1906,8 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         for (i = 1; i < 3; i++) { if (v[i]->x < lo) lo = v[i]->x; if (v[i]->x > hi) hi = v[i]->x; }
         wsFull = lo > -0.6f && lo < 0.6f && hi > fbw - 0.6f && hi < fbw + 0.6f;
     }
+    q = &x->batch[x->batchN];
+    x->batchN += 3;
     for (i = 0; i < 3; i++)
     {
         float w = persp && v[i]->invw > 0 ? 1.0f / v[i]->invw : 1.0f;
@@ -1923,9 +1930,6 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         q[i].u1 = v[i]->s * x->batchA[2] + x->batchB[2];
         q[i].v1 = v[i]->t * x->batchA[3] + x->batchB[3];
     }
-    x->batch.push_back(q[0]);
-    x->batch.push_back(q[1]);
-    x->batch.push_back(q[2]);
     x->stats.triangles++;
 }
 
@@ -2240,7 +2244,7 @@ static void xenos_reset(void *user)
 {
     Xenos *x = (Xenos *)user;
     u32 i;
-    x->batch.clear();
+    x->batchN = 0;
     for (i = 0; i < FB_SLOTS; i++)
     {
         x->fb[i].valid = 0;
@@ -2551,7 +2555,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->fbTex = NULL;
     x->usesT1 = 1;
     memset(x->memo, 0, sizeof(x->memo));
-    x->batch.reserve(BATCH_VERTICES);
+    x->batchN = 0;
     x->curSlot = -1;
     x->edramOwner = -1;
     x->edramDepthAddr = 0xFFFFFFFFu;
