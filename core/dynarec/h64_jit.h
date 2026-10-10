@@ -74,6 +74,7 @@ struct H64Jit
     // block body, by pc bits 2..11; filled by the dispatcher, dropped with their block.
     u32 *indPc;
     u32 **indBody;
+    s8 *indEnt;                     // the TLB entry mapping each indirect target (-1: KSEG0/1)
 
     u8 *mem;                        // executable code memory (from the platform)
     u32 memSize, memUsed;           // hot code grows from the start...

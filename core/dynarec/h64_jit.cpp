@@ -24,6 +24,7 @@ void h64_jit_reset(H64System *sys)
     memset(j->tlbHead, 0xFF, sizeof(j->tlbHead));
     memset(j->indPc, 0, 1024 * sizeof(u32));
     memset(j->indBody, 0, 1024 * sizeof(u32 *));
+    memset(j->indEnt, 0xFF, 1024);
     memset(j->codeMap, 0, (H64_RDRAM_SIZE >> 6) * sizeof(u16));
     j->blockCount = 0;
     j->linkCount = 0;
@@ -55,9 +56,10 @@ int h64_jit_init(H64System *sys, void *execMem, u32 size, void (*flushIcache)(vo
     j->codeMap = (u16 *)calloc(H64_RDRAM_SIZE >> 6, sizeof(u16));
     j->indPc = (u32 *)calloc(1024, sizeof(u32));
     j->indBody = (u32 **)calloc(1024, sizeof(u32 *));
-    if (!j->blocks || !j->links || !j->codeMap || !j->indPc || !j->indBody)
+    j->indEnt = (s8 *)malloc(1024);
+    if (!j->blocks || !j->links || !j->codeMap || !j->indPc || !j->indBody || !j->indEnt)
     {
-        free(j->blocks); free(j->links); free(j->codeMap); free(j->indPc); free(j->indBody); free(j);
+        free(j->blocks); free(j->links); free(j->codeMap); free(j->indPc); free(j->indBody); free(j->indEnt); free(j);
         return -1;
     }
     j->runEnd = ~0ull;
@@ -82,6 +84,7 @@ void h64_jit_free(H64System *sys)
     free(sys->jit->codeMap);
     free(sys->jit->indPc);
     free(sys->jit->indBody);
+    free(sys->jit->indEnt);
     free(sys->jit);
     sys->jit = 0;
 }
@@ -143,7 +146,7 @@ static void unlink_block(H64Jit *j, H64JitBlock *b)
     b->linkHead = -1;
     {
         u32 k = (b->vpc >> 2) & 1023;   // its indirect-jump entry
-        if (j->indBody[k] == b->body) { j->indBody[k] = 0; j->indPc[k] = 0; }
+        if (j->indBody[k] == b->body) { j->indBody[k] = 0; j->indPc[k] = 0; j->indEnt[k] = -1; }
     }
 }
 
@@ -237,17 +240,13 @@ static void unlink_tlb_entry(H64System *sys, int entry)
     {
         H64JitLink *l = &j->links[i];
         H64JitBlock *b = &j->blocks[l->target];
-        int next = l->tlbNext, e;
+        int next = l->tlbNext;
         u32 paddr;
-        if (b->valid && h64_cpu_probe_fetch(&sys->cpu, b->vpc, &paddr, &e) && e >= 0 && paddr == b->paddr)
-        {
-            if (e != entry)
-            {
-                tlb_list_remove(j, i);
-                tlb_list_add(j, i, e);
-            }
-        }
-        else
+        // The TLB holds no two entries for one page: the link stays valid only
+        // if this entry still maps the target there (one entry checked, not
+        // a probe of all 32: GoldenEye refills ~260 entries a frame and its
+        // code, all TLB-mapped, has thousands of links).
+        if (!(b->valid && h64_cpu_probe_entry(&sys->cpu, b->vpc, entry, &paddr) && paddr == b->paddr))
         {
             int *p = &b->linkHead;   // out of the target's list
             *l->patch = l->orig;
@@ -321,7 +320,20 @@ void h64_jit_run_one(H64System *sys)
         // Only the links through the entries that changed (Conker refills
         // its TLB all the time; undoing every link each time ran it at 1 FPS).
         int e;
-        if (cpu->asidGen != j->seenAsidGen) { unlink_tlb(sys, -2); j->seenAsidGen = cpu->asidGen; }
+        int asid = cpu->asidGen != j->seenAsidGen;
+        u32 changed = 0, k;
+        if (asid) { unlink_tlb(sys, -2); j->seenAsidGen = cpu->asidGen; }
+        for (e = 0; e < 32; e++)
+            if (cpu->tlbEntryGen[e] != j->seenEntryGen[e]) changed |= 1u << e;
+        // Indirect targets mapped by a changed entry (or any, on an ASID change) are forgotten.
+        if (asid || changed)
+            for (k = 0; k < 1024; k++)
+                if (j->indEnt[k] >= 0 && (asid || (changed >> j->indEnt[k]) & 1))
+                {
+                    j->indPc[k] = 0;
+                    j->indBody[k] = 0;
+                    j->indEnt[k] = -1;
+                }
         for (e = 0; e < 32; e++)
             if (cpu->tlbEntryGen[e] != j->seenEntryGen[e])
             {
@@ -397,12 +409,17 @@ void h64_jit_run_one(H64System *sys)
     // (Perfect Dark, GoldenEye, Conker) are undone whenever the TLB changes.
     if (lastExit && lastTarget == pc32 && flushes == j->stats.flushes && !j->noLink && b->kernel && b->valid && !b->idle)
         link_exit(j, lastExit, b, (pc32 >= 0x80000000u && pc32 < 0xC0000000u) ? -1 : tlbEntry);
-    // Known to rtIndirect: native KSEG0/1 blocks that are not idle loops.
-    if (b->kernel && b->valid && !b->idle && !j->noLink && pc32 >= 0x80000000u && pc32 < 0xC0000000u && b->body)
+    // Known to rtIndirect: native blocks that are not idle loops, in KSEG0/1
+    // or TLB-mapped (GoldenEye's code is all at 0x7F...: every jr ra went back
+    // to the dispatcher, ~20000 times a frame); a TLB-mapped one is forgotten
+    // when its TLB entry or the ASID changes (above).
+    if (b->kernel && b->valid && !b->idle && !j->noLink && b->body &&
+        ((pc32 >= 0x80000000u && pc32 < 0xC0000000u) || tlbEntry >= 0))
     {
         u32 k = (pc32 >> 2) & 1023;
         j->indPc[k] = pc32;
         j->indBody[k] = b->body;
+        j->indEnt[k] = (s8)((pc32 >= 0x80000000u && pc32 < 0xC0000000u) ? -1 : tlbEntry);
     }
     j->blockEndCycles = cpu->cycles + (u64)b->insns * cpu->cpi;
     j->curPage = b->paddr >> 12;

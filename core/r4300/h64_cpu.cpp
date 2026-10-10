@@ -265,6 +265,27 @@ int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr, int *entry)
     return 0;
 }
 
+int h64_cpu_probe_entry(const H64Cpu *cpu, u32 a, int i, u32 *paddr)
+{
+    u64 vaddr = (u64)(s64)(s32)a;
+    u8 asid = (u8)cpu->cop0[CP0_ENTRYHI];
+    const H64TlbEntry *e;
+    u64 maskFull, vpnMask, offsetMask;
+    u32 lo;
+    if (i < 0 || i > 31 || (a >= 0x80000000u && a < 0xC0000000u)) return 0;
+    if (a >= 0xC0000000u && !cpu_kernel_mode(cpu) && !(cpu_supervisor_mode(cpu) && a < 0xE0000000u)) return 0;
+    e = &cpu->tlb[i];
+    maskFull = (u64)e->pageMask | 0x1FFF;
+    vpnMask = 0xC00000FFFFFFE000ull & ~maskFull;
+    offsetMask = maskFull >> 1;
+    if ((vaddr & vpnMask) != (e->entryHi & vpnMask)) return 0;
+    if (!(e->entryLo0 & e->entryLo1 & 1) && (u8)e->entryHi != asid) return 0;
+    lo = (vaddr & (offsetMask + 1)) ? e->entryLo1 : e->entryLo0;
+    if (!((lo >> 1) & 1)) return 0;
+    *paddr = (u32)((((u64)(lo >> 6) & 0xFFFFF) << 12) & ~offsetMask) | (u32)(vaddr & offsetMask);
+    return 1;
+}
+
 int h64_cpu_translate_debug(H64Cpu *cpu, u64 vaddr, u32 *paddr)
 {
     H64Cpu copy = *cpu;

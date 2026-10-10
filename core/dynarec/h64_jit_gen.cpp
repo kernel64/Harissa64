@@ -984,10 +984,8 @@ void h64_jit_emit_runtime(H64System *sys)
         ppc_extsw(c, 4, 3);
         ppc_cmpd(c, 0, 4, 3);
         out[n++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);            // bne: not a sign-extended 32-bit pc
-        ppc_andis_(c, 5, 3, 0xDF80);
-        ppc_xoris(c, 5, 5, 0x8000);
-        ppc_cmpwi(c, 0, 5, 0);
-        out[n++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);            // not KSEG0/1 RDRAM
+        // KSEG0/1 or TLB-mapped: the table holds only pcs the dispatcher
+        // registered (and drops TLB-mapped ones when their mapping changes).
         ppc_andi_(c, 5, 3, 3);
         out[n++] = ppc_bc_fwd(c, 4, 0, PPC_EQ);            // misaligned
         ppc_ld(c, 6, OFF_CYCLES, JR_CPU);

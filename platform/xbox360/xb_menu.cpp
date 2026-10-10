@@ -248,6 +248,28 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
     return SET_NONE;
 }
 
+// ---- Leaving ----
+// "Quit to the dashboard?": A quits, B or BACK stays.
+static int confirm_quit(IDirect3DDevice9 *dev)
+{
+    UiInput in;
+    UiInputInit(&in);
+    for (;;)
+    {
+        WORD down = UiInputPoll(&in);
+        const int w = 640, h = 220, x = (1280 - w) / 2, y = (720 - h) / 2;
+        if (down & XINPUT_GAMEPAD_A) return 1;
+        if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK)) return 0;
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(8, 9, 16), 1.0f, 0);
+        UiRect(dev, x - 4, y - 4, w + 8, h + 8, COL_EDGE);
+        UiRect(dev, x, y, w, h, COL_BG);
+        UiText(dev, x + 40, y + 40, 3, COL_TEXT, "Quit to the dashboard?");
+        UiFooter(dev, x + 40, y + h - 50, "A:Quit|B:Stay");
+        dev->Present(NULL, NULL, NULL, NULL);
+        Sleep(16);
+    }
+}
+
 // ---- About ----
 // The credits panel: from the ROM browser (X) and the in-game menu.
 void AboutDraw(IDirect3DDevice9 *dev)
@@ -458,7 +480,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     {
         WORD down = UiInputPoll(&in);
         int n = (int)roms.size();
-        if (down & XINPUT_GAMEPAD_BACK) return 0;
+        if ((down & XINPUT_GAMEPAD_BACK) && confirm_quit(dev)) return 0;
         if (n)
         {
             if (down & XINPUT_GAMEPAD_DPAD_UP) sel = (sel + n - 1) % n;

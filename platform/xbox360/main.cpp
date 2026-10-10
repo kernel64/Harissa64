@@ -11,7 +11,7 @@
 //   hle=1          (default) or hle=0 for the LLE RSP (slow; no video yet:
 //                  the Xenos renderer only draws HLE triangles).
 // The log goes to game:\harissa64v2.log, or cache:\ when game:\ is
-// read-only (Xenia). Holding BACK for 2 s returns to the dashboard.
+// read-only (Xenia). Holding BACK for 3 s returns to the ROM list.
 #include <xtl.h>
 #include <stdio.h>
 #include <string.h>
@@ -1107,6 +1107,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     PcSamplerStart(sys);
     DWORD backSince = 0;
     int backUsed = 0;
+    double backHeldMs = 0, backPolledAt = 0;   // time BACK was seen held, poll after poll
+    int backHinted = 0;
     WORD prevButtons = 0;
     for (;;)
     {
@@ -1121,19 +1123,29 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             if (!s_script)
                 for (k = 0; k < 3; k++) if (s_padsMoreValid[k]) sys->padMask |= 2u << k;
         }
-        // BACK held for 2 s returns to the dashboard (BACK + START is the
-        // dashboard's screenshot); with BACK held, RB/LB save/load a state and
-        // the D-pad changes the slot.
+        // BACK held for 3 s goes back to the ROM list (the dashboard is left
+        // only from the in-game menu or the ROM list); with BACK held, RB/LB
+        // save/load a state and the D-pad changes the slot. The hold time adds
+        // up the gaps between polls that saw BACK down, each counted 100 ms at
+        // most: a slow first frame (a 6105 game's ~4 s boot) between two
+        // presses no longer passes for a long hold (it sent the user back to
+        // Aurora).
         if (s_padValid && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK))
         {
             WORD down = s_pad.Gamepad.wButtons & ~prevButtons;
+            double nowMs = QpcMs();
             if (!backSince)
             {
                 backSince = GetTickCount() | 1;
                 backUsed = 0;
+                backHeldMs = 0;
+                backHinted = 0;
                 H64_INFO("[pad] BACK down at VI %u", presented);
                 LogFlush();
             }
+            else
+                backHeldMs += nowMs - backPolledAt > 100.0 ? 100.0 : nowMs - backPolledAt;
+            backPolledAt = nowMs;
             if (down & XINPUT_GAMEPAD_RIGHT_SHOULDER) { s_statePending = 1; backUsed = 1; }
             if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) { LoadStateNow(sys); backUsed = 1; }
             if (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT))
@@ -1147,10 +1159,15 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 Osd(msg);
                 backUsed = 1;
             }
-            if (!backUsed && GetTickCount() - backSince >= 2000)
+            if (!backUsed && backHeldMs >= 1000.0 && !backHinted)
             {
-                H64_INFO("[pad] BACK held 2 s: leaving to the dashboard");
-                result = RG_DASHBOARD;
+                Osd("Keep holding BACK: ROM list");
+                backHinted = 1;
+            }
+            if (!backUsed && backHeldMs >= 3000.0)
+            {
+                H64_INFO("[pad] BACK held 3 s: back to the ROM list");
+                result = RG_BROWSER;
                 break;
             }
         }
@@ -1161,7 +1178,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 H64_INFO("[pad] BACK up after %u ms%s", GetTickCount() - backSince, backUsed ? " (used with RB/LB/D-pad)" : "");
                 LogFlush();
             }
-            if (backSince && !backUsed && GetTickCount() - backSince < 600) menuRequest = 1;   // a short press
+            if (backSince && !backUsed && backHeldMs < 600.0) menuRequest = 1;   // a short press
             backSince = 0;
         }
         prevButtons = s_padValid ? s_pad.Gamepad.wButtons : 0;

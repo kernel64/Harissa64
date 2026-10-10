@@ -94,10 +94,15 @@ static void isv_sink(void *user, const char *line)
 static int s_traceExc = 0;
 
 // --trace-exc: prints the first N non-interrupt exceptions.
+static unsigned long long s_excCount[32];   // every exception, by code (printed at the end)
 static void exc_hook(void *user, int code)
 {
     H64System *sys = (H64System *)user;
     H64Cpu *c = &sys->cpu;
+    s_excCount[code & 31]++;
+    if (code == 15 && s_excCount[15] <= 4)   // floating point: what trapped
+        printf("[exc] FPE at pc %08X (delay slot %d), fcr31 %08X, last op %08X, instr #%llu\n", (u32)c->curPc, c->curInDelaySlot,
+               (u32)c->fcr31, c->lastOp, (unsigned long long)c->instructions);
     if (s_traceExc <= 0) return;
     // Interrupts are only reported when EPC points outside RDRAM (a corrupted PC).
     if (code == EXC_INT && ((u32)c->cop0[CP0_EPC] & 0xFF800000u) == 0x80000000u) return;
@@ -654,6 +659,12 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                sys->jit->memUsed, sys->jit->blockCount,
                (unsigned long long)(sys->jit->stats.nativeInsns + sys->jit->stats.helperInsns),
                (unsigned long long)sys->jit->stats.nativeInsns, (unsigned long long)sys->jit->stats.flushes);
+    {
+        int k;
+        printf("[run] exceptions:");
+        for (k = 0; k < 32; k++) if (s_excCount[k]) printf(" code %d: %llu", k, s_excCount[k]);
+        printf("\n");
+    }
     if (sys->jit)
         printf("[jit] links: %u of %u records used, %u through the TLB\n", sys->jit->linkCount, sys->jit->linkCap, sys->jit->tlbLinkCount);
     if (sys->jit && sys->jit->opHist)

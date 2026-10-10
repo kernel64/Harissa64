@@ -127,6 +127,8 @@ int h64_cpu_translate_debug(H64Cpu *cpu, u64 vaddr, u32 *paddr);
 // effects (no exception, no copy): 1 with *paddr, 0 when it would fault.
 // *entry: the TLB entry used, or -1 (KSEG0/1).
 int h64_cpu_probe_fetch(const H64Cpu *cpu, u32 a, u32 *paddr, int *entry);
+// Whether TLB entry i alone maps a (as an instruction fetch would see it now), and to what.
+int h64_cpu_probe_entry(const H64Cpu *cpu, u32 a, int i, u32 *paddr);
 // One step with the instruction at pc already known (the recompiler, for an
 // instruction it read when compiling the block): the same as h64_cpu_step
 // without the fetch.

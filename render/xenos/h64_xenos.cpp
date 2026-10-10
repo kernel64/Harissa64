@@ -62,6 +62,11 @@ struct FbSlot
     u32 bytes;         // bytes per pixel (I4: 1, not copied back)
     int fmt;           // FB_*
     IDirect3DTexture9 *tex;   // resolved copy (RT_WIDTH x RT_HEIGHT)
+    // The picture the VI still shows while the GPU draws the next frame into
+    // this image (created when first needed): see select_framebuffer.
+    IDirect3DTexture9 *front;
+    int showFront;     // the VI shows `front` (until it shows another image)
+    u32 splitAt;       // presentCount of the last swap of tex and front
     int valid;
     int gpuDirty;      // drawn by the GPU since the last copy back to RDRAM
     u32 lastUse;
@@ -141,6 +146,7 @@ struct Xenos
     u32 useCounter;
     int debug;
     IDirect3DTexture9 *shown;   // texture shown at the last present
+    int shownSlot;              // frame slot the VI showed at the last present (-1: none)
     float shownU, shownV;
     int shownTiled;
     void (*overlay)(void *user, IDirect3DDevice9 *dev);   // front-end messages, drawn before each present
@@ -841,8 +847,19 @@ static void draw_textured(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1, 
     draw_textured_ps(x, x->psCopy, tex, u1, v1, x0, y0, w, h, tw, th);
 }
 
+static void draw_textured_uv(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTexture9 *tex, float u0, float v0, float u1,
+                             float v1, float x0, float y0, float w, float h, float tw, float th);
+
 static void draw_textured_ps(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTexture9 *tex, float u1, float v1, float x0,
                              float y0, float w, float h, float tw, float th)
+{
+    draw_textured_uv(x, ps, tex, 0.0f, 0.0f, u1, v1, x0, y0, w, h, tw, th);
+}
+
+// Draws the [u0, u1] x [v0, v1] part of `tex` over the rectangle (x0, y0, w, h)
+// of a target of tw x th pixels.
+static void draw_textured_uv(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTexture9 *tex, float u0, float v0, float u1,
+                             float v1, float x0, float y0, float w, float h, float tw, float th)
 {
     XVtx q[4];
     float c[4];
@@ -855,8 +872,8 @@ static void draw_textured_ps(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTextu
         q[i].z = 0;
         q[i].w = 1;
         q[i].color = 0xFFFFFFFF;
-        q[i].u0 = (i & 1) ? u1 : 0.0f;
-        q[i].v0 = (i & 2) ? v1 : 0.0f;
+        q[i].u0 = (i & 1) ? u1 : u0;
+        q[i].v0 = (i & 2) ? v1 : v0;
         q[i].u1 = q[i].v1 = 0;
     }
     x->dev->SetVertexShaderConstantF(0, c, 1);
@@ -924,11 +941,12 @@ static IDirect3DPixelShader9 *display_shader(Xenos *x)
         "float4 rcp : register(c0);\n"
         "float4 prm : register(c1);\n"
         "float4 prm2 : register(c2);\n"
+        "float4 prm3 : register(c3);\n"
         "float luma(float3 c) { return dot(c, float3(0.299, 0.587, 0.114)); }\n"
-        "float3 tap(float2 uv) { return tex2D(t0, clamp(uv, 0.5 * rcp.xy, prm.xy - 0.5 * rcp.xy)).rgb; }\n"
+        "float3 tap(float2 uv) { return tex2D(t0, clamp(uv, prm3.xy + 0.5 * rcp.xy, prm.xy - 0.5 * rcp.xy)).rgb; }\n"
         "float3 base(float2 uv) {\n"
         "#if SMOOTH\n"
-        "  uv = clamp(uv, 0.5 * rcp.xy, prm.xy - 0.5 * rcp.xy);\n"
+        "  uv = clamp(uv, prm3.xy + 0.5 * rcp.xy, prm.xy - 0.5 * rcp.xy);\n"
         "  float3 rgbM = tex2D(t0, uv).rgb;\n"
         "  float lNW = luma(tap(uv + float2(-0.5, -0.5) * rcp.xy));\n"
         "  float lNE = luma(tap(uv + float2( 0.5, -0.5) * rcp.xy));\n"
@@ -952,7 +970,7 @@ static IDirect3DPixelShader9 *display_shader(Xenos *x)
         "float3 picture(float2 uv) {\n"
         "  float3 c = base(uv);\n"
         "#if BLUR\n"
-        "  float2 d = prm.xy / prm.zw * (BLUR == 1 ? 0.75 : 1.5);\n"
+        "  float2 d = (prm.xy - prm3.xy) / prm.zw * (BLUR == 1 ? 0.75 : 1.5);\n"
         "  c = (4.0 * c + 2.0 * (tap(uv + float2(d.x, 0.0)) + tap(uv - float2(d.x, 0.0)) + tap(uv + float2(0.0, d.y)) + tap(uv - float2(0.0, d.y)))\n"
         "       + tap(uv + d) + tap(uv - d) + tap(uv + float2(d.x, -d.y)) + tap(uv + float2(-d.x, d.y))) / 16.0;\n"
         "#elif SHARPEN\n"
@@ -966,7 +984,7 @@ static IDirect3DPixelShader9 *display_shader(Xenos *x)
         "  return c;\n"
         "}\n"
         "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0, float2 vpos : VPOS) : COLOR {\n"
-        "  float2 n = tc.xy / prm.xy;\n"
+        "  float2 n = (tc.xy - prm3.xy) / (prm.xy - prm3.xy);\n"
         "#if SCREEN == 3\n"
         "  float2 cc = n * 2.0 - 1.0;\n"
         "  cc *= 1.0 + float2(0.045, 0.06) * (cc.yx * cc.yx);\n"
@@ -974,13 +992,14 @@ static IDirect3DPixelShader9 *display_shader(Xenos *x)
         "  float2 edge = saturate((0.5 - abs(n - 0.5)) * float2(80.0, 60.0));\n"
         "  if (edge.x * edge.y <= 0.0) return float4(0.0, 0.0, 0.0, 1.0);\n"
         "#endif\n"
-        "  float2 uv = n * prm.xy;\n"
+        "  float2 uv = prm3.xy + n * (prm.xy - prm3.xy);\n"
         "#if SCREEN == 2 || SCREEN == 3\n"
         "  float lines = prm2.x;\n"
         "  float y = n.y * lines - 0.5;\n"
         "  float y0 = floor(y), f = y - y0;\n"
-        "  float2 px = float2(prm.x / prm.z * 0.5, 0.0);\n"
-        "  float2 uA = float2(uv.x, (y0 + 0.5) / lines * prm.y), uB = float2(uv.x, (y0 + 1.5) / lines * prm.y);\n"
+        "  float2 px = float2((prm.x - prm3.x) / prm.z * 0.5, 0.0);\n"
+        "  float2 uA = float2(uv.x, prm3.y + (y0 + 0.5) / lines * (prm.y - prm3.y));\n"
+        "  float2 uB = float2(uv.x, prm3.y + (y0 + 1.5) / lines * (prm.y - prm3.y));\n"
         "  float3 cA = 0.25 * (tap(uA - px) + tap(uA + px)) + 0.5 * tap(uA);\n"
         "  float3 cB = 0.25 * (tap(uB - px) + tap(uB + px)) + 0.5 * tap(uB);\n"
         "  float kA = lerp(18.0, 6.0, luma(cA)), kB = lerp(18.0, 6.0, luma(cB));\n"
@@ -1013,13 +1032,55 @@ static IDirect3DPixelShader9 *display_shader(Xenos *x)
     return x->psDisplay[key];
 }
 
+// What the VI shows, as ParaLLEl-RDP's VI decodes its registers (as
+// core/vi/h64_vi.cpp): the part of the output (640 x 240 NTSC, 288 PAL; [0, 1]
+// fractions, dx/dy) covered by the picture (H_START/H_END, V_START/V_END) and
+// the framebuffer area shown there (X/Y_START and X/Y_SCALE, in pixels from
+// the origin). Showing the whole colour image instead put DK64's letterboxed
+// cutscenes (fewer VI lines, centred by V_START) at the top of the screen.
+struct ViGeom { float dx0, dy0, dx1, dy1, sx0, sy0, sx1, sy1; int lines, serrate; };
+
+static int vi_geometry(const u32 *v, ViGeom *g)
+{
+    s32 vStart = (s32)((v[10] >> 16) & 0x3FF), vEnd = (s32)(v[10] & 0x3FF), vSync = (s32)(v[6] & 0x3FF);
+    s32 yStart = (s32)((v[13] >> 16) & 0xFFF), yAdd = (s32)(v[13] & 0xFFF);
+    s32 xStart = (s32)((v[12] >> 16) & 0xFFF), xAdd = (s32)(v[12] & 0xFFF);
+    int isPal = vSync > 525 + 25;
+    s32 vEndMax = isPal ? ((44 + 576) | 1) : ((34 + 480) | 1), vOffset = isPal ? 44 : 34, hOffset = isPal ? 128 : 108;
+    s32 vRes, hStart, hEnd, outLines = isPal ? 288 : 240;
+    if (vEnd > vEndMax) vEnd = vEndMax;
+    if (vStart > vEndMax) vStart = vEndMax;
+    vRes = (vEnd - vStart) >> 1;
+    vStart = (vStart - vOffset) / 2;
+    if (vStart < 0) { yStart -= yAdd * vStart; vStart = 0; }
+    if (vRes > outLines - vStart) vRes = outLines - vStart;
+    hStart = (s32)((v[9] >> 16) & 0x3FF) - hOffset;
+    hEnd = (s32)(v[9] & 0x3FF) - hOffset;
+    if (hStart < 0) { xStart -= xAdd * hStart; hStart = 0; }
+    if (hEnd > 640) hEnd = 640;
+    if (hEnd - hStart <= 0 || hStart >= 640 || vRes <= 0 || !xAdd || !yAdd) return 0;
+    g->dx0 = hStart / 640.0f;
+    g->dx1 = hEnd / 640.0f;
+    g->dy0 = (float)vStart / outLines;
+    g->dy1 = (float)(vStart + vRes) / outLines;
+    g->sx0 = xStart / 1024.0f;
+    g->sx1 = g->sx0 + (float)(hEnd - hStart) * xAdd / 1024.0f;
+    g->sy0 = yStart / 1024.0f;
+    g->sy1 = g->sy0 + (float)vRes * yAdd / 1024.0f;
+    g->lines = vRes;
+    g->serrate = (v[0] & 0x40) != 0;
+    return 1;
+}
+
 // The N64 picture on the back buffer: 4:3 and centred, or the whole width
-// (16:9 widescreen, whose 3D was drawn wider, or stretched). `width`/`lines`:
-// N64 pixels of the picture.
-static void draw_display(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1, u32 width, u32 lines)
+// (16:9 widescreen, whose 3D was drawn wider, or stretched). `g`: what the VI
+// shows (NULL: the whole picture); ox/oy: the origin's offset in the image (N64
+// pixels); u/v per N64 pixel and line of `tex`; `width`: N64 pixels across.
+static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, float ox, float oy, float uPer, float vPer,
+                         u32 width, u32 lines)
 {
     D3DSURFACE_DESC d;
-    float bw, bh, w, h, c[4];
+    float bw, bh, w, h, c[4], u0, v0, u1, v1, px0, py0, pw, ph;
     IDirect3DPixelShader9 *ps;
     x->backBuffer->GetDesc(&d);
     bw = (float)d.Width;
@@ -1029,6 +1090,21 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1, u
     if (w > bw) { w = bw; h = bw * 3.0f / 4.0f; }
     if (!lines) lines = 240;
     if (!width) width = 320;
+    if (g)
+    {
+        u0 = (g->sx0 + ox) * uPer; u1 = (g->sx1 + ox) * uPer;
+        v0 = (g->sy0 + oy) * vPer; v1 = (g->sy1 + oy) * vPer;
+        px0 = (bw - w) / 2 + g->dx0 * w; pw = (g->dx1 - g->dx0) * w;
+        py0 = (bh - h) / 2 + g->dy0 * h; ph = (g->dy1 - g->dy0) * h;
+        lines = (u32)g->lines;
+    }
+    else
+    {
+        u0 = v0 = 0.0f;
+        u1 = width * uPer; v1 = lines * vPer;
+        px0 = (bw - w) / 2; pw = w;
+        py0 = (bh - h) / 2; ph = h;
+    }
     ps = display_shader(x);
     if (!ps) ps = x->smooth && x->psSmooth ? x->psSmooth : x->psCopy;
     c[0] = 1.0f / RT_WIDTH; c[1] = 1.0f / RT_HEIGHT; c[2] = (float)RT_WIDTH; c[3] = (float)RT_HEIGHT;
@@ -1037,7 +1113,9 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1, u
     x->dev->SetPixelShaderConstantF(1, c, 1);
     c[0] = (float)(lines > 300 ? lines / 2 : lines); c[1] = c[2] = c[3] = 0;
     x->dev->SetPixelShaderConstantF(2, c, 1);
-    draw_textured_ps(x, ps, tex, u1, v1, (bw - w) / 2, (bh - h) / 2, w, h, bw, bh);
+    c[0] = u0; c[1] = v0; c[2] = c[3] = 0;
+    x->dev->SetPixelShaderConstantF(3, c, 1);
+    draw_textured_uv(x, ps, tex, u0, v0, u1, v1, px0, py0, pw, ph, bw, bh);
 }
 
 // 16:9 widescreen: N64 x coordinates of the 3D and of the small 2D elements
@@ -1100,6 +1178,28 @@ static void select_framebuffer(Xenos *x)
     else
         s = &x->fb[best];   // still in EDRAM (presenting draws to the back buffer elsewhere in EDRAM)
     x->edramOwner = best;
+    // The game starts the next frame in the image the VI still shows (DK64:
+    // it swaps buffers when that frame's display list is done, and the real
+    // RDP takes long enough for the VI to have moved on). Our GPU draws the
+    // whole frame at once: the VI would show it a frame early, then the other
+    // buffer's older frame (pictures back and forth: a "3D TV" shake). The
+    // shown picture moves to `front` and the VI keeps showing it until it
+    // shows another image; drawing goes on in a fresh texture. Once per
+    // present (an image selected several times in a frame keeps one copy).
+    if (best == x->shownSlot && s->valid && s->splitAt != x->presentCount + 1)
+    {
+        if (!s->front &&
+            FAILED(x->dev->CreateTexture(RT_WIDTH, RT_HEIGHT, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &s->front, NULL)))
+            s->front = NULL;
+        if (s->front)
+        {
+            IDirect3DTexture9 *t = s->tex;
+            s->tex = s->front;
+            s->front = t;
+            s->showFront = 1;
+            s->splitAt = x->presentCount + 1;
+        }
+    }
     s->gpuDirty = 1;
     s->drawnAt = x->presentCount;
     s->width = x->st->colorWidth;
@@ -1656,6 +1756,7 @@ static void xenos_reset(void *user)
     }
     x->curSlot = -1;
     x->edramOwner = -1;
+    x->shownSlot = -1;
     x->targetBound = 0;
     x->tmemGen++;
     x->stateDirty = 1;
@@ -1741,12 +1842,14 @@ static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp3
     return tex;
 }
 
-static void show_rdram_frame(Xenos *x, u32 origin, u32 width, int bpp32)
+static void show_rdram_frame(Xenos *x, const u32 *vi, u32 origin, u32 width, int bpp32)
 {
     u32 h = fb_height(width);
+    ViGeom g;
     IDirect3DTexture9 *tex = upload_rdram(x, origin, width, bpp32);
     if (!tex) return;
-    draw_display(x, tex, (float)width / RT_WIDTH, (float)h / RT_HEIGHT, width, h);
+    // The upload starts at the origin: no offset.
+    draw_display(x, tex, vi_geometry(vi, &g) ? &g : NULL, 0.0f, 0.0f, 1.0f / RT_WIDTH, 1.0f / RT_HEIGHT, width, h);
     x->shown = tex;
     x->shownTiled = 0;
     x->shownU = (float)width / RT_WIDTH;
@@ -1776,6 +1879,13 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             (found < 0 || s->lastUse > x->fb[found].lastUse))
             found = (int)i;
     }
+    if (x->debug == 7 && x->presentCount >= 600 && x->presentCount < 624)
+    {
+        // xenosdebug=7: every present for a moment (frames shown out of order).
+        H64_INFO("[xenos] present %u: origin %06X -> slot %d (addr %06X, last drawn at present %u, use %u), cur slot %d",
+                 x->presentCount, origin, found, found >= 0 ? x->fb[found].addr : 0, found >= 0 ? x->fb[found].drawnAt : 0,
+                 found >= 0 ? x->fb[found].lastUse : 0, x->curSlot);
+    }
     if (x->debug == 6 && (x->presentCount % 60) == 0)
     {
         // xenosdebug=6: what the VI shows, once a second.
@@ -1793,17 +1903,31 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         ;
     else if (found >= 0)
     {
-        draw_display(x, x->fb[found].tex, x->uMax, x->vMax, x->fb[found].width, x->fb[found].height);
-        x->shown = x->fb[found].tex;
+        const FbSlot *fs = &x->fb[found];
+        ViGeom g;
+        u32 bpr = (fs->width ? fs->width : 320) * (fs->bytes ? fs->bytes : 2), off = origin - fs->addr;
+        float oy = (float)(off / bpr), ox = (float)((off % bpr) / (fs->bytes ? fs->bytes : 2));
+        int haveGeom = vi_geometry(vi, &g);
+        if (haveGeom && g.serrate) oy = (float)((u32)oy & ~1u);   // interlaced: both fields are in the image
+        draw_display(x, fs->showFront && fs->front ? fs->front : fs->tex, haveGeom ? &g : NULL, ox, oy,
+                     x->uMax / (fs->width ? fs->width : 320), x->vMax / (fs->height ? fs->height : 240), fs->width, fs->height);
+        x->shown = fs->showFront && fs->front ? fs->front : fs->tex;
         x->shownU = x->uMax;
         x->shownV = x->vMax;
         x->shownTiled = 1;
     }
     else if (x->drewFrame || ++x->blankPresents > 300)
-        show_rdram_frame(x, origin, width, type == 3);
+        show_rdram_frame(x, vi, origin, width, type == 3);
     // else: at boot the VI often shows RDRAM the game still uses for other data
     // (noise); stay black until the RDP draws a frame, or for 300 VIs at most
     // (games that draw their first images with the CPU).
+    {
+        // The VI moved to another image: the slots it left show their newest picture again.
+        u32 k;
+        for (k = 0; k < FB_SLOTS; k++)
+            if ((int)k != found) x->fb[k].showFront = 0;
+        x->shownSlot = found;
+    }
     if (x->overlay) x->overlay(x->overlayUser, x->dev);
     x->dev->Present(NULL, NULL, NULL, NULL);
     x->stats.presents++;
@@ -1868,6 +1992,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->batch.reserve(BATCH_VERTICES);
     x->curSlot = -1;
     x->edramOwner = -1;
+    x->shownSlot = -1;
     x->drewFrame = 0;
     x->blankPresents = 0;
     x->overlay = NULL;
@@ -1974,6 +2099,7 @@ void h64_xenos_free(H64Renderer *r)
         if (it->second) it->second->Release();
     for (i = 0; i < FB_SLOTS; i++)
         if (x->fb[i].tex) x->fb[i].tex->Release();
+        if (x->fb[i].front) x->fb[i].front->Release();
     for (i = 0; i < 2; i++)
         if (x->cpuFb[i]) x->cpuFb[i]->Release();
     if (x->dummy) x->dummy->Release();
