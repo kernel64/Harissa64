@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!-- Harissa64 V2 title data, compiled by the XDK's spac into spa.bin and embedded in the XEX
+     as the section named after the title ID (48413632, see harissa64v2.vcxproj AdditionalSections).
+     Dashboards (Aurora, the stock dashboard) read the title name (X_STRINGID_TITLENAME) and the
+     title image (X_IMAGEID_GAME, 64x64 PNG, made by tools/gen_title_art.py) from it. -->
+<XboxLiveSubmissionProject Version="2.0.60117.01" xmlns="http://www.xboxlive.com/xlast">
+  <GameConfigProject name="Harissa64" titleName="Harissa64" projectVersion="2.00.0000.0" schemaVersion="1.08.0000.0" classification="BaseGame" titleId="0x48413632" multiplayer="false" titleType="1" arn="0x0">
+    <ProductInformation>
+      <Platform name="Xbox 360" id="2" />
+    </ProductInformation>
+    <Privileges />
+    <LocalizedStrings defaultLocale="en-US" nextId="2">
+      <SupportedLocale locale="en-US" />
+      <LocalizedString id="32768" friendlyName="X_STRINGID_TITLENAME">
+        <Translation locale="en-US">Harissa64</Translation>
+      </LocalizedString>
+      <LocalizedString id="1" friendlyName="STR_PLAYING">
+        <Translation locale="en-US">Playing</Translation>
+        <Presence />
+      </LocalizedString>
+      <LocalizedString id="32512" friendlyName="X_STRINGID_GAMETYPE">
+        <Translation locale="en-US">Game Type</Translation>
+      </LocalizedString>
+      <LocalizedString id="32513" friendlyName="X_STRINGID_RANKED">
+        <Translation locale="en-US">Ranked Match</Translation>
+      </LocalizedString>
+      <LocalizedString id="32514" friendlyName="X_STRINGID_STANDARD">
+        <Translation locale="en-US">Player Match</Translation>
+      </LocalizedString>
+    </LocalizedStrings>
+    <Presence>
+      <PresenceMode contextValue="0" stringId="1" friendlyName="STR_PLAYING" />
+    </Presence>
+    <Properties nextId="1" />
+    <Contexts nextId="0x00000000">
+      <Context stringId="32512" friendlyName="GAME_TYPE" id="0x0000800A" defaultValue="0">
+        <ContextValue stringId="32513" value="0" friendlyName="RANKED" />
+        <ContextValue stringId="32514" value="1" friendlyName="STANDARD" />
+      </Context>
+    </Contexts>
+    <Achievements nextId="1" />
+    <Images>
+      <Image id="32768" friendlyName="X_IMAGEID_GAME">
+        <Path>art\icon.png</Path>
+      </Image>
+    </Images>
+    <GameModes defaultValue="0" />
+    <StatsViewMasters />
+    <StatsViews nextViewId="1" />
+    <GamerPictures />
+  </GameConfigProject>
+</XboxLiveSubmissionProject>

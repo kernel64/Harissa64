@@ -58,6 +58,9 @@
     </Link>
     <ImageXex>
       <ConfigurationFile>title\xex.xml</ConfigurationFile>
+      <!-- Title data (name "Harissa64", 64x64 title image) for the dashboards: an XDBF/SPA
+           section named after the title ID, built from title\harissa64v2.gameconfig below. -->
+      <AdditionalSections>48413632=$(OutDir)spa.bin</AdditionalSections>
     </ImageXex>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Xbox 360'">
@@ -113,6 +116,15 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="title\xex.xml" />
+    <None Include="title\art\icon.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="title\harissa64v2.gameconfig">
+      <Message>Build SPA file from %(FullPath)</Message>
+      <Command>"$(XEDK)\bin\win32\spac.exe" -nologo -noh -forceoverwrite -o "$(OutDir)spa.bin" "%(FullPath)"</Command>
+      <AdditionalInputs>title\art\icon.png</AdditionalInputs>
+      <Outputs>$(OutDir)spa.bin</Outputs>
+    </CustomBuild>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
