@@ -41,6 +41,8 @@
 static_assert(offsetof(H64System, mi) + 16 < 32768, "sys->mi out of displacement range");
 static_assert(offsetof(H64System, jit) < 32768, "sys->jit out of displacement range");
 static_assert(offsetof(H64Jit, codeMap) < 32768, "jit->codeMap out of displacement range");
+static_assert(offsetof(H64Jit, staleBlock) < 32768, "jit->staleBlock out of displacement range");
+static_assert(offsetof(H64Cpu, jitPage) + 1024 < 32768, "cpu->jitPage out of displacement range");
 static_assert(offsetof(H64Jit, indBody) < 32768, "jit->indBody out of displacement range");
 #define MAX_BLOCK_BYTES (H64_JIT_MAX_INSNS * 320 + 2048)
 // The cold part: each slow path writes back and reloads cached registers.
@@ -1013,6 +1015,26 @@ void h64_jit_emit_runtime(H64System *sys)
         ppc_mtctr(c, 10);
         ppc_bctr(c);
         for (k = 0; k < n; k++) ppc_patch_here(c, out[k]);
+        ppc_branch_to(c, j->rtExit, 0);
+    }
+    // rtTlbStale (branched to): a TLB-mapped block's page check failed (the
+    // TLB changed). r3 = the block, r4 = its pc: back to the dispatcher, which
+    // translates the pc again.
+    {
+        H64PpcCode *c = &g.c;
+        j->rtTlbStale = c->buf + c->pos;
+        load_ptr(&g, 5, (s32)offsetof(H64System, jit), JR_SYS);
+#if defined(H64_JIT_ABI_XBOX)
+        ppc_stw(c, 3, (s32)offsetof(H64Jit, staleBlock), 5);
+#else
+        ppc_std(c, 3, (s32)offsetof(H64Jit, staleBlock), 5);
+#endif
+        ppc_extsw(c, 4, 4);
+        ppc_std(c, 4, OFF_PC, JR_CPU);
+        ppc_addi(c, 4, 4, 4);
+        ppc_std(c, 4, OFF_NEXTPC, JR_CPU);
+        ppc_li(c, 4, 0);
+        ppc_stw(c, 4, OFF_BRANCH, JR_CPU);
         ppc_branch_to(c, j->rtExit, 0);
     }
     // rtFcStore / rtFcLoad (called): the FPR cache's slots to or from H64Cpu,
@@ -2455,6 +2477,29 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     s_nTails = 0;
     s_nLinkTails = 0;
     bodyAt = 0;   // entered through j->enter (the shared prologue)
+    if (!(pc >= 0x80000000u && pc < 0xC0000000u))
+    {
+        // TLB-mapped: links and indirect jumps into the block stay when the
+        // TLB changes; the block checks that its page still maps where it was
+        // compiled from (cpu.jitPage, filled by the dispatcher, cleared with
+        // the TLB entry it came from). GoldenEye refills its TLB ~260 times a
+        // frame: undoing and redoing the links into its code cost ~5400 icache
+        // flushes and as many dispatcher trips a frame.
+        const H64JitBlock *self = &j->blocks[j->blockCount];
+        u32 ok;
+        ppc_li32u(&g.c, 3, H64_JIT_PAGE_KEY(pc, paddr));
+        ppc_lwz(&g.c, 4, (s32)(offsetof(H64Cpu, jitPage) + 4 * ((pc >> 12) & 255)), JR_CPU);
+        ppc_cmpw(&g.c, 0, 4, 3);
+        ok = ppc_bc_fwd(&g.c, 12, 0, PPC_EQ);
+#if defined(H64_JIT_ABI_XBOX)
+        ppc_li32u(&g.c, 3, (u32)(uintptr_t)self);
+#else
+        ppc_li64(&g.c, 3, (u64)(uintptr_t)self);
+#endif
+        ppc_li32u(&g.c, 4, pc);
+        ppc_branch_to(&g.c, j->rtTlbStale, 0);
+        ppc_patch_here(&g.c, ok);
+    }
     for (i = 0; i < n; i++)
     {
         u32 ipc = pc + i * 4, op = ops[i];

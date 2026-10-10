@@ -432,7 +432,12 @@ static void cop0_write(H64System *sys, int r, u64 v)
         h64_cpu_reschedule_compare(sys);
         break;
     case CP0_ENTRYHI:
-        if ((u8)v != (u8)cpu->cop0[r]) { cpu->asidGen++; cpu->tlbGen++; }
+        if ((u8)v != (u8)cpu->cop0[r])
+        {
+            cpu->asidGen++;
+            cpu->tlbGen++;
+            memset(cpu->jitPage, 0, sizeof(cpu->jitPage));
+        }
         cpu->cop0[r] = v & 0xC00000FFFFFFE0FFull;
         break;
     case CP0_COMPARE:
@@ -488,8 +493,11 @@ static void tlb_write(H64Cpu *cpu, int index)
     // links into mapped code all the time).
     if (old.pageMask != e->pageMask || old.entryHi != e->entryHi || old.entryLo0 != e->entryLo0 || old.entryLo1 != e->entryLo1)
     {
+        int k;
         cpu->tlbGen++;
         cpu->tlbEntryGen[index & 31]++;
+        for (k = 0; k < 256; k++)
+            if (cpu->jitPageEnt[k] == (index & 31)) cpu->jitPage[k] = 0;
     }
 }
 

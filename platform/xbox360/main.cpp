@@ -1360,10 +1360,18 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 if (js)
                 {
                     u64 ins = sys->cpu.instructions - insnsPrev, idle = js->idleSkipped - jitIdle;
-                    H64_INFO("[jit] per frame: %llu instructions executed, %llu skipped idle, %llu blocks run, %llu interpreter steps",
+                    static u64 linksPrev, unlinksPrev, staleLast;
+                    H64_INFO("[jit] per frame: %llu instructions executed, %llu skipped idle, %llu blocks run, %llu interpreter steps, "
+                             "%llu links made, %llu TLB checks failed, %llu remapped blocks unlinked",
                              (unsigned long long)((ins - idle) / framesSincePerf), (unsigned long long)(idle / framesSincePerf),
                              (unsigned long long)((js->blocksRun - jitRun) / framesSincePerf),
-                             (unsigned long long)((js->interpSteps - jitSteps) / framesSincePerf));
+                             (unsigned long long)((js->interpSteps - jitSteps) / framesSincePerf),
+                             (unsigned long long)((js->linksMade - linksPrev) / framesSincePerf),
+                             (unsigned long long)((js->tlbStale - staleLast) / framesSincePerf),
+                             (unsigned long long)((js->tlbUnlinks - unlinksPrev) / framesSincePerf));
+                    staleLast = js->tlbStale;
+                    linksPrev = js->linksMade;
+                    unlinksPrev = js->tlbUnlinks;
                     jitBlocks = js->blocksCompiled; jitInval = js->invalidations; jitFlush = js->flushes; jitHelper = js->helperCalls;
                     jitRun = js->blocksRun; jitIdle = js->idleSkipped; jitSteps = js->interpSteps;
                 }
@@ -1373,8 +1381,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                              xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
                              xs.bigRect ? "rectangle" : "triangle");
                 PcSamplerReport();
-                H64_INFO("[cprof] ms/frame inside cpu: generated code %.1f (helper %.1f), scheduler events %.1f; waiting for the graphics worker %.1f%s",
-                         pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_ASYNC_WAIT] * k,
+                H64_INFO("[cprof] ms/frame inside cpu: generated code %.1f (helper %.1f), scheduler events %.1f, TLB changes %.1f; waiting for the graphics worker %.1f%s",
+                         pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_TLB] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          s_gfxQ.thread ? " (graphics and audio HLE run on workers, beside cpu)" : "");
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses) draw calls %.1f",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,

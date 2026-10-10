@@ -666,7 +666,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         printf("\n");
     }
     if (sys->jit)
-        printf("[jit] links: %u of %u records used, %u through the TLB\n", sys->jit->linkCount, sys->jit->linkCap, sys->jit->tlbLinkCount);
+        printf("[jit] links: %u of %u records used, %llu made; TLB checks failed %llu, remapped blocks unlinked %llu\n",
+               sys->jit->linkCount, sys->jit->linkCap, (unsigned long long)sys->jit->stats.linksMade,
+               (unsigned long long)sys->jit->stats.tlbStale, (unsigned long long)sys->jit->stats.tlbUnlinks);
     if (sys->jit && sys->jit->opHist)
     {
         // The most frequent instructions that ran through the interpreter helper.

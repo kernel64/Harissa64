@@ -30,6 +30,8 @@ void h64_jit_reset(H64System *sys)
     j->linkCount = 0;
     j->freeLink = -1;
     j->lastExit = 0;
+    j->staleBlock = 0;
+    memset(sys->cpu.jitPage, 0, sizeof(sys->cpu.jitPage));
     j->memUsed = 0;
     // Slow paths take about 1.4 times the hot code (DK64: 48 hot and 69 cold
     // bytes per MIPS instruction; with half each the cold half filled first).
@@ -228,44 +230,6 @@ static void process_events(H64System *sys)
     h64_prof_add_outer(sys, H64_PROF_EVENTS, t0, nested);
 }
 
-// Checks the links into TLB-mapped code that went through TLB entry `entry`
-// (-2: all of them, the ASID changed): a link stays while its target's virtual
-// pc still maps to the block's physical address (an entry maps two pages and
-// Conker often rewrites only one of them), otherwise it is undone.
-static void unlink_tlb_entry(H64System *sys, int entry)
-{
-    H64Jit *j = sys->jit;
-    int i = j->tlbHead[entry];
-    while (i >= 0)
-    {
-        H64JitLink *l = &j->links[i];
-        H64JitBlock *b = &j->blocks[l->target];
-        int next = l->tlbNext;
-        u32 paddr;
-        // The TLB holds no two entries for one page: the link stays valid only
-        // if this entry still maps the target there (one entry checked, not
-        // a probe of all 32: GoldenEye refills ~260 entries a frame and its
-        // code, all TLB-mapped, has thousands of links).
-        if (!(b->valid && h64_cpu_probe_entry(&sys->cpu, b->vpc, entry, &paddr) && paddr == b->paddr))
-        {
-            int *p = &b->linkHead;   // out of the target's list
-            *l->patch = l->orig;
-            if (j->flushIcache) j->flushIcache(l->patch, 4);
-            while (*p >= 0 && *p != i) p = &j->links[*p].next;
-            if (*p == i) *p = l->next;
-            free_link(j, i);
-        }
-        i = next;
-    }
-}
-
-static void unlink_tlb(H64System *sys, int entry)
-{
-    int e;
-    if (entry >= 0) { unlink_tlb_entry(sys, entry); return; }
-    for (e = 0; e < 32; e++) unlink_tlb_entry(sys, e);
-}
-
 // Links the exit the previous block left by to b (the block it leads to).
 static void link_exit(H64Jit *j, u32 *patch, H64JitBlock *b, int tlb)
 {
@@ -294,6 +258,7 @@ static void link_exit(H64Jit *j, u32 *patch, H64JitBlock *b, int tlb)
     if (tlb >= 0) tlb_list_add(j, i, tlb);
     l->next = b->linkHead;
     b->linkHead = i;
+    j->stats.linksMade++;
     *patch = 0x48000000u | ((u32)off & 0x03FFFFFCu);
     if (j->flushIcache) j->flushIcache(patch, 4);
 }
@@ -315,34 +280,9 @@ void h64_jit_run_one(H64System *sys)
     lastExit = j->lastExit;
     j->lastExit = 0;
     process_events(sys);
-    if (cpu->tlbGen != j->linkTlbGen)
-    {
-        // Only the links through the entries that changed (Conker refills
-        // its TLB all the time; undoing every link each time ran it at 1 FPS).
-        int e;
-        int asid = cpu->asidGen != j->seenAsidGen;
-        u32 changed = 0, k;
-        if (asid) { unlink_tlb(sys, -2); j->seenAsidGen = cpu->asidGen; }
-        for (e = 0; e < 32; e++)
-            if (cpu->tlbEntryGen[e] != j->seenEntryGen[e]) changed |= 1u << e;
-        // Indirect targets mapped by a changed entry (or any, on an ASID change) are forgotten.
-        if (asid || changed)
-            for (k = 0; k < 1024; k++)
-                if (j->indEnt[k] >= 0 && (asid || (changed >> j->indEnt[k]) & 1))
-                {
-                    j->indPc[k] = 0;
-                    j->indBody[k] = 0;
-                    j->indEnt[k] = -1;
-                }
-        for (e = 0; e < 32; e++)
-            if (cpu->tlbEntryGen[e] != j->seenEntryGen[e])
-            {
-                unlink_tlb(sys, e);
-                j->seenEntryGen[e] = cpu->tlbEntryGen[e];
-            }
-        j->linkTlbGen = cpu->tlbGen;
-        lastExit = 0;
-    }
+    // Links and indirect jumps into TLB-mapped code stay when the TLB
+    // changes: those blocks check their TLB entry on entry (rtTlbStale).
+    j->linkTlbGen = cpu->tlbGen;
     pc32 = (u32)cpu->pc;
     // Cases the recompiled code doesn't start in: delay slots, pending
     // interrupts, 64-bit addresses, misaligned pcs, code outside RDRAM.
@@ -374,6 +314,29 @@ void h64_jit_run_one(H64System *sys)
         }
         else
             paddr = 0xFFFFFFFFu;
+    }
+    if (tlbEntry >= 0 && paddr < H64_RDRAM_SIZE)
+    {
+        // What the blocks of this page check on entry.
+        cpu->jitPage[(pc32 >> 12) & 255] = H64_JIT_PAGE_KEY(pc32, paddr);
+        cpu->jitPageEnt[(pc32 >> 12) & 255] = (s8)tlbEntry;
+    }
+    if (j->staleBlock)
+    {
+        // A TLB-mapped block found its page unknown or mapped elsewhere. If
+        // its pc now maps to other code, the exits linked to it are put back
+        // (they link again to the block now there); if it maps to the same
+        // code (refilled), or to nothing yet (a TLB miss), they stay.
+        H64JitBlock *s = (H64JitBlock *)j->staleBlock;
+        u64 t0 = h64_prof_now(sys);
+        j->staleBlock = 0;
+        j->stats.tlbStale++;
+        if (s->vpc == pc32 && paddr < H64_RDRAM_SIZE && s->paddr != paddr)
+        {
+            j->stats.tlbUnlinks++;
+            unlink_block(j, s);
+        }
+        sys->prof[H64_PROF_TLB] += h64_prof_now(sys) - t0;
     }
     if (cpu->branchPending || interrupt_pending(cpu) || (pc32 & 3) || paddr >= H64_RDRAM_SIZE)
     {
@@ -408,7 +371,7 @@ void h64_jit_run_one(H64System *sys)
     // stay with the dispatcher (skipping). Links into TLB-mapped code
     // (Perfect Dark, GoldenEye, Conker) are undone whenever the TLB changes.
     if (lastExit && lastTarget == pc32 && flushes == j->stats.flushes && !j->noLink && b->kernel && b->valid && !b->idle)
-        link_exit(j, lastExit, b, (pc32 >= 0x80000000u && pc32 < 0xC0000000u) ? -1 : tlbEntry);
+        link_exit(j, lastExit, b, -1);
     // Known to rtIndirect: native blocks that are not idle loops, in KSEG0/1
     // or TLB-mapped (GoldenEye's code is all at 0x7F...: every jr ra went back
     // to the dispatcher, ~20000 times a frame); a TLB-mapped one is forgotten

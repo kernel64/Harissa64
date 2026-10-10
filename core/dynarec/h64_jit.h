@@ -45,6 +45,8 @@ struct H64JitStats
     u64 blocksRun, blocksCompiled, interpSteps, invalidations, flushes, earlyExits, idleSkipped;
     u64 nativeInsns, helperInsns;   // compiled instructions, by kind
     u64 helperCalls;                // instructions run through the interpreter helper (incl. slow paths)
+    u64 linksMade, tlbUnlinks;      // exits linked; TLB-mapped blocks whose links were put back (remapped)
+    u64 tlbStale;                   // TLB-mapped blocks whose entry check failed
     u64 codeBytes, hotBytes;        // generated code: all of it, and the part before the cold slow paths
 };
 
@@ -67,6 +69,7 @@ struct H64Jit
     u64 runEnd;                     // h64_jit_run's end: chained blocks stop there
     u32 *lastExit;                  // the unlinked exit the last block left by (NULL: none)
     u32 lastExitTarget;             // and the MIPS pc it goes to
+    void *staleBlock;               // a TLB-mapped block whose page check failed (NULL: none)
     u32 curPage;
     int curInvalidated;
     u16 *codeMap;                   // live blocks over each 64-byte RDRAM chunk (stores there take the slow path)
@@ -96,6 +99,7 @@ struct H64Jit
     u32 *rtFpFinish[3];             // [result: none, single, double]: FPSCR and FCR31 after an operation -> cr0.eq
     u32 *rtSlow;                    // a slow path's interpreter call (see h64_jit_emit_runtime)
     u32 *rtIndirect;                // a jr/jalr exit: straight into the target's block when known
+    u32 *rtTlbStale;                // a TLB-mapped block whose page check failed: r3 = its H64JitBlock, r4 = its pc
     u32 *rtLink;                    // a fixed-target exit: counters, then go on (cr0.eq) or leave
     u32 *rtFcStore, *rtFcLoad;      // slow paths: cached FGRs to/from H64Cpu, from a table after the call
 

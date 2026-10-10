@@ -110,7 +110,16 @@ struct H64Cpu
     u32 tlbGen;          // changes with every TLB write and ASID change (the dynarec checks its caches then)
     u32 tlbEntryGen[32]; // per entry: changes when that entry is written
     u32 asidGen;         // changes when EntryHi's ASID changes
+    // The recompiler's check of TLB-mapped code (not saved: a cache). Per
+    // virtual page (bits 12..19 of the address): H64_JIT_PAGE_KEY(vpc, paddr)
+    // of the mapping the dispatcher last found there, 0 when unknown, and the
+    // TLB entry it came from; cleared when that entry or the ASID changes.
+    u32 jitPage[256];
+    s8 jitPageEnt[256];
 };
+
+// Virtual page tag (address bits 20..31) and physical page (RDRAM: 11 bits).
+#define H64_JIT_PAGE_KEY(vpc, paddr) ((((vpc) >> 20) << 20) | ((((paddr) >> 12) & 0x7FFFFu) << 1) | 1u)
 
 void h64_cpu_reset(H64Cpu *cpu);
 // Executes one instruction (or takes a pending interrupt).
