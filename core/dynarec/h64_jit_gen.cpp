@@ -2275,7 +2275,7 @@ static void branch_exit_n(Gen *g, u32 op, u32 pending, u64 target, u32 fallthrou
 static int emit_branch_head(Gen *g, u32 op, u32 pc, int *likely, int *dynamicTarget, u64 *target)
 {
     H64PpcCode *c = &g->c;
-    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31, at;
+    u32 opc = op >> 26, rs = (op >> 21) & 31, rt = (op >> 16) & 31, rd = (op >> 11) & 31;
     // 64-bit arithmetic on the sign-extended pc, as the interpreter does.
     u64 branchTarget = sext32(pc) + 4 + ((u64)(s64)(s16)(op & 0xFFFF) << 2);
     *likely = 0;

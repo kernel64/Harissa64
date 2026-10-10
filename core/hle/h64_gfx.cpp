@@ -1273,6 +1273,31 @@ static int run_rare(H64Gfx *g, u32 w0, u32 w1)
     }
 }
 
+// F3D: an RDP triangle command (0xC8..0xCF) sent 32 bits at a time,
+// G_RDPHALF_1 then G_RDPHALF_CONT for each 64-bit word (G_RDPHALF_2 for the
+// last), straight to the RDP (GoldenEye's sky). The halves after this one are
+// read here.
+static void rdp_half_triangle(H64Gfx *g, u32 first)
+{
+    u64 w[22];
+    u32 op = (first >> 24) & 0x3F, n = 4 + ((op & 4) ? 8 : 0) + ((op & 2) ? 8 : 0) + ((op & 1) ? 2 : 0), k;
+    u32 hi = first, a = g->pc[g->pci];
+    for (k = 0; k < n; k++)
+    {
+        if (k)
+        {
+            if (rd32(g, a) >> 24 != 0xB4) return;
+            hi = rd32(g, a + 4);
+            a += 8;
+        }
+        if ((rd32(g, a) >> 24) != 0xB2 && (rd32(g, a) >> 24) != 0xB3) return;
+        w[k] = ((u64)hi << 32) | rd32(g, a + 4);
+        a += 8;
+    }
+    g->pc[g->pci] = a;
+    out_rdp(g, w, n);
+}
+
 // ---- F3D / F3DEX (the 0xB0..0xBF immediate commands share most encodings)
 static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
 {
@@ -1331,7 +1356,10 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
         if (ex) modify_vertex(g, (w0 & 0xFFFF) >> 1, (w0 >> 16) & 0xFF, w1);
         break;
     case 0xB3: break;   // G_RDPHALF_2 (read with TEXRECT)
-    case 0xB4: g->half1 = w1; break;   // G_RDPHALF_1
+    case 0xB4:          // G_RDPHALF_1
+        g->half1 = w1;
+        if (!ex && (w1 >> 24) >= 0xC8 && (w1 >> 24) <= 0xCF) rdp_half_triangle(g, w1);
+        break;
     case 0xB5:          // G_QUAD
     {
         u32 a = (w1 >> 25) & 0x7F, b = (w1 >> 17) & 0x7F, c = (w1 >> 9) & 0x7F, d = (w1 >> 1) & 0x7F;

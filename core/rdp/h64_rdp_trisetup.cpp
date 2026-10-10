@@ -187,6 +187,101 @@ static s32 sext(s32 v, int bits) { return (s32)((u32)v << (32 - bits)) >> (32 - 
 static double fix16(u32 hi, u32 lo) { return (double)(s32)((hi & 0xFFFF0000u) | (lo >> 16)) / 65536.0; }
 static double fix16lo(u32 hi, u32 lo) { return (double)(s32)((hi << 16) | (lo & 0xFFFF)) / 65536.0; }
 
+// The attributes of the command at screen position (px, py).
+static void attr_at(const u32 *w, int persp, double px, double py, H64RenderVertex *o)
+{
+    u32 op = (w[0] >> 24) & 0x3F;
+    double yh = sext((s32)(w[1] & 0x3FFF), 14) / 4.0, y0 = floor(yh);
+    double xh = (s32)w[4] / 65536.0, dxh = (s32)w[5] / 65536.0;
+    double ey = py - y0, ex = px - (xh + dxh * ey), a[8];
+    const u32 *p = w + 8;
+    int k;
+    memset(a, 0, sizeof(a));
+    if (op & 4)
+    {
+        for (k = 0; k < 4; k++)
+        {
+            u32 wi = k < 2 ? 0 : 1, hiHalf = (k & 1) == 0;
+            double val = hiHalf ? fix16(p[wi], p[4 + wi]) : fix16lo(p[wi], p[4 + wi]);
+            double ddx = hiHalf ? fix16(p[2 + wi], p[6 + wi]) : fix16lo(p[2 + wi], p[6 + wi]);
+            double dde = hiHalf ? fix16(p[8 + wi], p[12 + wi]) : fix16lo(p[8 + wi], p[12 + wi]);
+            a[k] = val + dde * ey + ddx * ex;
+        }
+        p += 16;
+    }
+    if (op & 2)
+    {
+        for (k = 0; k < 3; k++)
+        {
+            u32 wi = k < 2 ? 0 : 1, hiHalf = (k & 1) == 0;
+            double val = hiHalf ? fix16(p[wi], p[4 + wi]) : fix16lo(p[wi], p[4 + wi]);
+            double ddx = hiHalf ? fix16(p[2 + wi], p[6 + wi]) : fix16lo(p[2 + wi], p[6 + wi]);
+            double dde = hiHalf ? fix16(p[8 + wi], p[12 + wi]) : fix16lo(p[8 + wi], p[12 + wi]);
+            a[4 + k] = val + dde * ey + ddx * ex;
+        }
+        p += 16;
+    }
+    if (op & 1) a[7] = (s32)p[0] / 65536.0 + (s32)p[2] / 65536.0 * ey + (s32)p[1] / 65536.0 * ex;
+    o->x = (float)px;
+    o->y = (float)py;
+    o->z = (float)a[7];
+    o->r = (float)a[0];
+    o->g = (float)a[1];
+    o->b = (float)a[2];
+    o->a = (float)a[3];
+    if (persp)
+    {
+        double ww = a[6] > 1.0 ? a[6] : 1.0;
+        o->s = (float)(a[4] * 32767.0 / ww);
+        o->t = (float)(a[5] * 32767.0 / ww);
+        o->invw = (float)(ww / 32767.0);
+    }
+    else
+    {
+        o->s = (float)a[4];
+        o->t = (float)a[5];
+        o->invw = 1.0f;
+    }
+}
+
+u32 h64_rdp_decode_polygon(const u32 *w, int persp, H64RenderVertex *v)
+{
+    double yl = sext((s32)(w[0] & 0x3FFF), 14) / 4.0, ym = sext((s32)((w[1] >> 16) & 0x3FFF), 14) / 4.0;
+    double yh = sext((s32)(w[1] & 0x3FFF), 14) / 4.0, y0 = floor(yh);
+    double xl = (s32)w[2] / 65536.0, dxl = (s32)w[3] / 65536.0;
+    double xh = (s32)w[4] / 65536.0, dxh = (s32)w[5] / 65536.0;
+    double xm = (s32)w[6] / 65536.0, dxm = (s32)w[7] / 65536.0;
+    double px[12], py[12];
+    u32 n = 0, t;
+    if (ym < yh) ym = yh;
+    if (ym > yl) ym = yl;
+    // Two trapezoids, each corners H top, other side top, other side bottom, H bottom.
+    for (t = 0; t < 2; t++)
+    {
+        double ya = t ? ym : yh, yb = t ? yl : ym, q[4][2];
+        int k;
+        if (yb <= ya) continue;
+        q[0][0] = xh + dxh * (ya - y0); q[0][1] = ya;
+        q[3][0] = xh + dxh * (yb - y0); q[3][1] = yb;
+        if (!t) { q[1][0] = xm + dxm * (ya - y0); q[2][0] = xm + dxm * (yb - y0); }
+        else { q[1][0] = xl; q[2][0] = xl + dxl * (yb - ym); }
+        q[1][1] = ya;
+        q[2][1] = yb;
+        // (0 1 2) and (0 2 3), unless one has no width.
+        for (k = 0; k < 2; k++)
+        {
+            int a = 0, b = k ? 2 : 1, c = k ? 3 : 2;
+            double area = (q[b][0] - q[a][0]) * (q[c][1] - q[a][1]) - (q[c][0] - q[a][0]) * (q[b][1] - q[a][1]);
+            if (fabs(area) < 1e-6) continue;
+            px[n] = q[a][0]; py[n] = q[a][1]; n++;
+            px[n] = q[b][0]; py[n] = q[b][1]; n++;
+            px[n] = q[c][0]; py[n] = q[c][1]; n++;
+        }
+    }
+    for (t = 0; t < n; t++) attr_at(w, persp, px[t], py[t], &v[t]);
+    return n / 3;
+}
+
 void h64_rdp_decode_triangle(const u32 *w, int persp, H64RenderVertex *v)
 {
     u32 op = (w[0] >> 24) & 0x3F;

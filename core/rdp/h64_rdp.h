@@ -56,5 +56,10 @@ u32 h64_rdp_build_triangle(const H64RenderVertex *a, const H64RenderVertex *b, c
 // The inverse: the three vertices of an RDP triangle command given as 32-bit
 // words (`persp`: the other modes' perspective correction is on).
 void h64_rdp_decode_triangle(const u32 *w, int persp, H64RenderVertex *v);
+// The whole area an RDP triangle command covers, which need not be a
+// triangle: between the major edge H and the M edge from YH to YM, then the
+// L edge from YM to YL (GoldenEye's sky: a trapezoid, M and H apart at the
+// top). Up to 4 triangles into v (3 vertices each); returns their number.
+u32 h64_rdp_decode_polygon(const u32 *w, int persp, H64RenderVertex *v);
 
 #endif

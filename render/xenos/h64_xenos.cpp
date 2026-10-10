@@ -2116,6 +2116,15 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         xh += 1.0f;
         yh += 1.0f;
     }
+    else
+    {
+        // 1/2-cycle: every line and column the rectangle touches is drawn
+        // (partial coverage still writes the pixel). GoldenEye draws its gun
+        // barrel and blood screen as one-line rectangles 0.75 high: at 3x
+        // they covered 2 rows of 3 (horizontal stripes).
+        xh = ceilf(xh);
+        yh = ceilf(yh);
+    }
     if (xh <= xl || yh <= yl) return;
     select_framebuffer(x);
     x->win.active = 0;
@@ -2219,9 +2228,10 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
 // A raw RDP triangle (LLE graphics): drawn from its rebuilt vertices.
 static void raw_triangle(Xenos *x, const u32 *w, u32 op)
 {
-    H64RenderVertex v[3];
-    h64_rdp_decode_triangle(w, (x->st->rasterFlags & RS_PERSPECTIVE) != 0, v);
-    xenos_triangle(x, &v[0], &v[1], &v[2], op & 7, (w[0] >> 16) & 7, ((w[0] >> 19) & 7) + 1);
+    H64RenderVertex v[12];
+    u32 n = h64_rdp_decode_polygon(w, (x->st->rasterFlags & RS_PERSPECTIVE) != 0, v), i;
+    for (i = 0; i < n; i++)
+        xenos_triangle(x, &v[3 * i], &v[3 * i + 1], &v[3 * i + 2], op & 7, (w[0] >> 16) & 7, ((w[0] >> 19) & 7) + 1);
 }
 
 // A save state was loaded: the frames and the N64 target describe the old
