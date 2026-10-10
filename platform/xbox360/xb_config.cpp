@@ -52,6 +52,7 @@ void ConfigDefaults(Config *c)
     c->asyncAudio = 1;
     c->audioCycles = 100000;
     c->gfxCycles = 400000;
+    c->gfxTiming = 0;
     c->cpi = 2;      // mupen64plus's CountPerOp 1 (its exact setting; its default 2 is our 4)
     c->exitAfter = 0;
     c->audioMs = XB_AUDIO_DEFAULT_MS;
