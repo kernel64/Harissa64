@@ -95,6 +95,9 @@ struct H64Options
                         //    (a GPU renderer draws the primitives from that state)
     int hleGfx;         // 1: graphics RSP tasks run in C++ (core/hle/h64_gfx) when the microcode is known
     int gfxTiming;      // graphics HLE tasks last h64_gfx_cost's estimate instead of a fixed time (experimental)
+    int gfxLateParse;   // asynchronous graphics tasks end without waiting for their display list's parse (it
+                        // must be done before the next task starts); the end's flags are the previous task's
+                        // (experimental: a game rewriting the list right after the task ends would see it read late)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
     int hleAudioCheck;  // 1: audio tasks run on the LLE RSP, and the HLE runs each one on a copy
                         //    of RDRAM; the results are compared when the LLE task ends (debug)

@@ -53,6 +53,7 @@ void ConfigDefaults(Config *c)
     c->audioCycles = 100000;
     c->gfxCycles = 400000;
     c->gfxTiming = 0;
+    c->lateParse = 0;
     c->cpi = 2;      // mupen64plus's CountPerOp 1 (its exact setting; its default 2 is our 4)
     c->exitAfter = 0;
     c->audioMs = XB_AUDIO_DEFAULT_MS;
@@ -111,6 +112,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "audiocycles")) c->audioCycles = (u32)atoi(eq + 1);
         else if (!strcmp(line, "gfxcycles")) c->gfxCycles = (u32)atoi(eq + 1);
         else if (!strcmp(line, "gfxtiming")) c->gfxTiming = atoi(eq + 1);
+        else if (!strcmp(line, "lateparse")) c->lateParse = atoi(eq + 1);
         else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);

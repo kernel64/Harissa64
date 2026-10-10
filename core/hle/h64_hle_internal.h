@@ -139,6 +139,10 @@ struct hle_t
     } gfxSlot[2];
     int gfxSlotNext;
     struct HleGfxSlot *gfxCur;   // the pending task's
+    // Late parse (options.gfxLateParse): the task that ended before its parse
+    // did, and the flags the next tasks are assumed to end with.
+    struct HleGfxSlot *gfxLate;
+    int gfxGuessValid, gfxGuessFullSync, gfxGuessWarned;
     int audioAsyncPending;    // an audio task runs on the audio worker
     ucode_func_t audioAsyncFunc;
 };

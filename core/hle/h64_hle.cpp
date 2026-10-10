@@ -381,6 +381,17 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
         // except when it reads a colour image as a texture.
         struct hle_t::HleGfxSlot *s = hle->gfxCur;
         u64 t0 = h64_prof_now(sys);
+        if (sys->options.gfxLateParse && hle->gfxGuessValid && s->parseOnSecond)
+        {
+            // Late parse: the task ends now with the last task's flags; its
+            // parse is waited for when the next task starts (a whole frame
+            // later instead of gfxCycles: Conker's CPU waited ~7 ms a frame).
+            hle->gfxLate = s;
+            hle->gfxAsyncPending = 0;
+            *ran = 1;
+            *fullSync = hle->gfxGuessFullSync;
+            return 1;
+        }
         if (s->parseOnSecond) sys->asyncParseWaitTicket(sys->asyncUser, s->parseTicket, 0);
         else sys->asyncWaitTicket(sys->asyncUser, s->parseTicket);
         if (s->mustSync || !s->ran) sys->asyncWaitTicket(sys->asyncUser, s->renderTicket);
@@ -389,6 +400,11 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
         hle->gfxAsyncPending = 0;
         *ran = s->ran;
         *fullSync = s->fullSync;
+        if (s->ran)
+        {
+            hle->gfxGuessValid = 1;
+            hle->gfxGuessFullSync = s->fullSync;
+        }
     }
     return 1;
 }
@@ -435,7 +451,27 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             // On the worker: the CPU goes on; the task ends (or falls back
             // to LLE) after asyncGfxCycles, where the CPU waits for it.
             if (!h64_gfx_task_known(sys, hle->gfx)) return 0;
-            struct hle_t::HleGfxSlot *s = &hle->gfxSlot[hle->gfxSlotNext];
+            struct hle_t::HleGfxSlot *s;
+            if (hle->gfxLate)
+            {
+                // The previous task ended before its parse (late parse): done now,
+                // and what it really ended with checked against the guess.
+                struct hle_t::HleGfxSlot *l = hle->gfxLate;
+                u64 t0 = h64_prof_now(sys);
+                sys->asyncParseWaitTicket(sys->asyncUser, l->parseTicket, 0);
+                sys->prof[H64_PROF_ASYNC_WAIT] += h64_prof_now(sys) - t0;
+                sys->prof[H64_PROF_WAIT_TASK] += h64_prof_now(sys) - t0;
+                hle->gfxLate = 0;
+                if (!l->ran || l->fullSync != hle->gfxGuessFullSync)
+                {
+                    if (hle->gfxGuessWarned++ < 8)
+                        H64_WARN("[hle] late parse: the task ended as if %s, it %s (frame %u)",
+                                 hle->gfxGuessFullSync ? "with a full sync" : "without a full sync",
+                                 !l->ran ? "fell back to the LLE RSP" : l->fullSync ? "had a full sync" : "had none", sys->vi.frames);
+                    hle->gfxGuessValid = 0;   // the next task ends the normal way
+                }
+            }
+            s = &hle->gfxSlot[hle->gfxSlotNext];
             hle->gfxSlotNext ^= 1;
             if (!s->out) s->out = h64_gfx_out_create();
             {
