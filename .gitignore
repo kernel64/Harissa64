@@ -74,3 +74,6 @@ __pycache__/
 
 # Local working notes (not published)
 CLAUDE.md
+
+# Technical notes kept on this machine only (not published)
+docs-local/

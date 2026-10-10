@@ -1,41 +1,67 @@
-# Harissa64 🌶️
+# Harissa64
 
-**A Nintendo 64 emulator for the Xbox 360, written from scratch — work in progress.**
+Harissa64 is a Nintendo 64 emulator for the Xbox 360. It runs on modded consoles (RGH or JTAG) and starts like any other homebrew, from Aurora, FreeStyle Dash or another dashboard. The name comes from harissa, the Tunisian chili paste.
 
-Harissa64 runs as a native `.xex` on modded consoles (RGH/JTAG), launched from Aurora, FreeStyle Dash or the dashboard. It is named after harissa, the Tunisian chili paste.
+It's a hobby project, written from scratch, and it's still a work in progress. Many games already run at full speed, some are slow in places, and most haven't been tried yet. See the [games list](docs/games.md) for what we've tested.
 
-> **For educational purposes.** Harissa64 is a homebrew project made to learn about emulation and Xbox 360 development. Use it only with ROMs dumped from N64 cartridges you own. No ROMs are provided, and none will be.
+Use it only with games you own. No ROMs are included, and none will be.
 
-## Features
+## What you need
 
-- **CPU**: a MIPS R4300i → PowerPC dynamic recompiler with block linking, a register cache and the host FPU, checked instruction by instruction against a reference interpreter.
-- **RSP**: high-level emulation of graphics and audio tasks (F3D, F3DEX, F3DEX2, F3DZEX, S2DEX for OoT's backgrounds, and Rare's microcodes: GoldenEye, Perfect Dark, Diddy Kong Racing, Jet Force Gemini, Conker's Bad Fur Day…), with a cycle-timed low-level interpreter for everything else.
-- **RDP**: drawn on the Xenos GPU (combiner and blender translated into shaders); a bit-exact software RDP serves as the reference.
-- **Graphics settings**: internal resolution (native 320×240, ×2, ×3), 16:9 widescreen that widens the 3D view instead of stretching it, N64 3-point / bilinear / nearest texture filtering, FXAA, sharpening, blur, scanlines, CRT and curved CRT, LCD grid, and four presets (Original, N64 Enhanced, N64 Smooth, N64 CRT).
-- **Saves**: EEPROM, SRAM, FlashRAM and Controller Pak, in a clean per-game folder; 9 save-state slots per game.
-- **Controllers**: up to four players (Xbox 360 controllers 1–4 are N64 ports 1–4).
-- **ROM browser**: `.z64`, `.n64`, `.v64` and zipped ROMs, with global settings and per-game profiles.
+- An Xbox 360 with RGH or JTAG and a dashboard such as Aurora.
+- A controller. Up to four players are supported.
+- Your N64 games as `.z64`, `.n64`, `.v64` or `.zip` files.
 
 ## Installing
 
-1. Build `harissa64v2.xex` (below) and copy it to a folder on the console, for example `Hdd1:\Emulators\Harissa64\`.
-2. Put your ROMs (`.z64`, `.n64`, `.v64` or `.zip`) in a `roms` folder next to it.
-3. Start the `.xex` from your dashboard.
+1. Copy the Harissa64 folder (with `harissa64v2.xex` inside) to your console, for example to `Hdd1:\Emulators\Harissa64\`.
+2. Make a `roms` folder next to the `.xex` and put your games in it.
+3. Start `harissa64v2.xex` from your dashboard. Pick a game in the list and press A.
 
-In game, a short press on **BACK** opens the menu (save/load state, settings, graphics, ROM list); holding **BACK** for 2 s returns to the dashboard.
+The emulator remembers the last game you picked.
+
+## Controls
+
+| Xbox 360 | N64 |
+|---|---|
+| Left stick | Analog stick |
+| A / B | A / B |
+| X, Y, LT or RT | Z |
+| LB / RB | L / R |
+| Right stick | C buttons |
+| D-pad | D-pad |
+| START | START |
+
+While playing:
+
+- **Short press on BACK**: pause and open the menu (save or load a state, settings, reset, back to the game list, quit).
+- **BACK + RB**: save a state. **BACK + LB**: load it.
+- **BACK + D-pad left/right**: change the state slot (1 to 9).
+- **Hold BACK for 3 seconds**: back to the game list.
+
+## Saves
+
+Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. You can copy that folder to keep a backup.
+
+## Settings
+
+Open the menu in a game, then **Settings**. You can save the settings for all games or just for the game you're playing.
+
+The **Graphics** page has four presets:
+
+- **Original**: the plain N64 picture.
+- **N64 Enhanced**: smoother textures and a little sharpening.
+- **N64 Smooth**: the same with light scanlines.
+- **N64 CRT**: looks like an old TV.
+
+You can also pick the resolution (native, x2 or x3), widescreen 16:9 (the 3D view gets wider instead of being stretched; it works better in some games than others), texture filtering, edge smoothing and a few screen effects.
 
 ## Building
 
-See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for the details. In short:
+You need Visual Studio 2010 and the Xbox 360 SDK. Open `platform/xbox360/harissa64v2.sln` and build the Release configuration for the Xbox 360 platform.
 
-- **Xbox 360** (Visual Studio 2010 + Xbox 360 SDK): `platform/xbox360/harissa64v2.sln`, platform `Xbox 360`.
-- **Host** (Windows with Visual Studio 2022+ and CMake/Ninja, or Linux gcc): `tests/scripts/run_all.ps1` builds the core and the headless runner `h64test`, and runs the unit tests.
-- **Big-endian PowerPC** (Linux, `powerpc64-linux-gnu-g++` + `qemu-ppc64`): runs the recompiler under emulation, for checks without a console.
+## Credits and licence
 
-Progress and measurements are in [`docs/PROGRESS.md`](docs/PROGRESS.md).
-
-## Licence
-
-GPL v2. See [`LICENSE`](LICENSE), and [`THIRD_PARTY.md`](THIRD_PARTY.md) for the origin of any third-party code and data (ares, ParaLLEl-RDP, mupen64plus, libdragon, zlib…).
+Harissa64 is free software under the GPL v2, see [LICENSE](LICENSE). Some parts come from or are based on other open-source projects (ares, ParaLLEl-RDP, mupen64plus, libdragon, GLideN64, zlib and others). [THIRD_PARTY.md](THIRD_PARTY.md) lists them with their licences. Thanks to all of them.
 
 Nintendo 64 is a trademark of Nintendo. This project is not affiliated with or endorsed by Nintendo.
