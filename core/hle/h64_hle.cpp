@@ -254,6 +254,8 @@ void h64_hle_free(struct hle_t *hle)
         free(hle->checkMask);
     }
     if (hle->gfx) h64_gfx_free(hle->gfx);
+    h64_gfx_out_free(hle->gfxSlot[0].out);
+    h64_gfx_out_free(hle->gfxSlot[1].out);
     delete hle;
 }
 
@@ -299,29 +301,33 @@ void h64_hle_check_end(H64System *sys)
     }
 }
 
-// Worker job 1: the display list (reads RDRAM, snapshots what texture loads read).
+// Worker job 1: the display list (reads RDRAM, snapshots what texture loads
+// read). On the second graphics worker when there is one, so that it runs
+// while the first renders the previous task (Conker's cutscenes: ~12 ms of
+// each a frame, one after the other on one worker).
 static void gfx_parse_job(void *arg)
 {
-    H64System *sys = (H64System *)arg;
-    struct hle_t *hle = sys->hle;
+    struct hle_t::HleGfxSlot *s = (struct hle_t::HleGfxSlot *)arg;
+    H64System *sys = s->sys;
     int fullSync = 0, mustSync = 0, ran;
     u64 t0 = h64_prof_now(sys);
-    ran = h64_gfx_parse_task(sys, hle->gfx, &fullSync, &mustSync);
-    sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
-    hle->gfxAsyncRan = ran;
-    hle->gfxAsyncFullSync = fullSync;
-    hle->gfxAsyncMustSync = mustSync;
+    ran = h64_gfx_parse_task(sys, sys->hle->gfx, s->out, &fullSync, &mustSync);
+    sys->prof[H64_PROF_GFX_PARSE] += h64_prof_now(sys) - t0;
+    s->ran = ran;
+    s->fullSync = fullSync;
+    s->mustSync = mustSync;
 }
 
 // Worker job 2: the rendering, which may still run after the task ended.
 static void gfx_render_job(void *arg)
 {
-    H64System *sys = (H64System *)arg;
-    struct hle_t *hle = sys->hle;
+    struct hle_t::HleGfxSlot *s = (struct hle_t::HleGfxSlot *)arg;
+    H64System *sys = s->sys;
     u64 t0;
-    if (!hle->gfxAsyncRan) return;   // fell back to LLE: nothing to draw
+    if (s->parseOnSecond) sys->asyncParseWaitTicket(sys->asyncUser, s->parseTicket, 1);
+    if (!s->ran) return;   // fell back to LLE: nothing to draw
     t0 = h64_prof_now(sys);
-    h64_gfx_render(sys, hle->gfx);
+    h64_gfx_render(sys, sys->hle->gfx, s->out);
     sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
 }
 
@@ -373,15 +379,17 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
     {
         // The task ends once its display list ran; its rendering may go on,
         // except when it reads a colour image as a texture.
+        struct hle_t::HleGfxSlot *s = hle->gfxCur;
         u64 t0 = h64_prof_now(sys);
-        sys->asyncWaitTicket(sys->asyncUser, hle->gfxParseTicket);
-        if (hle->gfxAsyncMustSync || !hle->gfxAsyncRan) sys->asyncWaitTicket(sys->asyncUser, hle->gfxRenderTicket);
+        if (s->parseOnSecond) sys->asyncParseWaitTicket(sys->asyncUser, s->parseTicket, 0);
+        else sys->asyncWaitTicket(sys->asyncUser, s->parseTicket);
+        if (s->mustSync || !s->ran) sys->asyncWaitTicket(sys->asyncUser, s->renderTicket);
         sys->prof[H64_PROF_ASYNC_WAIT] += h64_prof_now(sys) - t0;
         sys->prof[H64_PROF_WAIT_TASK] += h64_prof_now(sys) - t0;
+        hle->gfxAsyncPending = 0;
+        *ran = s->ran;
+        *fullSync = s->fullSync;
     }
-    hle->gfxAsyncPending = 0;
-    *ran = hle->gfxAsyncRan;
-    *fullSync = hle->gfxAsyncFullSync;
     return 1;
 }
 
@@ -427,17 +435,27 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             // On the worker: the CPU goes on; the task ends (or falls back
             // to LLE) after asyncGfxCycles, where the CPU waits for it.
             if (!h64_gfx_task_known(sys, hle->gfx)) return 0;
+            struct hle_t::HleGfxSlot *s = &hle->gfxSlot[hle->gfxSlotNext];
+            hle->gfxSlotNext ^= 1;
+            if (!s->out) s->out = h64_gfx_out_create();
             {
+                // The slot's previous task (two tasks ago) must be rendered:
+                // its lists and snapshot are reused. The previous task may
+                // still render while this one is parsed.
                 u64 t0 = h64_prof_now(sys);
-                h64_hle_async_wait(sys);   // never two at once (cannot happen: the RSP is busy)
+                if (s->used) sys->asyncWaitTicket(sys->asyncUser, s->renderTicket);
+                if (!sys->asyncParseStart) h64_hle_async_wait(sys);   // one worker: in order anyway
                 sys->prof[H64_PROF_WAIT_START] += h64_prof_now(sys) - t0;
             }
+            s->sys = sys;
+            s->used = 1;
+            s->ran = s->fullSync = s->mustSync = 0;
+            s->parseOnSecond = sys->asyncParseStart != NULL && sys->asyncParseWaitTicket != NULL;
+            hle->gfxCur = s;
             hle->gfxAsyncPending = 1;
-            hle->gfxAsyncRan = 0;
-            hle->gfxAsyncFullSync = 0;
-            hle->gfxAsyncMustSync = 0;
-            hle->gfxParseTicket = sys->asyncStart(sys->asyncUser, gfx_parse_job, sys);
-            hle->gfxRenderTicket = sys->asyncStart(sys->asyncUser, gfx_render_job, sys);
+            if (s->parseOnSecond) s->parseTicket = sys->asyncParseStart(sys->asyncUser, gfx_parse_job, s);
+            else s->parseTicket = sys->asyncStart(sys->asyncUser, gfx_parse_job, s);
+            s->renderTicket = sys->asyncStart(sys->asyncUser, gfx_render_job, s);
             *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
             *busyCycles = sys->asyncGfxCycles ? sys->asyncGfxCycles : H64_HLE_GFX_CYCLES;
             return 1;

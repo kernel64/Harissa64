@@ -127,8 +127,18 @@ struct hle_t
     struct H64Gfx *gfx;       // graphics HLE (h64_gfx.cpp), created on first use
     // Asynchronous graphics task (sys->asyncStart): set by the worker.
     int gfxAsyncPending;      // started, its end not consumed yet
-    int gfxAsyncRan, gfxAsyncFullSync, gfxAsyncMustSync;
-    u32 gfxParseTicket, gfxRenderTicket;   // worker jobs: the display list, then its rendering
+    // Two tasks in flight at most: one rendering, the next being parsed.
+    struct HleGfxSlot
+    {
+        struct H64System *sys;
+        struct H64GfxOut *out;
+        int ran, fullSync, mustSync;
+        u32 parseTicket, renderTicket;   // worker jobs: the display list, then its rendering
+        int parseOnSecond;               // parsed by sys->asyncParseStart's worker
+        int used;
+    } gfxSlot[2];
+    int gfxSlotNext;
+    struct HleGfxSlot *gfxCur;   // the pending task's
     int audioAsyncPending;    // an audio task runs on the audio worker
     ucode_func_t audioAsyncFunc;
 };

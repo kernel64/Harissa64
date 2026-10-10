@@ -38,8 +38,13 @@ u32 h64_gfx_cost(const H64Gfx *gfx);
 // with the loads reading the snapshot, so it can run after the task ended.
 // *mustSync: the task reads a colour image as a texture (framebuffer effects):
 // render before the task ends.
-int h64_gfx_parse_task(H64System *sys, H64Gfx *gfx, int *fullSync, int *mustSync);
-void h64_gfx_render(H64System *sys, H64Gfx *gfx);
+// The result goes to `out` (its command lists and snapshot), so the next
+// task can be parsed while this one renders (two graphics workers).
+struct H64GfxOut;
+H64GfxOut *h64_gfx_out_create(void);
+void h64_gfx_out_free(H64GfxOut *out);
+int h64_gfx_parse_task(H64System *sys, H64Gfx *gfx, H64GfxOut *out, int *fullSync, int *mustSync);
+void h64_gfx_render(H64System *sys, H64Gfx *gfx, H64GfxOut *out);
 
 // Whether the HLE knows the microcode the task in DMEM starts with (it may
 // still fall back to LLE on a G_LOAD_UCODE to an unknown one).

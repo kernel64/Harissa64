@@ -269,6 +269,8 @@ static int FindRom(const Config *c, char *path, size_t len)
 //    thread takes it back only after waiting for every queued job, and gives
 //    it away before queuing one.
 //  - Audio (asyncaudio=1, hardware thread 4): audio HLE tasks.
+//  - Display lists (parseworker=1, hardware thread 5): graphics tasks are
+//    parsed there while the graphics worker renders the previous one.
 #define WORK_SLOTS 8
 struct WorkJob { void (*fn)(void *); void *arg; };
 struct WorkQueue
@@ -276,10 +278,11 @@ struct WorkQueue
     WorkJob jobs[WORK_SLOTS];
     volatile LONG queued, done;
     HANDLE sem, doneEvt, thread;
+    HANDLE doneEvtW;   // the same for a waiter on another worker (auto-reset events wake one thread)
     volatile LONG quit;
     int usesDevice;   // the graphics queue: D3D ownership changes hands
 };
-static WorkQueue s_gfxQ, s_audioQ;
+static WorkQueue s_gfxQ, s_audioQ, s_parseQ;
 static IDirect3DDevice9 *s_workDev;
 static H64Renderer *s_workRenderer;
 static int s_ownsDevice = 1;
@@ -298,8 +301,10 @@ static DWORD WINAPI WorkThread(LPVOID param)
             j->fn(j->arg);
             if (q->usesDevice) s_workDev->ReleaseThreadOwnership();
         }
+        __lwsync();   // the job's results before its count (Interlocked* has no barrier here)
         InterlockedIncrement(&q->done);
         SetEvent(q->doneEvt);
+        if (q->doneEvtW) SetEvent(q->doneEvtW);
     }
     return 0;
 }
@@ -315,6 +320,15 @@ static void QueueWaitTicket(WorkQueue *q, u32 ticket)
 {
     if (!q->thread) return;
     while ((s32)((u32)q->done - ticket) < 0) WaitForSingleObject(q->doneEvt, INFINITE);
+    __lwsync();
+}
+
+// The same from another worker (its own event).
+static void QueueWaitTicketW(WorkQueue *q, u32 ticket)
+{
+    if (!q->thread) return;
+    while ((s32)((u32)q->done - ticket) < 0) WaitForSingleObject(q->doneEvtW, INFINITE);
+    __lwsync();
 }
 
 static u32 QueuePush(WorkQueue *q, void (*fn)(void *), void *arg)
@@ -334,7 +348,8 @@ static int QueueStart(WorkQueue *q, int usesDevice, DWORD hwThread)
     q->usesDevice = usesDevice;
     q->sem = CreateSemaphore(NULL, 0, 1000, NULL);
     q->doneEvt = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (!q->sem || !q->doneEvt) return -1;
+    q->doneEvtW = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!q->sem || !q->doneEvt || !q->doneEvtW) return -1;
     q->thread = CreateThread(NULL, 256 * 1024, WorkThread, q, CREATE_SUSPENDED, NULL);
     if (!q->thread) return -1;
     XSetThreadProcessor(q->thread, hwThread);
@@ -352,12 +367,15 @@ static void QueueStop(WorkQueue *q)
     CloseHandle(q->thread);
     CloseHandle(q->sem);
     CloseHandle(q->doneEvt);
+    CloseHandle(q->doneEvtW);
+    q->doneEvtW = NULL;
     q->thread = NULL;
 }
 
 // Graphics queue: everything queued is done and the device is the CPU thread's again.
 static void WorkWaitAll(void *)
 {
+    QueueWait(&s_parseQ);
     QueueWait(&s_gfxQ);
     if (!s_ownsDevice)
     {
@@ -380,6 +398,13 @@ static u32 WorkStart(void *, void (*fn)(void *), void *arg)
 }
 
 static void WorkWaitTicket(void *, u32 ticket) { QueueWaitTicket(&s_gfxQ, ticket); }
+
+static u32 ParseStart(void *, void (*fn)(void *), void *arg) { return QueuePush(&s_parseQ, fn, arg); }
+static void ParseWaitTicket(void *, u32 ticket, int fromWorker)
+{
+    if (fromWorker) QueueWaitTicketW(&s_parseQ, ticket);
+    else QueueWaitTicket(&s_parseQ, ticket);
+}
 
 static void AudioStart(void *, void (*fn)(void *), void *arg) { QueuePush(&s_audioQ, fn, arg); }
 static void AudioWait(void *) { QueueWait(&s_audioQ); }
@@ -434,7 +459,7 @@ static void PresentFrame(H64System *sys, H64Renderer *renderer)
 }
 
 static void WorkersStart(H64System *sys, IDirect3DDevice9 *dev, H64Renderer *renderer, int gfx, u32 gfxCycles, int audio,
-                         u32 audioCycles)
+                         u32 audioCycles, int parse)
 {
     s_workDev = dev;
     s_workRenderer = renderer;
@@ -449,6 +474,12 @@ static void WorkersStart(H64System *sys, IDirect3DDevice9 *dev, H64Renderer *ren
             sys->asyncWaitTicket = WorkWaitTicket;
             sys->asyncGfxCycles = gfxCycles;
             H64_INFO("[main] graphics worker on hardware thread 2 (graphics tasks keep the RSP busy %u cycles)", gfxCycles);
+            if (parse && QueueStart(&s_parseQ, 0, 5) == 0)
+            {
+                sys->asyncParseStart = ParseStart;
+                sys->asyncParseWaitTicket = ParseWaitTicket;
+                H64_INFO("[main] display lists parsed on hardware thread 5");
+            }
         }
         else
             H64_WARN("[main] graphics worker could not start: graphics on the CPU thread");
@@ -473,8 +504,11 @@ static void WorkersStop(H64System *sys)
     if (s_gfxQ.thread)
     {
         WorkWaitAll(NULL);
+        QueueStop(&s_parseQ);
         QueueStop(&s_gfxQ);
     }
+    sys->asyncParseStart = NULL;
+    sys->asyncParseWaitTicket = NULL;
     sys->asyncStart = NULL;
     sys->asyncWait = NULL;
     sys->asyncWaitTicket = NULL;
@@ -1068,7 +1102,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
              c->hle ? "HLE" : "LLE", c->softRenderer ? "software" : "Xenos");
     if (c->hle && !c->trace)
         WorkersStart(sys, dev, renderer, c->asyncGfx && !c->softRenderer, c->gfxCycles ? c->gfxCycles : 400000,
-                     c->asyncAudio, c->audioCycles ? c->audioCycles : 100000);
+                     c->asyncAudio, c->audioCycles ? c->audioCycles : 100000, c->parseWorker);
 
     if (c->trace)
     {
@@ -1367,9 +1401,10 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 double run = profRun * k, gfx = pr[H64_PROF_GFX_HLE] * k, aud = pr[H64_PROF_AUDIO_HLE] * k;
                 double rsp = pr[H64_PROF_RSP_LLE] * k, jitc = pr[H64_PROF_JIT_COMPILE] * k;
                 const H64JitStats *js = sys->jit ? &sys->jit->stats : NULL;
-                H64_INFO("[prof] ms/frame: run %.1f (cpu %.1f, gfx hle %.1f incl. render %.1f, audio hle %.1f, rsp lle %.1f, "
+                H64_INFO("[prof] ms/frame: run %.1f (cpu %.1f, gfx parse %.1f, gfx hle %.1f incl. render %.1f, audio hle %.1f, rsp lle %.1f, "
                          "jit compile %.1f) present %.1f wait %.1f | jit +%llu blocks, +%llu invalidations, +%llu flushes, %llu interpreted/frame",
-                         run, run - (s_gfxQ.thread ? 0.0 : gfx) - (s_audioQ.thread ? 0.0 : aud) - ((s_gfxQ.thread || s_audioQ.thread) ? pr[H64_PROF_ASYNC_WAIT] * k : 0.0) - rsp - jitc, gfx,
+                         run, run - (s_gfxQ.thread ? 0.0 : gfx) - (s_audioQ.thread ? 0.0 : aud) - ((s_gfxQ.thread || s_audioQ.thread) ? pr[H64_PROF_ASYNC_WAIT] * k : 0.0) - rsp - jitc,
+                         pr[H64_PROF_GFX_PARSE] * k, gfx,
                          pr[H64_PROF_RENDER] * k, aud, rsp, jitc, profPresent * k,
                          profWait * k, js ? (unsigned long long)(js->blocksCompiled - jitBlocks) : 0ull,
                          js ? (unsigned long long)(js->invalidations - jitInval) : 0ull,
@@ -1399,8 +1434,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                              xs.bigW, xs.bigH, xs.bigCount, xs.bigFmt, xs.bigSize, xs.bigStride, xs.bigMaskS, xs.bigMaskT, xs.bigFlags,
                              xs.bigRect ? "rectangle" : "triangle");
                 PcSamplerReport();
-                H64_INFO("[gprof] ms/frame on the graphics worker: snapshots %.1f (%u KB a frame), vertices %.1f (%u a frame; lighting %.1f, %u lights a frame), TMEM loads %u (%u KB, %.1f ms), palettes %u (%.1f ms)",
-                         pr[H64_PROF_GFX_SNAPSHOT] * k, (u32)(sys->prof[H64_PROF_SNAP_BYTES] / framesSincePerf / 1024),
+                H64_INFO("[gprof] ms/frame on the graphics workers: triangles %.1f (%u a frame), snapshots %.1f (%u KB a frame), vertices %.1f (%u a frame; lighting %.1f, %u lights a frame), TMEM loads %u (%u KB, %.1f ms), palettes %u (%.1f ms)",
+                         pr[H64_PROF_GFX_TRI] * k, (u32)(sys->prof[H64_PROF_GFX_NTRI] / framesSincePerf), pr[H64_PROF_GFX_SNAPSHOT] * k, (u32)(sys->prof[H64_PROF_SNAP_BYTES] / framesSincePerf / 1024),
                          pr[H64_PROF_GFX_VTX] * k, (u32)(sys->prof[H64_PROF_GFX_NVTX] / framesSincePerf),
                          pr[H64_PROF_GFX_LIGHT] * k, (u32)(sys->prof[H64_PROF_GFX_NLIGHT] / framesSincePerf),
                          (u32)(sys->prof[H64_PROF_TMEM_LOADS] / framesSincePerf), (u32)(sys->prof[H64_PROF_TMEM_WORDS] * 8 / framesSincePerf / 1024),

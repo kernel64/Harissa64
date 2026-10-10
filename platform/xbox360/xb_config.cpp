@@ -48,6 +48,7 @@ void ConfigDefaults(Config *c)
     c->screen = 0;
     c->aspect = 0;
     c->asyncGfx = 1;
+    c->parseWorker = 1;
     c->asyncAudio = 1;
     c->audioCycles = 100000;
     c->gfxCycles = 400000;
@@ -104,6 +105,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "blur")) c->blur = atoi(eq + 1);
         else if (!strcmp(line, "aspect")) c->aspect = atoi(eq + 1);
         else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
+        else if (!strcmp(line, "parseworker")) c->parseWorker = atoi(eq + 1);
         else if (!strcmp(line, "asyncaudio")) c->asyncAudio = atoi(eq + 1);
         else if (!strcmp(line, "audiocycles")) c->audioCycles = (u32)atoi(eq + 1);
         else if (!strcmp(line, "gfxcycles")) c->gfxCycles = (u32)atoi(eq + 1);

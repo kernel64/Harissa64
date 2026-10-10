@@ -76,6 +76,9 @@ enum
     H64_PROF_TMEM_TLUT,      // time in palette loads (temporary measure)
     H64_PROF_TMEM_NTLUT,     // palette loads (a count)
     H64_PROF_TMEM_TIME,      // time in block and tile loads
+    H64_PROF_GFX_PARSE,      // asynchronous graphics tasks: their display lists (GFX_HLE then holds their rendering)
+    H64_PROF_GFX_TRI,        // inside the display lists: triangles (clipping, projection, output; a measure)
+    H64_PROF_GFX_NTRI,       // triangle commands (a count)
     H64_PROF_COUNT
 };
 
@@ -152,6 +155,11 @@ struct H64System
     void (*asyncWait)(void *user);                                        // every queued job
     void (*asyncWaitTicket)(void *user, u32 ticket);                      // up to that job
     void *asyncUser;
+    // Optional second graphics worker: display lists are parsed there while
+    // the first one renders the previous task. Its wait takes the waiting
+    // thread (0: the CPU thread, 1: the first worker). NULL: parsed on the first.
+    u32 (*asyncParseStart)(void *user, void (*job)(void *arg), void *arg);
+    void (*asyncParseWaitTicket)(void *user, u32 ticket, int fromWorker);
     u32 asyncGfxCycles;             // how long an asynchronous graphics task keeps the RSP busy
     // Audio HLE tasks on another worker, the same way (their RDRAM output is
     // complete when the task ends, where the CPU waits for it).

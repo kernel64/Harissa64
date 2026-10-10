@@ -40,6 +40,7 @@ struct Config
     int aspect;         // aspect=0|1|2: 4:3, 16:9 widescreen (wider 3D), 16:9 stretched
     int showFps;        // showfps=1: frames shown per second in a corner
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
+    int parseWorker;    // parseworker=0: display lists parsed on the graphics worker too (no second worker)
     int asyncAudio;     // asyncaudio=0: audio HLE tasks on the CPU thread
     u32 audioCycles;    // audiocycles=N: CPU cycles an asynchronous audio task keeps the RSP busy
     u32 gfxCycles;      // gfxcycles=N: CPU cycles an asynchronous graphics task keeps the RSP busy

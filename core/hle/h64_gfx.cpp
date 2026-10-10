@@ -72,6 +72,52 @@ struct GfxVtx
     float sx, sy;
     int zOverride;           // G_MWO_POINT_ZSCREEN
     float sz;
+    // Screen position, made once when loaded (triangles share vertices):
+    // valid while projGen == H64Gfx.vpGen (0: needs clipping or an override).
+    float px, py, pz, iw;
+    u32 projGen;
+};
+
+// A growable array of plain structures: add() returns the new element
+// uninitialised. std::vector's resize/push_back built a zeroed temporary and
+// copied it in (the XDK compiler copies structures byte by byte): ~1600
+// cycles a triangle on the console with Conker's thousands a frame.
+template <typename T> struct PodVec
+{
+    T *p;
+    u32 n, cap;
+    PodVec() : p(0), n(0), cap(0) {}
+    ~PodVec() { free(p); }
+    u32 size() const { return n; }
+    void clear() { n = 0; }
+    T &operator[](u32 i) { return p[i]; }
+    const T &operator[](u32 i) const { return p[i]; }
+    T *add(u32 k)
+    {
+        if (n + k > cap)
+        {
+            u32 c = cap ? cap * 2 : 1024;
+            T *q;
+            while (c < n + k) c *= 2;
+            q = (T *)malloc((size_t)c * sizeof(T));
+            if (!q) return 0;
+            if (n) memcpy(q, p, (size_t)n * sizeof(T));
+            free(p);
+            p = q;
+            cap = c;
+        }
+        n += k;
+        return p + n - k;
+    }
+    void swap(PodVec &o)
+    {
+        T *tp = p; u32 tn = n, tc = cap;
+        p = o.p; n = o.n; cap = o.cap;
+        o.p = tp; o.n = tn; o.cap = tc;
+    }
+private:
+    PodVec(const PodVec &);
+    PodVec &operator=(const PodVec &);
 };
 
 struct GfxOp
@@ -106,6 +152,10 @@ struct H64Gfx
     int numLights;
     float lookat[2][3];
     float vscale[4], vtrans[4];
+    u32 vpGen;
+    // Per-task profiling sums, added to sys->prof once a task (written per
+    // triangle and vertex, sys->prof's lines bounced between the CPU cores).
+    u64 pTri, pNtri, pVtx, pNvtx, pNlight;               // changes with the viewport (GfxVtx.projGen)
     float clipRatio;
     float texScaleS, texScaleT;
     u32 texLevel, texTile, texOn;
@@ -128,9 +178,9 @@ struct H64Gfx
     u32 nVerts, nTris;      // this task's vertices and triangles (cost estimate)
     u32 warned;
 
-    std::vector<u64> words;
-    std::vector<GfxTri> tris;
-    std::vector<GfxOp> ops;
+    PodVec<u64> words;
+    PodVec<GfxTri> tris;
+    PodVec<GfxOp> ops;
 
     // Deferred rendering: what texture loads read (snapshot), colour images seen.
     u32 timgAddr, timgWidth, timgSize;
@@ -139,7 +189,15 @@ struct H64Gfx
     u32 cimg[8][2];                // recent colour images: start, end
     u32 cimgNext;
     int texFromCimg;
-    u8 *snapshot;                  // RDRAM-sized; only the ranges above are valid
+};
+
+// A parsed task waiting for (or being) rendered.
+struct H64GfxOut
+{
+    PodVec<u64> words;
+    PodVec<GfxTri> tris;
+    PodVec<GfxOp> ops;
+    u8 *snapshot;                  // RDRAM-sized; only the task's load ranges are valid
 };
 
 // ---------------------------------------------------------------- memory
@@ -210,13 +268,14 @@ static void mat_identity(float m[4][4])
 // ---------------------------------------------------------------- output
 static void out_rdp(H64Gfx *g, const u64 *w, u32 n)
 {
-    GfxOp op;
-    u32 i;
-    op.kind = 0;
-    op.index = (u32)g->words.size();
-    op.count = n;
-    for (i = 0; i < n; i++) g->words.push_back(w[i]);
-    g->ops.push_back(op);
+    u32 index = g->words.size(), i;
+    u64 *d = g->words.add(n);
+    GfxOp *op = g->ops.add(1);
+    if (!d || !op) { g->abort = 1; return; }
+    for (i = 0; i < n; i++) d[i] = w[i];
+    op->kind = 0;
+    op->index = index;
+    op->count = n;
 }
 
 // Texture images and loads (h64_rdp_load's arithmetic): the RDRAM a load reads.
@@ -281,21 +340,37 @@ static void out_othermode(H64Gfx *g)
     out_rdp1(g, 0xEF000000u | (g->omH & 0x00FFFFFF), g->omL);
 }
 
+// Field by field: the XDK compiler copies structures byte by byte.
+static inline void copy_rv(H64RenderVertex *o, const H64RenderVertex *i)
+{
+    o->x = i->x; o->y = i->y; o->z = i->z; o->invw = i->invw;
+    o->r = i->r; o->g = i->g; o->b = i->b; o->a = i->a;
+    o->s = i->s; o->t = i->t;
+}
+
+// A new triangle at the end of the lists (vertices to fill in).
+static GfxTri *new_tri(H64Gfx *g, u32 flags)
+{
+    static GfxTri s_dummy;   // out of memory: written, never sent (the task aborts)
+    u32 n = g->tris.size();
+    GfxTri *t = g->tris.add(1);
+    GfxOp *op = g->ops.add(1);
+    if (!t || !op) { g->abort = 1; return &s_dummy; }
+    t->flags = flags;
+    t->tile = g->texTile;
+    t->levels = g->texLevel + 1;
+    op->kind = 1;
+    op->index = n;
+    op->count = 0;
+    return t;
+}
+
 static void out_tri(H64Gfx *g, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c, u32 flags)
 {
-    GfxTri t;
-    GfxOp op;
-    t.v[0] = *a;
-    t.v[1] = *b;
-    t.v[2] = *c;
-    t.flags = flags;
-    t.tile = g->texTile;
-    t.levels = g->texLevel + 1;
-    op.kind = 1;
-    op.index = (u32)g->tris.size();
-    op.count = 0;
-    g->tris.push_back(t);
-    g->ops.push_back(op);
+    GfxTri *t = new_tri(g, flags);
+    copy_rv(&t->v[0], a);
+    copy_rv(&t->v[1], b);
+    copy_rv(&t->v[2], c);
 }
 
 // ---------------------------------------------------------------- microcode detection
@@ -527,8 +602,8 @@ static void load_vertices_fmt(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
 {
     u64 t0 = h64_prof_now(g->sys);
     load_vertices_body(g, phys, n, v0, fmt);
-    g->sys->prof[H64_PROF_GFX_VTX] += h64_prof_now(g->sys) - t0;
-    g->sys->prof[H64_PROF_GFX_NVTX] += n;
+    g->pVtx += h64_prof_now(g->sys) - t0;
+    g->pNvtx += n;
 }
 
 // Each vertex is read (bytes) and computed in locals, and written once at the
@@ -543,7 +618,9 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
     float ldir[10][3], look[2][3], lc[10][3], m[4][4];
     float texS = g->texScaleS, texT = g->texScaleT, fogMul = g->fogMul, fogOff = g->fogOff;
     int l, lighting = (gm & GM_LIGHTING) && fmt != VF_DKR, cbfd = (gm & GM_LIGHTING) && fmt == VF_CBFD;
-    int billboard = fmt == VF_DKR && g->billboard, nLights = g->numLights;
+    int billboard = fmt == VF_DKR && g->billboard, nLights = g->numLights, noNear = g->uc->noNear;
+    float vs0 = g->vscale[0], vs1 = g->vscale[1], vs2 = g->vscale[2], vt0 = g->vtrans[0], vt1 = g->vtrans[1], vt2 = g->vtrans[2];
+    u32 vpGen = g->vpGen;
     g->nVerts += n;
     if (v0 >= GFX_VTX_MAX) return;
     if (v0 + n > GFX_VTX_MAX) n = GFX_VTX_MAX - v0;
@@ -618,10 +695,8 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
             if (!unlit)
             {
                 float fr, fg, fb;
-                u64 lt0 = h64_prof_now(g->sys);
                 cbfd_light(g, x, y, z, nx, ny, nz, ldir, lc, &fr, &fg, &fb);
-                g->sys->prof[H64_PROF_GFX_LIGHT] += h64_prof_now(g->sys) - lt0;
-                g->sys->prof[H64_PROF_GFX_NLIGHT] += (u64)nLights;
+                g->pNlight += (u64)nLights;
                 r *= fr;
                 gg *= fg;
                 b *= fb;
@@ -686,6 +761,18 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
         v->nx = nx; v->ny = ny; v->nz = nz;
         v->clip = clip;
         v->xyOverride = v->zOverride = 0;
+        v->projGen = 0;
+        if (w >= 0.0001f && (noNear || z >= -w))
+        {
+            // As triangle() would project it, if inside the guard band.
+            float iw = 1.0f / w;
+            float sx = vt0 + vs0 * x * iw, sy = vt1 - vs1 * y * iw;
+            v->px = sx;
+            v->py = sy;
+            v->pz = (vt2 + vs2 * z * iw) * 32.0f;
+            v->iw = iw;
+            if (sx >= -1000.0f && sx <= 2000.0f && sy >= -1000.0f && sy <= 2000.0f) v->projGen = vpGen;
+        }
     }
 }
 
@@ -713,12 +800,14 @@ static void modify_vertex(H64Gfx *g, u32 n, u32 where, u32 val)
         break;
     case 0x18:   // G_MWO_POINT_XYSCREEN (1/4 pixel)
         v->xyOverride = 1;
+        v->projGen = 0;
         v->sx = (s16)(val >> 16) / 4.0f;
         v->sy = (s16)val / 4.0f;
         v->clip &= ~(CL_POSX | CL_NEGX | CL_POSY | CL_NEGY);
         break;
     case 0x1C:   // G_MWO_POINT_ZSCREEN (16.16 in G_MAXZ units)
         v->zOverride = 1;
+        v->projGen = 0;
         v->sz = (float)val / 65536.0f * 32.0f;
         break;
     }
@@ -789,7 +878,16 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
     project_iw(g, c, 1.0f / c->w, o);
 }
 
+static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2);
 static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
+{
+    u64 t0 = h64_prof_now(g->sys);
+    triangle_body(g, i0, i1, i2);
+    g->pTri += h64_prof_now(g->sys) - t0;
+    g->pNtri++;
+}
+
+static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
 {
     const GfxVtx *v[3];
     ClipVtx poly[2][16];
@@ -804,6 +902,33 @@ static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     v[2] = &g->vtx[i2];
     // Entirely outside one plane (screen sides at the clip ratio, or behind the eye).
     if (v[0]->clip & v[1]->clip & v[2]->clip & CL_W) return;
+    if (v[0]->projGen == g->vpGen && v[1]->projGen == g->vpGen && v[2]->projGen == g->vpGen)
+    {
+        // No clipping: the vertices' own screen positions (same results as below).
+        GfxTri *t;
+        const GfxVtx *cv;
+        // The sum in the order of the general path below (same rounding).
+        area = v[0]->px * v[1]->py - v[1]->px * v[0]->py;
+        area += v[1]->px * v[2]->py - v[2]->px * v[1]->py;
+        area += v[2]->px * v[0]->py - v[0]->px * v[2]->py;
+        if (area == 0) return;
+        if ((gm & GM_CULL_BACK) && area > 0) return;
+        if ((gm & GM_CULL_FRONT) && area < 0) return;
+        if (gm & GM_ZBUFFER) flags |= H64_TRI_ZBUFFER;
+        if (gm & GM_SHADE) flags |= H64_TRI_SHADE;
+        if (g->texOn) flags |= H64_TRI_TEXTURE;
+        t = new_tri(g, flags);
+        for (k = 0; k < 3; k++)
+        {
+            H64RenderVertex *o = &t->v[k];
+            const GfxVtx *s = v[k];
+            cv = (gm & GM_SMOOTH) ? s : v[0];
+            o->x = s->px; o->y = s->py; o->z = s->pz; o->invw = s->iw;
+            o->r = cv->r; o->g = cv->g; o->b = cv->b; o->a = cv->a;
+            o->s = s->s; o->t = s->t;
+        }
+        return;
+    }
     for (k = 0; k < 3; k++)
     {
         ClipVtx *c = &poly[0][k];
@@ -977,6 +1102,7 @@ static void set_viewport(H64Gfx *g, u32 addr)
     g->vtrans[1] = rd16(g, a + 10) / 4.0f;
     g->vtrans[2] = rd16(g, a + 12);
     g->vtrans[3] = rd16(g, a + 14);
+    if (++g->vpGen == 0) g->vpGen = 1;
 }
 
 static void set_light(H64Gfx *g, u32 addr, int n)
@@ -1802,6 +1928,8 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->numLights = 0;
     memset(g->lookat, 0, sizeof(g->lookat));
     memset(g->vscale, 0, sizeof(g->vscale));
+    g->vpGen = 1;
+    g->pTri = g->pNtri = g->pVtx = g->pNvtx = g->pNlight = 0;
     memset(g->vtrans, 0, sizeof(g->vtrans));
     g->clipRatio = 1.0f;
     g->texScaleS = g->texScaleT = 1.0f;
@@ -1819,34 +1947,45 @@ H64Gfx *h64_gfx_create(H64System *sys)
     memset(g->cimg, 0, sizeof(g->cimg));
     g->cimgNext = 0;
     g->texFromCimg = 0;
-    g->snapshot = 0;
     return g;
 }
 
 void h64_gfx_free(H64Gfx *g)
 {
-    h64_big_free(g->snapshot);
     delete g;
 }
 
-static void flush_output(H64Gfx *g)
+H64GfxOut *h64_gfx_out_create(void)
 {
-    H64System *sys = g->sys;
+    H64GfxOut *o = new H64GfxOut;
+    o->snapshot = 0;
+    return o;
+}
+
+void h64_gfx_out_free(H64GfxOut *o)
+{
+    if (!o) return;
+    h64_big_free(o->snapshot);
+    delete o;
+}
+
+static void flush_lists(H64System *sys, const PodVec<u64> &words, const PodVec<GfxTri> &tris, const PodVec<GfxOp> &ops)
+{
     u64 t0 = h64_prof_now(sys);
     H64Renderer *r = sys->renderer;
-    size_t i;
-    for (i = 0; i < g->ops.size(); i++)
+    u32 i;
+    for (i = 0; i < ops.size(); i++)
     {
-        const GfxOp *op = &g->ops[i];
+        const GfxOp *op = &ops[i];
         if (op->kind == 0)
         {
-            if (r) r->rdp(r->user, &g->words[op->index], op->count);
-            else h64_rdp_command(sys, &g->words[op->index], op->count);
+            if (r) r->rdp(r->user, &words[op->index], op->count);
+            else h64_rdp_command(sys, &words[op->index], op->count);
             sys->dpCommands++;
         }
         else
         {
-            const GfxTri *t = &g->tris[op->index];
+            const GfxTri *t = &tris[op->index];
             if (r) r->triangle(r->user, &t->v[0], &t->v[1], &t->v[2], t->flags, t->tile, t->levels);
             else
             {
@@ -1858,6 +1997,11 @@ static void flush_output(H64Gfx *g)
         }
     }
     sys->prof[H64_PROF_RENDER] += h64_prof_now(sys) - t0;
+}
+
+static void flush_output(H64Gfx *g)
+{
+    flush_lists(g->sys, g->words, g->tris, g->ops);
 }
 
 int h64_gfx_task_known(H64System *sys, H64Gfx *g)
@@ -1901,17 +2045,21 @@ int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
     return 1;
 }
 
-int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
+int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync, int *mustSync)
 {
     size_t k;
     g->loadRanges.clear();
     g->texFromCimg = 0;
     if (!parse_task(sys, g, fullSync)) return 0;
+    // The lists go to `out` (O(1) swaps: g keeps out's old buffers for the next task).
+    g->words.swap(out->words);
+    g->tris.swap(out->tris);
+    g->ops.swap(out->ops);
     // A task that reads a colour image as a texture renders from the snapshot
     // too: the renderer copies the image back into both (h64_gfx_render).
     *mustSync = 0;
-    if (!g->snapshot) g->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
-    if (!g->snapshot) { *mustSync = 1; return 1; }
+    if (!out->snapshot) out->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
+    if (!out->snapshot) { *mustSync = 1; return 1; }
     {
         // Ranges sorted and merged first: a display list loads the same
         // texels many times (Conker's cutscenes: thousands of loads a frame).
@@ -1926,7 +2074,7 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
             u32 lo = (u32)(r[n] >> 32), hi = (u32)r[n];
             for (n++; n < r.size() && (u32)(r[n] >> 32) <= hi; n++)
                 if ((u32)r[n] > hi) hi = (u32)r[n];
-            memcpy(g->snapshot + lo, sys->rdram + lo, hi - lo);
+            memcpy(out->snapshot + lo, sys->rdram + lo, hi - lo);
             sys->prof[H64_PROF_SNAP_BYTES] += hi - lo;
         }
         sys->prof[H64_PROF_GFX_SNAPSHOT] += h64_prof_now(sys) - t0;
@@ -1934,7 +2082,7 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
     return 1;
 }
 
-void h64_gfx_render(H64System *sys, H64Gfx *g)
+void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
 {
     H64RdpState *st = h64_rdp_state(sys);
     // Texture loads read the snapshot taken when the display list was parsed.
@@ -1942,9 +2090,10 @@ void h64_gfx_render(H64System *sys, H64Gfx *g)
     // on the pause screen, Perfect Dark's cutscene blur) is copied back into
     // the snapshot as well as RDRAM, so the task need not finish rendering
     // before the CPU goes on (PD's cutscenes: the CPU waited ~12 ms a frame).
-    st->loadRam = g->snapshot;
+    (void)g;
+    st->loadRam = out->snapshot;
     st->loadRamGen++;
-    flush_output(g);
+    flush_lists(sys, out->words, out->tris, out->ops);
     st->loadRam = 0;
 }
 
@@ -2006,6 +2155,15 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
             H64_WARN("[gfx] display list too long (loop?): task left to the LLE RSP");
             g->abort = 1;
         }
+    }
+    {
+        u64 *pr = sys->prof;
+        pr[H64_PROF_GFX_TRI] += g->pTri;
+        pr[H64_PROF_GFX_NTRI] += g->pNtri;
+        pr[H64_PROF_GFX_VTX] += g->pVtx;
+        pr[H64_PROF_GFX_NVTX] += g->pNvtx;
+        pr[H64_PROF_GFX_NLIGHT] += g->pNlight;
+        g->pTri = g->pNtri = g->pVtx = g->pNvtx = g->pNlight = 0;
     }
     if (g->abort)
         return 0;
