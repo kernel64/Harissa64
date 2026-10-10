@@ -1694,7 +1694,9 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
     g->loadRanges.clear();
     g->texFromCimg = 0;
     if (!parse_task(sys, g, fullSync)) return 0;
-    *mustSync = g->texFromCimg;
+    // A task that reads a colour image as a texture renders from the snapshot
+    // too: the renderer copies the image back into both (h64_gfx_render).
+    *mustSync = 0;
     if (!g->snapshot) g->snapshot = (u8 *)malloc(H64_RDRAM_SIZE);
     if (!g->snapshot) { *mustSync = 1; return 1; }
     for (k = 0; k + 1 < g->loadRanges.size(); k += 2)
@@ -1705,10 +1707,12 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, int *fullSync, int *mustSync)
 void h64_gfx_render(H64System *sys, H64Gfx *g)
 {
     H64RdpState *st = h64_rdp_state(sys);
-    // A task that reads a colour image as a texture (OoT's Link on the pause
-    // screen) renders before it ends: its loads read RDRAM, where the renderer
-    // copies the colour image back; the snapshot predates that copy.
-    st->loadRam = g->texFromCimg ? 0 : g->snapshot;
+    // Texture loads read the snapshot taken when the display list was parsed.
+    // A colour image the GPU drew and the task reads as a texture (OoT's Link
+    // on the pause screen, Perfect Dark's cutscene blur) is copied back into
+    // the snapshot as well as RDRAM, so the task need not finish rendering
+    // before the CPU goes on (PD's cutscenes: the CPU waited ~12 ms a frame).
+    st->loadRam = g->snapshot;
     flush_output(g);
     st->loadRam = 0;
 }

@@ -62,6 +62,9 @@ enum
     H64_PROF_ASYNC_WAIT,     // waiting for the graphics worker (asyncWait)
     H64_PROF_BLOCKS,         // recompiler: inside generated code (helper and events included)
     H64_PROF_TLB,            // recompiler: the dispatcher's work after TLB changes (links, caches)
+    H64_PROF_WAIT_TASK,      // inside ASYNC_WAIT: at a graphics task's end
+    H64_PROF_WAIT_DPC,       // inside ASYNC_WAIT: before RDP commands sent through DPC_END
+    H64_PROF_WAIT_START,     // inside ASYNC_WAIT: before starting a task
     H64_PROF_COUNT
 };
 
@@ -107,6 +110,7 @@ struct H64System
     u64 dpCommand[22];   // RDP command being assembled
     u32 dpPendingWords;
     u64 dpCommands;      // statistics: RDP commands executed
+    struct H64DpcAsync *dpcAsync;   // RDP commands sent through DPC_END, run on the graphics worker (h64_rdp.cpp)
     H64Jit *jit;         // dynamic recompiler (NULL: interpreter)
     struct hle_t *hle;   // RSP task HLE state (allocated at creation)
     struct H64Renderer *renderer;   // NULL: the software RDP draws everything

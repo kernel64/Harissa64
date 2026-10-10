@@ -1395,6 +1395,7 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
 
 void h64_rdp_free(H64System *sys)
 {
+    h64_rdp_async_free(sys);
     free(sys->rdpState);
     free(sys->rdramHidden);
     sys->rdpState = 0;

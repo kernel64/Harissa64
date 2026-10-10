@@ -44,6 +44,8 @@ void h64_rdp_hle_full_sync(H64System *sys);
 
 // One complete command (1 to 22 big-endian 64-bit words), h64_rdp_render.cpp.
 void h64_rdp_command(H64System *sys, const u64 *words, u32 count);
+// Frees what running DPC commands on the graphics worker uses (h64_rdp.cpp).
+void h64_rdp_async_free(H64System *sys);
 
 // Builds the RDP triangle command for three screen-space vertices
 // (render/api.h; flags: H64_TRI_*). Returns the number of words written to

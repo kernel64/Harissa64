@@ -377,6 +377,7 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
         sys->asyncWaitTicket(sys->asyncUser, hle->gfxParseTicket);
         if (hle->gfxAsyncMustSync || !hle->gfxAsyncRan) sys->asyncWaitTicket(sys->asyncUser, hle->gfxRenderTicket);
         sys->prof[H64_PROF_ASYNC_WAIT] += h64_prof_now(sys) - t0;
+        sys->prof[H64_PROF_WAIT_TASK] += h64_prof_now(sys) - t0;
     }
     hle->gfxAsyncPending = 0;
     *ran = hle->gfxAsyncRan;
@@ -426,7 +427,11 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             // On the worker: the CPU goes on; the task ends (or falls back
             // to LLE) after asyncGfxCycles, where the CPU waits for it.
             if (!h64_gfx_task_known(sys, hle->gfx)) return 0;
-            h64_hle_async_wait(sys);   // never two at once (cannot happen: the RSP is busy)
+            {
+                u64 t0 = h64_prof_now(sys);
+                h64_hle_async_wait(sys);   // never two at once (cannot happen: the RSP is busy)
+                sys->prof[H64_PROF_WAIT_START] += h64_prof_now(sys) - t0;
+            }
             hle->gfxAsyncPending = 1;
             hle->gfxAsyncRan = 0;
             hle->gfxAsyncFullSync = 0;

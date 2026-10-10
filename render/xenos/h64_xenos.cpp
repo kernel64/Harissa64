@@ -1283,6 +1283,8 @@ static void copy_back(Xenos *x, int slot)
     D3DLOCKED_RECT lr;
     u32 y, xx, w = s->width ? s->width : 320, h = s->height ? s->height : 240, hc = h;
     u8 *ram = x->sys->rdram;
+    // Texture loads may read a snapshot of RDRAM (graphics HLE on the worker): the copy goes there too.
+    u8 *snap = (u8 *)x->st->loadRam;
     // Only the lines drawn (hc): an offscreen image (Conker's small render
     // targets) is not as tall as the guess h, which still sets the scale.
     if (s->drawnH && s->drawnH < h) hc = s->drawnH;
@@ -1323,6 +1325,7 @@ static void copy_back(Xenos *x, int slot)
                 u32 a = s->addr + (y * w + xx) * s->bytes;
                 if (a + s->bytes > H64_RDRAM_SIZE) break;
                 store_pixel(ram + a, s->fmt, src[xx]);
+                if (snap) store_pixel(snap + a, s->fmt, src[xx]);
             }
         }
     }
@@ -1341,6 +1344,7 @@ static void copy_back(Xenos *x, int slot)
             u32 a = s->addr + (y * w + xx) * s->bytes;
             if (a + s->bytes > H64_RDRAM_SIZE) break;
             store_pixel(ram + a, s->fmt, src[xx * x->rtW / w]);
+            if (snap) store_pixel(snap + a, s->fmt, src[xx * x->rtW / w]);
         }
     }
     }
