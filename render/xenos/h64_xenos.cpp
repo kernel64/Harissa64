@@ -2459,6 +2459,17 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         u32 bpr = (fs->width ? fs->width : 320) * (fs->bytes ? fs->bytes : 2), off = origin - fs->addr;
         float oy = (float)(off / bpr), ox = (float)((off % bpr) / (fs->bytes ? fs->bytes : 2));
         int haveGeom = vi_geometry(vi, &g);
+        if (haveGeom && fs->width && width > fs->width && width % fs->width == 0)
+        {
+            // The VI's line stride is several image lines (DK64's interlaced
+            // 640x480 intro: VI width 1280, each field every other line): its
+            // lines step that many lines of the image. Shown one line per VI
+            // line, the top half of the picture filled the screen and the
+            // logos sat at the bottom.
+            float k = (float)(width / fs->width);
+            g.sy0 *= k;
+            g.sy1 *= k;
+        }
         if (haveGeom && g.serrate) oy = (float)((u32)oy & ~1u);   // interlaced: both fields are in the image
         draw_display(x, fs->showFront && fs->front ? fs->front : fs->tex, haveGeom ? &g : NULL, ox, oy,
                      x->uMax / (fs->width ? fs->width : 320), x->vMax / (fs->height ? fs->height : 240), fs->width, fs->height);
@@ -2467,11 +2478,12 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->shownV = x->vMax;
         x->shownTiled = 1;
     }
-    else if (x->drewFrame || ++x->blankPresents > 300)
+    else if (x->drewFrame || ++x->blankPresents > 600)
         show_rdram_frame(x, vi, origin, width, type == 3);
     // else: at boot the VI often shows RDRAM the game still uses for other data
-    // (noise); stay black until the RDP draws a frame, or for 300 VIs at most
-    // (games that draw their first images with the CPU).
+    // (noise); stay black until the RDP draws a frame, or for 600 VIs at most
+    // (games that draw their first images with the CPU; DK64 draws its first
+    // frame after more than 300: a second of noise at boot).
     {
         // The VI moved to another image: the slots it left show their newest picture again.
         u32 k;
