@@ -2,7 +2,7 @@
 
 Harissa64 is a Nintendo 64 emulator for the Xbox 360. It runs on modded consoles (RGH or JTAG) and starts like any other homebrew, from Aurora, FreeStyle Dash or another dashboard. The name comes from harissa, the Tunisian chili paste.
 
-It's a hobby project, written from scratch, and it's still a work in progress. Many games already run at full speed, some are slow in places, and most haven't been tried yet. See the [games list](docs/games.md) for what we've tested.
+It's a hobby project, written from scratch, and this is its first release. A lot of games already run at full speed, a few are still slow in busy scenes, and most of the library hasn't been tried yet. The [games list](docs/games.md) shows what we tested and how fast it runs.
 
 Use it only with games you own. No ROMs are included, and none will be.
 
@@ -14,11 +14,11 @@ Use it only with games you own. No ROMs are included, and none will be.
 
 ## Installing
 
-1. Copy the Harissa64 folder (with `harissa64v2.xex` inside) to your console, for example to `Hdd1:\Emulators\Harissa64\`.
+1. Copy the Harissa64 folder (with `default.xex` inside) to your console, for example to `Hdd1:\Emulators\Harissa64\`.
 2. Make a `roms` folder next to the `.xex` and put your games in it.
-3. Start `harissa64v2.xex` from your dashboard. Pick a game in the list and press A.
+3. Scan the folder in your dashboard, then start Harissa64. Pick a game in the list and press A.
 
-The emulator remembers the last game you picked.
+The emulator remembers the last game you picked. In Aurora it shows up as "Harissa64" with a pepper icon. A cover and a background are in the `art` folder: in Aurora, open the game's menu, go to the asset manager and load them from there.
 
 ## Controls
 
@@ -39,9 +39,11 @@ While playing:
 - **BACK + D-pad left/right**: change the state slot (1 to 9).
 - **Hold BACK for 3 seconds**: back to the game list.
 
+In the game list, X shows the About page.
+
 ## Saves
 
-Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. You can copy that folder to keep a backup.
+Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. Copy that folder somewhere if you want a backup.
 
 ## Settings
 
@@ -56,12 +58,18 @@ The **Graphics** page has four presets:
 
 You can also pick the resolution (native, x2 or x3), widescreen 16:9 (the 3D view gets wider instead of being stretched; it works better in some games than others), texture filtering, edge smoothing and a few screen effects.
 
+## Good to know
+
+- Some games show a black screen for about 4 seconds when they start. That's the cartridge's own boot check, it's normal.
+- The speed shown in the corner (turn it on in the settings) is the N64's frame rate: 60 is full speed, 50 for European games.
+- If a game misbehaves, try the other CPU mode in the settings (the interpreter is much slower but useful to compare), and tell us about it.
+
 ## Building
 
 You need Visual Studio 2010 and the Xbox 360 SDK. Open `platform/xbox360/harissa64v2.sln` and build the Release configuration for the Xbox 360 platform.
 
 ## Credits and licence
 
-Harissa64 is free software under the GPL v2, see [LICENSE](LICENSE). Some parts come from or are based on other open-source projects (ares, ParaLLEl-RDP, mupen64plus, libdragon, GLideN64, zlib and others). [THIRD_PARTY.md](THIRD_PARTY.md) lists them with their licences. Thanks to all of them.
+Harissa64 is free software under the GPL v2, see [LICENSE](LICENSE). Some parts come from or are based on other open-source projects (ares, ParaLLEl-RDP, mupen64plus, libdragon, GLideN64, zlib and others), and the interface uses the Inter font. [THIRD_PARTY.md](THIRD_PARTY.md) lists them with their licences. Thanks to all of them.
 
 Nintendo 64 is a trademark of Nintendo. This project is not affiliated with or endorsed by Nintendo.
