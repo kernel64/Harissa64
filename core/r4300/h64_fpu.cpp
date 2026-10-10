@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "../common/h64_fenv.h"
+#include "../dynarec/h64_jit.h"
 
 #if defined(_MSC_VER)
 #pragma fenv_access(on)
@@ -219,14 +220,29 @@ static void compare(H64Cpu *cpu, int cond, int unordered, int less, int equal, i
     set_c(cpu, ((cond & 4) && less) || ((cond & 2) && equal) || ((cond & 1) && unordered));
 }
 
+// The recompiler's fast FPU (mupen64plus's way) leaves denormal results
+// where the VR4300 with FS=1 flushes them to zero; the next operation run
+// here would then take an Unimplemented Operation exception on them (a game
+// crash). With the fast FPU and FS=1, denormal operands count as the zero
+// the hardware would have produced.
+static int lax_flush(H64System *sys)
+{
+    return sys->jit && sys->jit->fastFpu && (sys->cpu.fcr31 & FCR31_FS);
+}
+static u32 s_flush(u32 a) { return s_is_denormal(a) ? (a & 0x80000000u) : a; }
+static u64 d_flush(u64 a) { return d_is_denormal(a) ? (a & 0x8000000000000000ull) : a; }
+
 // ---- Execution ----
 static void op_single(H64System *sys, u32 op)
 {
     H64Cpu *cpu = &sys->cpu;
     int fs = RD(op), ft = RT(op), fd = SA(op);
     u32 a = get_fs32(cpu, fs), b = get_ft32(cpu, ft), out;
-    volatile float x = f_from(a), y = f_from(b);
+    volatile float x, y;
     u32 cause = 0;
+    if (lax_flush(sys)) { a = s_flush(a); b = s_flush(b); }
+    x = f_from(a);
+    y = f_from(b);
     switch (FUNCT(op))
     {
     case 0x00: case 0x01: case 0x02: case 0x03:   // ADD SUB MUL DIV
@@ -307,8 +323,11 @@ static void op_double(H64System *sys, u32 op)
     H64Cpu *cpu = &sys->cpu;
     int fs = RD(op), ft = RT(op), fd = SA(op);
     u64 a = get_fs64(cpu, fs), b = cpu->fgr[ft], out;
-    volatile double x = d_from(a), y = d_from(b);
+    volatile double x, y;
     u32 cause = 0;
+    if (lax_flush(sys)) { a = d_flush(a); b = d_flush(b); }
+    x = d_from(a);
+    y = d_from(b);
     switch (FUNCT(op))
     {
     case 0x00: case 0x01: case 0x02: case 0x03:

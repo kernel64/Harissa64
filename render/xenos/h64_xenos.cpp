@@ -1310,12 +1310,14 @@ static void check_texture_source(Xenos *x)
 {
     u32 a = x->st->texAddr & 0xFFFFFF, i;
     int found = -1;
-    // The most recently drawn image holding the address (an older, bigger one may cover it too).
+    // The image holding the address that starts closest to it, as for the VI
+    // (h64_xenos_present_vi): another image's guessed extent may cover it too.
     for (i = 0; i < FB_SLOTS; i++)
     {
         const FbSlot *s = &x->fb[i];
         if (s->tex && (s->valid || s->gpuDirty) && a >= s->addr && a < s->addr + s->width * s->height * s->bytes &&
-            (found < 0 || s->lastUse > x->fb[found].lastUse))
+            (found < 0 || s->addr > x->fb[found].addr ||
+             (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;
     }
     if (found < 0 || !x->fb[found].gpuDirty) return;
@@ -1869,14 +1871,18 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     u32 origin = vi[1] & 0xFFFFFF, width = vi[2] & 0xFFF, type = vi[0] & 3, i;
     int found = -1;
     if (x->curSlot >= 0 && x->targetBound) resolve_current(x);
-    // The most recently drawn image holding the origin: a stale bigger one can
-    // cover it too (DK64's 640x480 intro buffers span its 320x240 ones; the
-    // first match showed a black frame every other game frame).
+    // The image holding the origin that starts closest to it (the most recently
+    // drawn one at equal addresses): another image's guessed extent can cover
+    // it too. DK64's stale 640x480 intro buffers span its 320x240 ones; the
+    // first match showed a black frame every other game frame. Conker's
+    // buffers are closer than a guessed 240 lines: the most recently drawn
+    // one, which covered the other, gave the same black frames.
     for (i = 0; i < FB_SLOTS; i++)
     {
         const FbSlot *s = &x->fb[i];
         if (s->valid && s->tex && origin >= s->addr && origin < s->addr + s->width * s->height * s->bytes &&
-            (found < 0 || s->lastUse > x->fb[found].lastUse))
+            (found < 0 || s->addr > x->fb[found].addr ||
+             (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;
     }
     if (x->debug == 7 && x->presentCount >= 600 && x->presentCount < 624)
