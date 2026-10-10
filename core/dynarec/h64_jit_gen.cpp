@@ -2446,6 +2446,79 @@ static void emit_branch(Gen *g, u32 op, u32 pc, u32 ds)
     }
 }
 
+// A conditional branch inside a block (side exit): taken, it leaves through
+// a linked exit after its delay slot; not taken, the block goes on with the
+// registers still cached. Likely branches skip the slot when not taken.
+// Returns 0 when the block had to end here (the code after it is unreachable).
+static int emit_side_branch(Gen *g, u32 op, u32 pc, u32 ds)
+{
+    H64PpcCode *c = &g->c;
+    int likely, dyn, done = 0;
+    u64 target;
+    u32 dsPc = pc + 4, cont = NO_BRANCH, pend, slow[16], nSlow = 0, i;
+    RegCache slotPre;
+    if ((op >> 26) == 0x11 && !g->fpuKnown)
+    {
+        emit_branch(g, op, pc, ds);   // COP1 not checked yet in this block: an ordinary block end
+        return 0;
+    }
+    g->hasBc1Slow = 0;
+    emit_branch_head(g, op, pc, &likely, &dyn, &target);
+    g->pending++;   // the branch itself
+    begin_insn(g);   // (its evictions run on both paths)
+    slotPre = g->rc;
+    pend = g->pending;
+    if (likely) cont = bc_not_taken(g);
+    if (!is_branch(ds) && !ends_block(ds))
+    {
+        done = emit_alu(g, ds);
+        if (!done && (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) ||
+                      emit_fpu_fast(g, ds, slow, &nSlow)))
+        {
+            done = 1;
+            if (s_nTails >= H64_JIT_MAX_INSNS + 2) g->c.overflow = 1;
+            else
+            {
+                ColdTail *t = &s_tails[s_nTails++];
+                t->kind = TAIL_SLOT;
+                for (i = 0; i < nSlow && i < 16; i++) t->slow[i] = slow[i];
+                t->nSlow = nSlow < 16 ? nSlow : 16;
+                t->pc = dsPc;
+                t->pend = pend;
+                t->pre = slotPre;
+                t->dyn = 0;
+                t->target = target;
+                t->condAlways = g->condAlways;
+                t->condBit = g->condBit;
+                t->condBo = g->condBo;
+            }
+        }
+    }
+    if (done)
+    {
+        g->pending = pend + 1;
+        if (likely)
+            link_exit_n(g, g->pending, (u32)target);
+        else
+        {
+            u32 nt = bc_not_taken(g);
+            link_exit_n(g, g->pending, (u32)target);
+            ppc_patch_here(c, nt);
+        }
+    }
+    else
+        emit_slot_interp(g, 0, target, dsPc);   // both outcomes leave
+    if (likely)
+    {
+        // Not taken: the slot did not run.
+        ppc_patch_here(c, cont);
+        g->rc = slotPre;
+        g->pending = pend;
+        return 1;
+    }
+    return done;
+}
+
 static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
 {
     H64PpcCode *c = &g->c;
@@ -2557,6 +2630,30 @@ static void classify_idle(H64JitBlock *b, const u32 *ops, u32 n)
     }
 }
 
+// A branch the block may go on after (emit_side_branch): conditional,
+// not back to the block's start, its slot neither a branch nor a COP0
+// instruction.
+static int side_branch_ok(u32 op, u32 pc, u32 ds, u32 blockPc)
+{
+    u32 opc = op >> 26, rt = (op >> 16) & 31;
+    u64 target = sext32(pc) + 4 + ((u64)(s64)(s16)(op & 0xFFFF) << 2);
+    int cond = (opc >= 0x04 && opc <= 0x07) || (opc >= 0x14 && opc <= 0x17) || (opc == 0x11 && ((op >> 21) & 31) == 0x08) ||
+               (opc == 0x01 && (rt & 0x0C) == 0 && (rt & 0x10 ? rt <= 0x13 : 1));
+    if (!cond || is_branch(ds) || ends_block(ds)) return 0;
+    if (opc == 0x04 && ((op >> 21) & 31) == rt) return 0;   // BEQ rs,rs: always taken
+    return target != sext32(blockPc);
+}
+
+// A block already starts at pc: a block going on there would duplicate its
+// code (Perfect Dark compiled 3.7 times as many instructions).
+static int block_starts_at(const H64Jit *j, u32 pc)
+{
+    const H64JitBlock *b = j->hash[(pc >> 2) & 8191];
+    for (; b; b = b->hashNext)
+        if (b->valid && b->vpc == pc) return 1;
+    return 0;
+}
+
 // ---- Block compilation ----
 H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
 {
@@ -2567,10 +2664,13 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     int coldOverflow = 0;
     u32 pageEnd = (paddr | 0xFFF) + 1;
     int endsWithBranch = 0;
+    u8 side[H64_JIT_MAX_INSNS];
+    int superOk = !j->noSuper && !j->noLink && !j->fullExits && !j->noNative && h64_jit_kernel_mode(&sys->cpu);
     u8 *start;
 
-    // Formation: stop at the page end, after a branch's delay slot, after a
-    // COP0 instruction, or at the size limit.
+    // Formation: stop at the page end, after a branch's delay slot (but see
+    // side exits), after a COP0 instruction, or at the size limit.
+    memset(side, 0, sizeof(side));
     while (n < H64_JIT_MAX_INSNS && paddr + n * 4 < pageEnd)
     {
         u32 op = h64_load_be32(sys->rdram + paddr + n * 4);
@@ -2582,6 +2682,15 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
             ops[n++] = op;
             ops[n] = h64_load_be32(sys->rdram + paddr + n * 4);
             n++;
+            // A conditional branch not back to the block's start (idle loops
+            // stay two- or three-instruction blocks) with an ordinary slot:
+            // the block goes on after it (side exit), in kernel mode only.
+            if (superOk && side_branch_ok(ops[n - 2], pc + (n - 2) * 4, ops[n - 1], pc) && n < H64_JIT_MAX_INSNS &&
+                paddr + n * 4 < pageEnd && !block_starts_at(j, pc + n * 4))
+            {
+                side[n - 2] = 1;
+                continue;
+            }
             endsWithBranch = 1;
             break;
         }
@@ -2652,6 +2761,13 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     {
         u32 ipc = pc + i * 4, op = ops[i];
         if (!(endsWithBranch && i == n - 2)) begin_insn(&g);
+        if (side[i])
+        {
+            j->stats.nativeInsns += 2;
+            if (!emit_side_branch(&g, op, ipc, ops[i + 1])) { endsWithBranch = 1; break; }   // the rest is unreachable
+            i++;
+            continue;
+        }
         if (endsWithBranch && i == n - 2)
         {
             if (g.native && ((op >> 26) != 0x11 || ((op >> 21) & 31) == 0x08))

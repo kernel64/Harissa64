@@ -29,6 +29,7 @@ struct Config
     int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
     int fpCache;        // fpcache=0: no COP1 registers kept in host FPRs (diagnosis)
     int fullExits;      // fullexits=1: the dynarec's older inline linked exits (A/B check)
+    int superblocks;    // superblocks=0: blocks end at every branch (A/B check)
     int fastFpu;        // fastfpu=0: exact COP1 (FCR31 cause/flag bits kept); 1 by default
     int smooth;         // smooth=0: no edge smoothing when frames are shown
     int resScale;       // resolution=1|2|3: internal resolution, native 320x240 x1, x2, x3 (default)

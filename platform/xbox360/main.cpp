@@ -487,6 +487,7 @@ static int s_noRegCache; // regcache=0
 static int s_noFpCache;  // fpcache=0
 static int s_fastFpu;    // fastfpu=1
 static int s_fullExits;  // fullexits=1
+static int s_noSuper;    // superblocks=0
 
 static u32 s_cpi = 2;    // cpi=N
 
@@ -567,6 +568,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
     if (sys->jit) sys->jit->noFpCache = s_noFpCache;
     if (sys->jit && s_fastFpu) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
     if (sys->jit && s_fullExits) { sys->jit->fullExits = 1; h64_jit_reset(sys); }
+    if (sys->jit && s_noSuper) { sys->jit->noSuper = 1; h64_jit_reset(sys); }
     sys->cpu.cpi = s_cpi;
     return sys;
 }
@@ -1469,6 +1471,7 @@ int __cdecl main()
     s_noFpCache = !cfg.fpCache;
     s_fastFpu = cfg.fastFpu;
     s_fullExits = cfg.fullExits;
+    s_noSuper = !cfg.superblocks;
     s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 2;
     H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s jitfpu=%d cpi=%d regcache=%d", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)",
              cfg.jitFpu, cfg.cpi, cfg.regCache);

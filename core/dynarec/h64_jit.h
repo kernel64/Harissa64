@@ -110,6 +110,7 @@ struct H64Jit
     u32 linkCount, linkCap;
     int noLink;                     // debugging: every block returns to the dispatcher
     int fullExits;                  // debugging: linked exits without rtLink (the inline form)
+    int noSuper;                    // debugging: blocks end at every branch (no side exits)
 
     H64JitStats stats;
     u32 *opHist;          // optional (debug, 232 entries): instructions run through the interpreter helper,

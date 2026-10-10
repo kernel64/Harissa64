@@ -384,7 +384,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 asyncCycles = 0;
     u32 traceFrames = 0, traceStep = 0;
-    int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0, noFpCache = 0, fastFpu = 0, fullExits = 0;
+    int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0, noFpCache = 0, fastFpu = 0, fullExits = 0, noSuper = 0;
     H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
@@ -465,6 +465,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--no-fp-cache")) noFpCache = 1;
         else if (!strcmp(argv[i], "--fast-fpu")) fastFpu = 1;
         else if (!strcmp(argv[i], "--full-exits")) fullExits = 1;
+        else if (!strcmp(argv[i], "--no-superblocks")) noSuper = 1;
         else if (!strcmp(argv[i], "--cpi") && i + 1 < argc) cpi = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
@@ -538,6 +539,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (noFpCache && sys->jit) sys->jit->noFpCache = 1;
     if (fastFpu && sys->jit) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
     if (fullExits && sys->jit) sys->jit->fullExits = 1;
+    if (noSuper && sys->jit) sys->jit->noSuper = 1;
     if (jitDump && sys->jit) sys->jit->dumpFile = fopen(jitDump, "wb");
     if (jitProf && sys->jit) { sys->jit->prof = 1; h64_jit_reset(sys); }
     sys->isvSink = isv_sink;
