@@ -113,6 +113,8 @@ struct Xenos
     int cpuFbNext;
 
     std::map<u64, IDirect3DPixelShader9 *> shaders;
+    std::map<u64, int> shaderT1;   // per combiner shader: whether it samples t1 (unit 1)
+    int usesT1;                    // the shader set by the last setup_combined
     std::map<u64, TexEntry> textures;
     u32 textureBytes;   // memory held by the texture cache
     // Free textures by size (w << 16 | h), for reuse: CreateTexture is slow on
@@ -145,6 +147,7 @@ struct Xenos
     u32 copyBacks;
     u32 useCounter;
     int debug;
+    u32 debugFrom;     // xenosdebug=8: the first of the two presents logged (xenosdebug=8000+N: present N)
     IDirect3DTexture9 *shown;   // texture shown at the last present
     int shownSlot;              // frame slot the VI showed at the last present (-1: none)
     float shownU, shownV;
@@ -366,10 +369,15 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
     char src[4096], c0[512], c1[512];
     IDirect3DPixelShader9 *ps;
     if (it != x->shaders.end())
+    {
+        x->usesT1 = x->shaderT1[key];
         return it->second;
+    }
     combiner_cycle(c0, sizeof(c0), &x->st->combiner[0], 0);
     if (flags & KEY_TWO_CYCLE) combiner_cycle(c1, sizeof(c1), &x->st->combiner[1], 1);
     else c1[0] = 0;
+    x->usesT1 = strstr(c0, "t1.") || strstr(c1, "t1.");
+    x->shaderT1[key] = x->usesT1;
     if (x->debug == 1) { strcpy(c0, "  comb = float4(1.0, 0.0, 0.0, 1.0);\n"); c1[0] = 0; }
     if (x->debug == 2) { strcpy(c0, "  comb = float4(shade.rgb, 1.0);\n"); c1[0] = 0; }
     if (x->debug == 3) { strcpy(c0, "  comb = float4(t0.rgb, 1.0);\n"); c1[0] = 0; }
@@ -695,6 +703,16 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     it = x->textures.find(key);
     if (it != x->textures.end())
         return it->second.tex;
+    if (x->debug == 8 && x->presentCount >= x->debugFrom && x->presentCount < x->debugFrom + 2)
+    {
+        // xenosdebug=8: every texture decoded during two frames (cache misses).
+        u32 th = 0, k;
+        for (k = 0; k < 4096; k += 4) th = th * 31 + h64_load_be32(st->tmem + k);
+        H64_INFO("[xtex] miss at present %u: tile %u fmt %u size %u tlut %d/%d pal %u off %03X stride %u mask %u/%u flags %X "
+                 "%ux%u at %d,%d win %d | last image %06X | key %08X%08X tmem %08X", x->presentCount, tileIndex & 7, t->fmt, t->size,
+                 tlut, tlutType, t->palette, t->offset, t->stride, t->maskS, t->maskT, t->flags, b->w, b->h, b->ox, b->oy,
+                 x->win.active && x->win.tile == (tileIndex & 7), st->texAddr, (u32)(key >> 32), (u32)key, th);
+    }
 
     if (x->textures.size() >= MAX_TEXTURES || x->textureBytes + b->w * b->h * 4 > MAX_TEXTURE_BYTES)
     {
@@ -714,6 +732,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         for (y = 0; y < b->h; y++)
         {
             s32 ty = mask_coord(t->maskT, (t->flags & TILE_MIRROR_T) != 0, (s32)y + b->oy);
+            if (h64_rdp_fetch_row_argb(st, t, (u32)b->ox, (u32)ty, b->w, tlut, &x->decodeBuf[y * b->w])) continue;
             for (xx = 0; xx < b->w; xx++)
             {
                 H64RdpTexel tx;
@@ -1504,7 +1523,15 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
         // unit 0 must be bound again (OoT's title logo: one white strip for a frame).
         u32 retires = x->retires;
         bind_texture(x, 0, tile, tb0);
-        bind_texture(x, 1, (tile + 1) & 7, tb1);
+        if (x->usesT1)
+            bind_texture(x, 1, (tile + 1) & 7, tb1);
+        else
+        {
+            // Tile + 1 is not sampled: not decoded (PD's cutscene strips: one
+            // useless texture each, filling the texture arena).
+            *tb1 = *tb0;
+            x->dev->SetTexture(1, x->dummy);
+        }
         if (x->retires != retires) bind_texture(x, 0, tile, tb0);
     }
     set_blend(x, two ? 1 : 0);
@@ -2238,8 +2265,11 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
 void h64_xenos_set_debug(H64Renderer *r, int mode)
 {
     Xenos *x = X(r);
+    x->debugFrom = 2500;
+    if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
     x->debug = mode;
     x->shaders.clear();   // leaks the compiled shaders: debug only
+    x->shaderT1.clear();
 }
 
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset)

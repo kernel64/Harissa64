@@ -273,6 +273,26 @@ void h64_rdp_fetch_texel(const H64RdpState *st, const H64RdpTile *tile, u32 s, u
     fetch(st, tile, s, t, tlut, tlutType, 0, 0, out);
 }
 
+// The same texels as fetch() for a whole row (PD's cutscenes draw their
+// previous frame back in ~180 RGBA16 strips a frame: ~270000 texels, 25 ms
+// a frame one texel at a time on the console).
+int h64_rdp_fetch_row_argb(const H64RdpState *st, const H64RdpTile *tile, u32 s0, u32 t, u32 n, int tlut, u32 *out)
+{
+    u32 i, base, odd;
+    if (tlut || tile->size != 2 || tile->fmt != TEX_RGBA || tile->maskS) return 0;
+    base = tile->offset + tile->stride * t;
+    odd = (t & 1) << 1;
+    for (i = 0; i < n; i++)
+    {
+        u32 bo = (base + (s0 + i) * 2) & 0xFFF;
+        u32 a = (((bo >> 1) ^ odd) & 0x7FF) * 2;   // tm16(index16(...))
+        u32 w = (u32)st->tmem[a] << 8 | st->tmem[a + 1];
+        u32 r = (w >> 11) & 31, g = (w >> 6) & 31, b = (w >> 1) & 31;
+        out[i] = ((w & 1) ? 0xFF000000u : 0) | ((r << 3) | (r >> 2)) << 16 | ((g << 3) | (g >> 2)) << 8 | ((b << 3) | (b >> 2));
+    }
+    return 1;
+}
+
 static void fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, u32 chromaX, H64RdpTexel *o)
 {
     u32 bo = tile->offset + tile->stride * t;

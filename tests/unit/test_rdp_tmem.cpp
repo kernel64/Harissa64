@@ -93,6 +93,19 @@ void test_rdp_tmem_rgba16(H64TestContext *ctx)
         }
     // The odd-line swap itself: line 1, texel 0 lives in the second 32-bit half of its word.
     H64_CHECK_EQ(ctx, h64_load_be16(sys->rdpState->tmem + 16 + 4), h64_load_be16(sys->rdram + TEX + 8 * 2));
+    // The row fast path (GPU renderers) gives the same texels, from any start.
+    for (y = 0; y < 4; y++)
+    {
+        u32 row[7], i;
+        H64_CHECK(ctx, h64_rdp_fetch_row_argb(sys->rdpState, &sys->rdpState->tiles[0], 1, y, 7, 0, row));
+        for (i = 0; i < 7; i++)
+        {
+            h64_rdp_fetch_texel(sys->rdpState, &sys->rdpState->tiles[0], 1 + i, y, 0, 0, &t);
+            H64_CHECK_EQ(ctx, row[i], (u32)(t.c[3] & 0xFF) << 24 | (u32)(t.c[0] & 0xFF) << 16 | (u32)(t.c[1] & 0xFF) << 8 |
+                                          (u32)(t.c[2] & 0xFF));
+        }
+    }
+    H64_CHECK(ctx, !h64_rdp_fetch_row_argb(sys->rdpState, &sys->rdpState->tiles[0], 0, 0, 1, 1, &s));   // TLUT: not here
     free_sys(sys);
 }
 

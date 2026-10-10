@@ -116,6 +116,10 @@ void h64_rdp_sample(H64RdpState *st, const H64RdpTile *tile, const s32 *stIn, in
 // CI texels come out as their index. For GPU renderers.
 void h64_rdp_fetch_texel(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, int tlut, int tlutType,
                          H64RdpTexel *out);
+// n texels of row t from s0 on as A8R8G8B8 (as h64_rdp_fetch_texel gives
+// them), when the format has a fast path (RGBA16 without TLUT, no S mask):
+// returns 0 otherwise.
+int h64_rdp_fetch_row_argb(const H64RdpState *st, const H64RdpTile *tile, u32 s0, u32 t, u32 n, int tlut, u32 *out);
 // The state of the software RDP (allocated on first use).
 H64RdpState *h64_rdp_state(H64System *sys);
 s32 h64_rdp_sample_copy(H64RdpState *st, const H64RdpTile *tile, s32 s, s32 t, int sOffset, int tlut, int fbSize);
