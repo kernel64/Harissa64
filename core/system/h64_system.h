@@ -102,6 +102,8 @@ struct H64Options
                             // clip ratio's guard band and take clipped vertices' fog from their depth, as the
                             // microcodes do
     int gfxKeepOffscreen;   // 16:9 widescreen: gfxViewportClip off (more than the viewport is shown)
+    int gfxOtherModeInit;   // graphics HLE (game profile): each task starts from the microcode's other modes
+    int gfxNoCopyBack;      // GPU renderer (game profile): frames it drew are never copied back for texture loads
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
