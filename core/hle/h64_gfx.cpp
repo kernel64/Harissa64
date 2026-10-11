@@ -313,7 +313,7 @@ static void cimg_track(H64Gfx *g, u32 start, u32 rowBytes, u32 rows)
 {
     CimgSig *c = 0;
     u32 k, r;
-    if (!rowBytes || rowBytes * rows > 96 * 1024 || start + rowBytes * rows > H64_RDRAM_SIZE) return;
+    if (!g->sys->options.gfxCpuWritten || !rowBytes || rowBytes * rows > 96 * 1024 || start + rowBytes * rows > H64_RDRAM_SIZE) return;
     for (k = 0; k < 8 && !c; k++)
         if (g->cimgSig[k].rows && g->cimgSig[k].start == start) c = &g->cimgSig[k];
     for (k = 0; k < 8 && !c; k++)
@@ -1095,7 +1095,7 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     ClipVtx poly[2][16];
     H64RenderVertex sv[16];
     u32 gm = geom(g), flags = 0;
-    int n = 3, cur = 0, k, needClip = 0, guard, keep = g->sys->options.gfxKeepOffscreen;
+    int n = 3, cur = 0, k, needClip = 0, guard, keep = !g->sys->options.gfxViewportClip || g->sys->options.gfxKeepOffscreen;
     float area = 0, iw[3];
     g->nTris++;
     if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || i2 >= GFX_VTX_MAX) return;
@@ -1211,6 +1211,15 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
                     if (poly[cur][k].w < 0.0001f) poly[cur][k].w = 0.0001f;
         }
         if (n < 3) return;
+        // The fog factor of the new vertices comes from their own depth, as
+        // the microcodes compute it, not interpolated (OoT's field at the
+        // title screen came out foggier than with the real microcode).
+        if ((gm & GM_FOG) && (gm & GM_SMOOTH) && !keep)
+            for (k = 0; k < n; k++)
+            {
+                float f = poly[cur][k].z / poly[cur][k].w * g->fogMul + g->fogOff;
+                poly[cur][k].a = f < 0 ? 0.0f : f > 255.0f ? 255.0f : f;
+            }
     }
     for (k = 0; k < n; k++)
     {
