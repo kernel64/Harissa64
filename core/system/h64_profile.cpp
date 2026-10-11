@@ -52,11 +52,16 @@ void h64_apply_game_profile(H64System *sys)
 {
     const char *name;
     u32 f = h64_game_profile(sys->rom.gameCode, &name);
+    h64_apply_profile_flags(sys, f);
+    if (name) H64_INFO("[profile] %s: flags %X", name, f);
+}
+
+void h64_apply_profile_flags(H64System *sys, u32 f)
+{
     sys->options.gfxLateParse = (f & H64_GP_LATE_PARSE) != 0;
     sys->options.gfxViewportClip = (f & H64_GP_VIEWPORT_CLIP) != 0;
     sys->options.gfxCpuWritten = (f & H64_GP_CPU_WRITTEN) != 0;
     sys->options.gfxOtherModeInit = (f & H64_GP_OTHERMODE_INIT) != 0;
     sys->options.gfxNoCopyBack = (f & H64_GP_NO_COPY_BACK) != 0;
     sys->options.gfxS2dex1 = (f & H64_GP_S2DEX1) != 0;
-    if (name) H64_INFO("[profile] %s: flags %X", name, f);
 }

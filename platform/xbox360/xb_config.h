@@ -39,6 +39,7 @@ struct Config
     int screen;         // screen=0..4: none, scanlines, CRT, curved CRT, LCD grid (crt=1: curved CRT)
     int aspect;         // aspect=0|1|2: 4:3, 16:9 widescreen (wider 3D), 16:9 stretched
     int showFps;        // showfps=1: frames shown per second in a corner
+    int gameFlags;      // gameflags=HEX: the game's profile flags instead of the table's (checks; -1: the table)
     int updateCheck;    // updatecheck=0: do not ask GitHub for a newer release (xb_update.cpp); 2: as if running 0.0.0 (testing)
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
     int parseWorker;    // parseworker=0: display lists parsed on the graphics worker too (no second worker)
