@@ -771,8 +771,9 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         else key = mem_hash(key, st->tmem + 0x800, 0x800);
     }
     it = x->textures.find(key);
-    if (it != x->textures.end())
+    if (it != x->textures.end() && x->debug != 12)   // xenosdebug=12: every texture decoded again (diagnosis)
         return it->second.tex;
+    if (it != x->textures.end()) x->textures.erase(it);
     if (x->debug == 8 && x->presentCount >= x->debugFrom && x->presentCount < x->debugFrom + 2)
     {
         // xenosdebug=8: every texture decoded during two frames (cache misses).
