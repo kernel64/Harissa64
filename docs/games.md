@@ -229,7 +229,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Re-Volt | Not tested yet | - | |
 | Ready 2 Rumble Boxing | Not tested yet | - | |
 | Ready 2 Rumble Boxing: Round 2 | Not tested yet | - | |
-| Resident Evil 2 | Problems | ~15 | Menus at full speed, but the intro video is slow (about 15). |
+| Resident Evil 2 | Problems | ~15 | Menus work, but in the game the picture is only noise. The intro video is slow (about 15). |
 | Ridge Racer 64 | Not tested yet | - | |
 | Road Rash 64 | Not tested yet | - | |
 | Roadsters Trophy | Not tested yet | - | |
