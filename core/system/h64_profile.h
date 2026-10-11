@@ -21,7 +21,9 @@ enum
     H64_GP_OTHERMODE_INIT = 16, // options.gfxOtherModeInit
     H64_GP_NO_COPY_BACK = 32,   // options.gfxNoCopyBack
     H64_GP_S2DEX1 = 64,         // options.gfxS2dex1
-    H64_GP_COPY_BACK_FULL = 128 // options.gfxCopyBackFull
+    H64_GP_COPY_BACK_FULL = 128,// options.gfxCopyBackFull
+    H64_GP_RDRAM_COPY = 256,    // options.gfxRdramCopy
+    H64_GP_COPY_BACK_WHOLE = 512 // options.gfxCopyBackWhole
 };
 
 // The flags for a game code (4 characters, the region ignored); *name gets

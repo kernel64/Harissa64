@@ -127,6 +127,11 @@ struct Xenos
     std::map<int, IDirect3DPixelShader9 *> psDisplay;   // display pass variants, compiled on use
     IDirect3DTexture9 *dummy;
     IDirect3DTexture9 *cpuFb[2];
+    // Profile gfxRdramCopy: what the copy-mode rectangles wrote (see
+    // rdram_copy_rect), kept in an RDRAM-sized shadow since the frame may be
+    // drawn by a later job (another snapshot); the range not yet used.
+    u8 *ramShadow;
+    u32 ramCopyLo, ramCopyHi, ramCopyGen;
     int cpuFbNext;
 
     std::map<u64, IDirect3DPixelShader9 *> shaders;
@@ -1251,14 +1256,22 @@ static void resolve_current(Xenos *x)
 }
 
 static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32);
+static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 width, int bpp32);
 
 // Makes the N64 target hold the colour image the RDP draws to now.
 static void select_framebuffer(Xenos *x)
 {
     u32 addr = x->st->colorAddr & 0xFFFFFF, i;
-    int best = -1;
+    int best = -1, ramFresh;
     FbSlot *s;
-    if (x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound)
+    // Resident Evil 2 (profile gfxRdramCopy) copies its background into the
+    // frame's memory through a wider image, then draws in the frame: the
+    // frame starts from that memory, not from what the GPU last drew there.
+    {
+        u32 bytes = x->st->colorWidth * fb_height(x->st->colorWidth) * 2;
+        ramFresh = x->ramShadow && x->ramCopyHi > x->ramCopyLo && addr < x->ramCopyHi && addr + bytes > x->ramCopyLo;
+    }
+    if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound)
         return;
     resolve_current(x);
     bind_n64_target(x);
@@ -1312,6 +1325,16 @@ static void select_framebuffer(Xenos *x)
             s->showFront = 1;
             s->splitAt = x->presentCount + 1;
         }
+    }
+    if (ramFresh)
+    {
+        u32 wdt = x->st->colorWidth;
+        IDirect3DTexture9 *t = upload_mem(x, x->ramShadow, addr, wdt, x->st->colorFmt == FB_RGBA8888);
+        if (t)
+            draw_textured(x, t, (float)wdt / RT_WIDTH, (float)fb_height(wdt) / RT_HEIGHT, 0.0f, 0.0f, (float)x->rtW,
+                          (float)x->rtH, (float)RT_WIDTH, (float)RT_HEIGHT);
+        x->ramCopyLo = x->ramCopyHi = 0;
+        x->stateDirty = 1;
     }
     s->gpuDirty = 1;
     s->cleanLo = s->cleanHi = 0;
@@ -1501,6 +1524,15 @@ static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
     if (hi <= s->addr || no_copy_back(x)) { copy_back_timed(x, slot); return; }
     r0 = lo > s->addr ? (lo - s->addr) / rb : 0;
     r1 = (hi - s->addr + rb - 1) / rb;
+    // Profile: the whole image at the first load (Dr. Mario reads its
+    // background back six lines at a time, ~40 loads a frame, each waiting
+    // for the GPU).
+    if (x->sys->options.gfxCopyBackWhole)
+    {
+        r0 = 0;
+        r1 = s->height ? s->height : 240;
+        if (s->drawnH && s->drawnH < r1) r1 = s->drawnH;   // as copy_back_rows clamps it
+    }
     if (s->cleanHi > s->cleanLo && r0 >= s->cleanLo && r1 <= s->cleanHi &&
         (!s->cleanSnap || (x->st->loadRam && s->cleanGen == x->st->loadRamGen)))
         return;   // copied back already (into this job's snapshot, if it was one)
@@ -2152,6 +2184,61 @@ static int fb_rect_source(Xenos *x, const H64RdpTile *t, int flip, float s, floa
     return 1;
 }
 
+// Profile gfxRdramCopy: a copy-mode rectangle drawing 16-bit texels 1:1 into
+// a 16-bit image moves memory, as the RDP does: from the texture image
+// (SETTIMG; the load used the same coordinates) to the colour image, in the
+// job's snapshot (deferred rendering) or RDRAM. Resident Evil 2 copies its
+// background and its depth this way through 512-pixel images and then draws
+// in a 328-pixel frame at the same address (select_framebuffer). 0: not such
+// a rectangle.
+static int rdram_copy_rect(Xenos *x, const u32 *w)
+{
+    const H64RdpState *st = x->st;
+    const H64RdpTile *t = &st->tiles[(w[1] >> 24) & 7];
+    u32 ulx = ((w[1] >> 12) & 0xFFF) >> 2, uly = (w[1] & 0xFFF) >> 2, lrx = ((w[0] >> 12) & 0xFFF) >> 2, lry = (w[0] & 0xFFF) >> 2;
+    s32 s0 = (s16)(w[2] >> 16) >> 5, t0 = (s16)w[2] >> 5;
+    u32 src = st->texAddr & 0xFFFFFF, dst = st->colorAddr & 0xFFFFFF, tw = st->texWidth, cw = st->colorWidth, xx, yy, lo, hi;
+    u8 *mem = st->loadRam ? (u8 *)st->loadRam : x->sys->rdram;
+    if (!x->sys->options.gfxRdramCopy || !(st->rasterFlags & RS_COPY)) return 0;
+    if (!x->ramShadow)
+    {
+        x->ramShadow = (u8 *)malloc(H64_RDRAM_SIZE);
+        if (!x->ramShadow) return 0;
+        memset(x->ramShadow, 0, H64_RDRAM_SIZE);
+    }
+    if ((u16)(w[3] >> 16) != 0x1000 || (u16)w[3] != 0x0400) return 0;   // 1:1 only
+    if (st->texSize != 2 || t->size != 2 || (st->colorFmt != FB_RGBA5551 && st->colorFmt != FB_IA88)) return 0;
+    if (lrx < ulx || lry < uly || s0 < 0 || t0 < 0) return 0;
+    flush_batch(x);
+    lo = dst + (uly * cw + ulx) * 2;
+    hi = dst + (lry * cw + lrx) * 2 + 2;
+    for (yy = uly; yy <= lry; yy++)
+        for (xx = ulx; xx <= lrx; xx++)
+        {
+            u32 sa = src + (((u32)t0 + yy - uly) * tw + (u32)s0 + xx - ulx) * 2, da = dst + (yy * cw + xx) * 2;
+            if (sa + 2 > H64_RDRAM_SIZE || da + 2 > H64_RDRAM_SIZE) continue;
+            mem[da] = x->ramShadow[da] = mem[sa];
+            mem[da + 1] = x->ramShadow[da + 1] = mem[sa + 1];
+        }
+    if (!st->loadRam)
+    {
+        if (x->deferNotify)
+        {
+            if (x->pendingHi <= x->pendingLo) { x->pendingLo = lo; x->pendingHi = hi; }
+            else { if (lo < x->pendingLo) x->pendingLo = lo; if (hi > x->pendingHi) x->pendingHi = hi; }
+        }
+        else
+            h64_jit_notify_write(x->sys, lo, hi - lo);
+    }
+    if (x->ramCopyHi <= x->ramCopyLo) { x->ramCopyLo = lo; x->ramCopyHi = hi; }
+    else { if (lo < x->ramCopyLo) x->ramCopyLo = lo; if (hi > x->ramCopyHi) x->ramCopyHi = hi; }
+    x->ramCopyGen = st->loadRamGen;
+    // The depth image was written in memory: what EDRAM holds is stale (its
+    // contents are not uploaded: cleared at the next draw with depth).
+    if (lo < x->edramDepthAddr + 0x40000 && hi > x->edramDepthAddr) x->edramDepthAddr = 0xFFFFFFFFu;
+    return 1;
+}
+
 static void tex_rect(Xenos *x, const u32 *w, int flip)
 {
     int fullWidth = 0;   // set below: a rectangle across the whole image (a background) stays full width
@@ -2393,7 +2480,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     if (op == 0x30 || op == 0x33 || op == 0x34) x->stats.tLoads += h64_prof_now(x->sys) - t0;
     switch (op)
     {
-    case 0x24: tex_rect(x, w, 0); break;
+    case 0x24: if (!rdram_copy_rect(x, w)) tex_rect(x, w, 0); break;
     case 0x25: tex_rect(x, w, 1); break;
     case 0x36:
         if (x->st->rasterFlags & RS_FILL) fill_rect(x, w);
@@ -2416,10 +2503,15 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
 // Decodes an RDRAM colour image into one of the two CPU frame textures.
 static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32)
 {
+    return upload_mem(x, x->sys->rdram, origin, width, bpp32);
+}
+
+// An image in `ram` (RDRAM or a job's snapshot) as a texture.
+static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 width, int bpp32)
+{
     IDirect3DTexture9 *tex = x->cpuFb[x->cpuFbNext];
     D3DLOCKED_RECT lr;
     u32 h = fb_height(width), y, xx;
-    const u8 *ram = x->sys->rdram;
     x->cpuFbNext ^= 1;
     if (!tex || width == 0 || width > RT_WIDTH) return NULL;
     tex->BlockUntilNotBusy();
@@ -2621,6 +2713,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->tmemDataGen = 0;
     memset(x->staleTmem, 0, sizeof(x->staleTmem));
     x->staleCount = 0;
+    x->ramCopyLo = x->ramCopyHi = x->ramCopyGen = 0;
+    x->ramShadow = NULL;
     memset(&x->fbLoad, 0, sizeof(x->fbLoad));
     x->fbTex = NULL;
     x->usesT1 = 1;
@@ -2759,6 +2853,7 @@ void h64_xenos_free(H64Renderer *r)
     if (x->rbTex) x->rbTex->Release();
     if (x->backBuffer) x->backBuffer->Release();
     x->sys->options.rdpStateOnly = 0;
+    free(x->ramShadow);
     delete x;
 }
 

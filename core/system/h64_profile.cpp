@@ -33,6 +33,12 @@ static const GameProfile s_profiles[] = {
     { "NMF", "Mario Golf", H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_FULL },
     // Missing players and net with copy backs; right without.
     { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK },
+    // Copies its background into the frame's memory through 512-pixel
+    // images with copy-mode rectangles, then draws in a 328-pixel frame.
+    { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY },
+    // Reads its background back six lines at a time (~40 copy backs a frame,
+    // ~47 VI/s in a match): one whole copy instead, 60 VI/s.
+    { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
@@ -66,4 +72,6 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxNoCopyBack = (f & H64_GP_NO_COPY_BACK) != 0;
     sys->options.gfxS2dex1 = (f & H64_GP_S2DEX1) != 0;
     sys->options.gfxCopyBackFull = (f & H64_GP_COPY_BACK_FULL) != 0;
+    sys->options.gfxRdramCopy = (f & H64_GP_RDRAM_COPY) != 0;
+    sys->options.gfxCopyBackWhole = (f & H64_GP_COPY_BACK_WHOLE) != 0;
 }
