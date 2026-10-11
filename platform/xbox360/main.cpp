@@ -26,6 +26,7 @@
 #include "../../core/common/h64_version.h"
 #include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
+#include "../../core/system/h64_profile.h"
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
@@ -675,9 +676,12 @@ static void RunDynarecTest(const Config *c, char *report, size_t len)
 }
 
 // The menu's Graphics settings on the renderer.
-static void ApplyGraphics(H64Renderer *renderer, const Config *c)
+static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c)
 {
     H64XenosOptions o;
+    // 16:9 widescreen shows more than the game's viewport: keep the triangles
+    // the microcode would drop outside it.
+    sys->options.gfxKeepOffscreen = c->aspect == 1;
     if (!renderer) return;
     o.scale = c->resScale;
     o.texFilter = c->texFilter;
@@ -956,7 +960,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
             if (r == SET_CHANGED)
             {
                 xb_audio_set_target_ms(c->audioMs);
-                ApplyGraphics(renderer, c);
+                ApplyGraphics(sys, renderer, c);
                 s_showFps = c->showFps;
             }
             else if (r == SET_SAVE_ALL || r == SET_SAVE_GAME)
@@ -1082,10 +1086,9 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
     sys->options.gfxTiming = c->gfxTiming;
-    // Late parse (see H64Options.gfxLateParse): on by default only for the
-    // games checked with it (Conker's cutscenes 50 -> 60 VI/s); SM64, MK64 and
-    // Majora's Mask rewrite their display lists right after a task ends.
-    sys->options.gfxLateParse = c->lateParse >= 0 ? c->lateParse : !memcmp(sys->rom.gameCode, "NFU", 3);
+    // Per-game settings (core/system/h64_profile.cpp); the ini may still force late parse.
+    h64_apply_game_profile(sys);
+    if (c->lateParse >= 0) sys->options.gfxLateParse = c->lateParse;
     if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
@@ -1101,7 +1104,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     renderer = h64_xenos_create(sys, dev);
     if (!renderer) { MessageScreen(dev, "Renderer initialisation failed", "See harissa64v2.log", D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);
-    ApplyGraphics(renderer, c);
+    ApplyGraphics(sys, renderer, c);
     if (c->softRenderer) sys->options.rdpStateOnly = 0;
     else sys->renderer = renderer;
     H64_INFO("[main] running %s: cpu %s, RSP %s, %s renderer", rom, jit ? "recompiler" : "interpreter",
@@ -1450,9 +1453,9 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                          pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_TLB] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          pr[H64_PROF_WAIT_TASK] * k, pr[H64_PROF_WAIT_DPC] * k, pr[H64_PROF_WAIT_START] * k,
                          s_gfxQ.thread ? " (graphics and audio HLE run on workers, beside cpu)" : "");
-                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses, %u rectangles from GPU frames) draw calls %.1f, copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs)",
+                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses, %u rectangles from GPU frames) draw calls %.1f, copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
-                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.fbTexRects, xs.tDraw * k, xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks);
+                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.fbTexRects, xs.tDraw * k, xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads);
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;

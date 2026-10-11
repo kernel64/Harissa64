@@ -8,6 +8,7 @@
 
 #include "../common/h64_endian.h"
 #include "../common/h64_log.h"
+#include "../system/h64_profile.h"
 
 // ---- CIC-NUS-6105 challenge/response ----
 // Algorithm by X-Scale, as distributed with mupen64plus (n64_cic_nus_6105.c)
@@ -241,7 +242,14 @@ void h64_hle_boot(H64System *sys)
     u32 i, len = 0x100000;
     u32 hdr = h64_load_be32(sys->rom.data);
 
-    if (sys->rom.cic == H64_CIC_6105) { ipl3_boot(sys); return; }
+    // The real IPL3 for 6105 cartridges and the games whose profile asks for
+    // it (Yoshi's Story, 6106: with the HLE boot it read a null pointer and
+    // stopped before its first picture).
+    if (sys->rom.cic == H64_CIC_6105 || (h64_game_profile(sys->rom.gameCode, NULL) & H64_GP_IPL3_BOOT))
+    {
+        ipl3_boot(sys);
+        return;
+    }
     memcpy(sys->spMem, sys->rom.data, 0x1000);
     for (i = 0; i < len; i++)
     {

@@ -47,7 +47,8 @@ enum
 };
 
 // Vertex clip flags.
-enum { CL_POSX = 1, CL_NEGX = 2, CL_POSY = 4, CL_NEGY = 8, CL_W = 16 };
+// CL_GUARD: outside the clip ratio's guard band (G_MW_CLIP), where the microcodes clip.
+enum { CL_POSX = 1, CL_NEGX = 2, CL_POSY = 4, CL_NEGY = 8, CL_W = 16, CL_GUARD = 32 };
 
 #define GFX_VTX_MAX 80
 #define GFX_STACK_MAX 32
@@ -134,6 +135,18 @@ struct GfxTri
     u32 flags, tile, levels;
 };
 
+// A small colour image the display lists drew, with a signature of each of
+// its lines' RDRAM when the drawing started. The GPU never writes RDRAM, so
+// a line whose signature changed since was written by the CPU (or a DMA): a
+// texture load there reads that, not the GPU's picture. Paper Mario draws
+// small images at 0x28E000 and later keeps textures and palettes in that
+// memory; copying the old pictures back over them spoilt its colours.
+struct CimgSig
+{
+    u32 start, rowBytes, rows, use;
+    std::vector<u32> sig;
+};
+
 struct H64Gfx
 {
     H64System *sys;
@@ -191,6 +204,8 @@ struct H64Gfx
     u32 cimg[8][2];                // recent colour images: start, end
     u32 cimgNext;
     int texFromCimg;
+    CimgSig cimgSig[8];            // small colour images drawn, with their lines' signatures
+    u32 cimgUse;
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -200,6 +215,7 @@ struct H64GfxOut
     PodVec<GfxTri> tris;
     PodVec<GfxOp> ops;
     u8 *snapshot;                  // RDRAM-sized; only the task's load ranges are valid
+    std::vector<u32> cpuRanges;    // start, end pairs: loaded colour image lines the CPU wrote since they were drawn
 };
 
 // ---------------------------------------------------------------- memory
@@ -280,6 +296,63 @@ static void out_rdp(H64Gfx *g, const u64 *w, u32 n)
     op->count = n;
 }
 
+// Sampled words of an image line (up to 16, at most 20 bytes apart on lines
+// up to 320 bytes: a palette or a small texture written there changes one).
+static u32 row_sig(const u8 *ram, u32 a, u32 rowBytes)
+{
+    u32 step = (rowBytes / 16) & ~3u, h = 0x811C9DC5u, i;
+    if (step < 4) step = 4;
+    for (i = 0; i < 16 && i * step + 4 <= rowBytes; i++)
+        h = (h ^ h64_load_be32(ram + ((a + i * step) & ~3u))) * 16777619u;
+    return h;
+}
+
+// Small images only (up to 96 KB, guessed height): the frames the VI shows
+// are drawn again every frame and keep the old behaviour.
+static void cimg_track(H64Gfx *g, u32 start, u32 rowBytes, u32 rows)
+{
+    CimgSig *c = 0;
+    u32 k, r;
+    if (!g->sys->options.gfxCpuWritten || !rowBytes || rowBytes * rows > 96 * 1024 || start + rowBytes * rows > H64_RDRAM_SIZE) return;
+    for (k = 0; k < 8 && !c; k++)
+        if (g->cimgSig[k].rows && g->cimgSig[k].start == start) c = &g->cimgSig[k];
+    for (k = 0; k < 8 && !c; k++)
+        if (!g->cimgSig[k].rows) c = &g->cimgSig[k];
+    if (!c)
+    {
+        c = &g->cimgSig[0];
+        for (k = 1; k < 8; k++)
+            if (g->cimgSig[k].use < c->use) c = &g->cimgSig[k];
+    }
+    c->start = start;
+    c->rowBytes = rowBytes;
+    c->rows = rows;
+    c->use = ++g->cimgUse;
+    if (c->sig.size() < rows) c->sig.resize(rows);
+    for (r = 0; r < rows; r++) c->sig[r] = row_sig(g->sys->rdram, start + r * rowBytes, rowBytes);
+}
+
+// The lines of tracked images in [lo, hi) whose RDRAM changed since they were drawn.
+static void cimg_check(H64Gfx *g, u32 lo, u32 hi, std::vector<u32> &out)
+{
+    u32 k, r, r0, r1;
+    for (k = 0; k < 8; k++)
+    {
+        const CimgSig *c = &g->cimgSig[k];
+        u32 end = c->start + c->rowBytes * c->rows;
+        if (!c->rows || hi <= c->start || lo >= end) continue;
+        r0 = lo > c->start ? (lo - c->start) / c->rowBytes : 0;
+        r1 = (hi < end ? hi - c->start + c->rowBytes - 1 : end - c->start) / c->rowBytes;
+        for (r = r0; r < r1; r++)
+            if (row_sig(g->sys->rdram, c->start + r * c->rowBytes, c->rowBytes) != c->sig[r])
+            {
+                u32 a = c->start + r * c->rowBytes;
+                if (!out.empty() && out.back() == a) out.back() = a + c->rowBytes;
+                else { out.push_back(a); out.push_back(a + c->rowBytes); }
+            }
+    }
+}
+
 // Texture images and loads (h64_rdp_load's arithmetic): the RDRAM a load reads.
 static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
 {
@@ -300,6 +373,7 @@ static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
         g->cimg[g->cimgNext & 7][0] = start;
         g->cimg[g->cimgNext & 7][1] = start + bytes;
         g->cimgNext++;
+        cimg_track(g, start, width << (size ? size - 1 : 0), width <= 320 ? 240 : width * 3 / 4);
     }
     else if (op == 0x30 || op == 0x33 || op == 0x34)   // LOAD_TLUT, LOAD_BLOCK, LOAD_TILE
     {
@@ -735,7 +809,7 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
     u32 i, stride = fmt == VF_PD ? 12 : fmt == VF_DKR ? 10 : 16;
     u32 gm = geom(g);
     float ldir[10][3], look[2][3], lc[10][3], m[4][4];
-    float texS = g->texScaleS, texT = g->texScaleT, fogMul = g->fogMul, fogOff = g->fogOff;
+    float texS = g->texScaleS, texT = g->texScaleT, fogMul = g->fogMul, fogOff = g->fogOff, cr = g->clipRatio;
     int l, lighting = (gm & GM_LIGHTING) && fmt != VF_DKR, cbfd = (gm & GM_LIGHTING) && fmt == VF_CBFD;
     int billboard = fmt == VF_DKR && g->billboard, nLights = g->numLights, noNear = g->uc->noNear;
     float vs0 = g->vscale[0], vs1 = g->vscale[1], vs2 = g->vscale[2], vt0 = g->vtrans[0], vt1 = g->vtrans[1], vt2 = g->vtrans[2];
@@ -883,6 +957,7 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
         if (y > w) clip |= CL_POSY;
         if (y < -w) clip |= CL_NEGY;
         if (w < 0.01f) clip |= CL_W;
+        if (x > cr * w || x < -cr * w || y > cr * w || y < -cr * w) clip |= CL_GUARD;
         v->x = x; v->y = y; v->z = z; v->w = w;
         v->r = r; v->g = gg; v->b = b; v->a = al;
         v->s = s * texS;
@@ -932,7 +1007,7 @@ static void modify_vertex(H64Gfx *g, u32 n, u32 where, u32 val)
         v->projGen = 0;
         v->sx = (s16)(val >> 16) / 4.0f;
         v->sy = (s16)val / 4.0f;
-        v->clip &= ~(CL_POSX | CL_NEGX | CL_POSY | CL_NEGY);
+        v->clip &= ~(CL_POSX | CL_NEGX | CL_POSY | CL_NEGY | CL_GUARD);
         break;
     case 0x1C:   // G_MWO_POINT_ZSCREEN (16.16 in G_MAXZ units)
         v->zOverride = 1;
@@ -1020,16 +1095,24 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     ClipVtx poly[2][16];
     H64RenderVertex sv[16];
     u32 gm = geom(g), flags = 0;
-    int n = 3, cur = 0, k, needClip = 0;
+    int n = 3, cur = 0, k, needClip = 0, guard, keep = !g->sys->options.gfxViewportClip || g->sys->options.gfxKeepOffscreen;
     float area = 0, iw[3];
     g->nTris++;
     if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || i2 >= GFX_VTX_MAX) return;
     v[0] = &g->vtx[i0];
     v[1] = &g->vtx[i1];
     v[2] = &g->vtx[i2];
-    // Entirely outside one plane (screen sides at the clip ratio, or behind the eye).
-    if (v[0]->clip & v[1]->clip & v[2]->clip & CL_W) return;
-    if (v[0]->projGen == g->vpGen && v[1]->projGen == g->vpGen && v[2]->projGen == g->vpGen)
+    // Entirely outside one plane (a side of the viewport, or behind the eye):
+    // dropped as the microcodes do. The scissor does not always stop them:
+    // Mario Kart 64's points screen draws each player's view in a quarter of
+    // a full-screen scissor, and the clouds of one view showed in another.
+    if (v[0]->clip & v[1]->clip & v[2]->clip & (keep ? CL_W : CL_POSX | CL_NEGX | CL_POSY | CL_NEGY | CL_W))
+        return;
+    // Across the guard band (clip ratio times the viewport): clipped there as
+    // the microcodes do. With a ratio of 1 the triangles stop at the
+    // viewport's sides: Mario Kart 64's views in a full-screen scissor.
+    guard = !keep && ((v[0]->clip | v[1]->clip | v[2]->clip) & CL_GUARD);
+    if (!guard && v[0]->projGen == g->vpGen && v[1]->projGen == g->vpGen && v[2]->projGen == g->vpGen)
     {
         // No clipping: the vertices' own screen positions (same results as below).
         GfxTri *t;
@@ -1076,6 +1159,7 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         else if (c->w < 0.0001f || (!g->uc->noNear && c->z < -c->w))
             needClip = 1;
     }
+    if (guard) needClip = 1;
     if (!(gm & GM_SMOOTH))
         for (k = 1; k < 3; k++)
         {
@@ -1102,7 +1186,7 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         // Planes, as p . (x, y, z, w) >= 0: w > 0 (just in front of the eye),
         // the near plane z >= -w unless the microcode does not clip it, and a
         // guard band keeping screen positions in [-1000, 2000].
-        float p[6][4];
+        float p[10][4];
         int j, planes = 0;
         p[planes][0] = 0; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = 1.0f; planes++;
         if (!g->uc->noNear) { p[planes][0] = 0; p[planes][1] = 0; p[planes][2] = 1.0f; p[planes][3] = 1.0f; planes++; }
@@ -1110,6 +1194,14 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         p[planes][0] = -g->vscale[0]; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = 2000.0f - g->vtrans[0]; planes++;
         p[planes][0] = 0; p[planes][1] = -g->vscale[1]; p[planes][2] = 0; p[planes][3] = g->vtrans[1] + 1000.0f; planes++;
         p[planes][0] = 0; p[planes][1] = g->vscale[1]; p[planes][2] = 0; p[planes][3] = 2000.0f - g->vtrans[1]; planes++;
+        if (guard)
+        {
+            float cr = g->clipRatio;
+            p[planes][0] = -1.0f; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = cr; planes++;
+            p[planes][0] = 1.0f; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = cr; planes++;
+            p[planes][0] = 0; p[planes][1] = -1.0f; p[planes][2] = 0; p[planes][3] = cr; planes++;
+            p[planes][0] = 0; p[planes][1] = 1.0f; p[planes][2] = 0; p[planes][3] = cr; planes++;
+        }
         for (j = 0; j < planes && n >= 3; j++)
         {
             n = clip_plane(poly[cur], n, poly[cur ^ 1], p[j]);
@@ -1119,6 +1211,15 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
                     if (poly[cur][k].w < 0.0001f) poly[cur][k].w = 0.0001f;
         }
         if (n < 3) return;
+        // The fog factor of the new vertices comes from their own depth, as
+        // the microcodes compute it, not interpolated (OoT's field at the
+        // title screen came out foggier than with the real microcode).
+        if ((gm & GM_FOG) && (gm & GM_SMOOTH) && !keep)
+            for (k = 0; k < n; k++)
+            {
+                float f = poly[cur][k].z / poly[cur][k].w * g->fogMul + g->fogOff;
+                poly[cur][k].a = f < 0 ? 0.0f : f > 255.0f ? 255.0f : f;
+            }
     }
     for (k = 0; k < n; k++)
     {
@@ -1364,7 +1465,14 @@ static void f3d_moveword(H64Gfx *g, u32 w0, u32 w1)
         if (g->numLights > 8) g->numLights = 8;
         if (g->numLights < 0) g->numLights = 0;
         break;
-    case 0x04: break;   // G_MW_CLIP
+    case 0x04:   // G_MW_CLIP: the clip ratio (gSPClipRatio writes r, r, -r, -r)
+        if (offset == 0x04)
+        {
+            int r = (s16)w1;
+            if (r < 0) r = -r;
+            if (r >= 1 && r <= 6) g->clipRatio = (float)r;
+        }
+        break;
     case 0x06: g->segments[(offset >> 2) & 0xF] = w1 & 0x00FFFFFF; break;
     case 0x08:
         g->fogMul = (float)(s16)(w1 >> 16);
@@ -1782,7 +1890,14 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
         {
         case 0x00: insert_matrix(g, offset, w1); break;
         case 0x02: g->numLights = (int)(w1 / 24); if (g->numLights > 8) g->numLights = 8; break;
-        case 0x04: break;
+        case 0x04:   // G_MW_CLIP, as in f3d_moveword
+            if (offset == 0x04)
+            {
+                int r = (s16)w1;
+                if (r < 0) r = -r;
+                if (r >= 1 && r <= 6) g->clipRatio = (float)r;
+            }
+            break;
         case 0x06: g->segments[(offset >> 2) & 0xF] = w1 & 0x00FFFFFF; break;
         case 0x08:
             g->fogMul = (float)(s16)(w1 >> 16);
@@ -2058,7 +2173,7 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->vpGen = 1;
     g->pTri = g->pNtri = g->pVtx = g->pNvtx = g->pNlight = 0;
     memset(g->vtrans, 0, sizeof(g->vtrans));
-    g->clipRatio = 1.0f;
+    g->clipRatio = 2.0f;   // the microcodes' default (FRUSTRATIO_2)
     g->texScaleS = g->texScaleT = 1.0f;
     g->texLevel = g->texTile = 0;
     g->texOn = 0;
@@ -2074,6 +2189,8 @@ H64Gfx *h64_gfx_create(H64System *sys)
     memset(g->cimg, 0, sizeof(g->cimg));
     g->cimgNext = 0;
     g->texFromCimg = 0;
+    for (i = 0; i < 8; i++) g->cimgSig[i].rows = g->cimgSig[i].use = 0;
+    g->cimgUse = 0;
     return g;
 }
 
@@ -2185,6 +2302,7 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync,
     // A task that reads a colour image as a texture renders from the snapshot
     // too: the renderer copies the image back into both (h64_gfx_render).
     *mustSync = 0;
+    out->cpuRanges.clear();
     if (!out->snapshot) out->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
     if (!out->snapshot) { *mustSync = 1; return 1; }
     {
@@ -2202,6 +2320,7 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync,
             for (n++; n < r.size() && (u32)(r[n] >> 32) <= hi; n++)
                 if ((u32)r[n] > hi) hi = (u32)r[n];
             memcpy(out->snapshot + lo, sys->rdram + lo, hi - lo);
+            cimg_check(g, lo, hi, out->cpuRanges);
             sys->prof[H64_PROF_SNAP_BYTES] += hi - lo;
         }
         sys->prof[H64_PROF_GFX_SNAPSHOT] += h64_prof_now(sys) - t0;
@@ -2220,8 +2339,12 @@ void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
     (void)g;
     st->loadRam = out->snapshot;
     st->loadRamGen++;
+    st->cpuRanges = out->cpuRanges.empty() ? 0 : &out->cpuRanges[0];
+    st->cpuRangeCount = (u32)out->cpuRanges.size() / 2;
     flush_lists(sys, out->words, out->tris, out->ops);
     st->loadRam = 0;
+    st->cpuRanges = 0;
+    st->cpuRangeCount = 0;
 }
 
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
@@ -2233,6 +2356,11 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     const GfxUcode *u = find_ucode(g, ucStart & 0x7FFFFF, ucData & 0x7FFFFF, ucDataSize);
     if (u->type == UC_NONE)
         return 0;
+    g->clipRatio = 2.0f;   // the microcode's data is loaded again with each task
+    // ... and with it the other modes' default (F3DEX2: perspective, texture
+    // filter, dithers). Mario Golf never sets the texture conversion and
+    // relies on it: from 0 its textures were read as YUV (grey courses).
+    if (g->sys->options.gfxOtherModeInit) { g->omH = 0x080CFF; g->omL = 0; }
     g->uc = u;
 
     // Per-task state, as the microcode starts each task (GLideN64 RSP_ProcessDList).
