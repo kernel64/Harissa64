@@ -2357,6 +2357,10 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     if (u->type == UC_NONE)
         return 0;
     g->clipRatio = 2.0f;   // the microcode's data is loaded again with each task
+    // ... and with it the other modes' default (F3DEX2: perspective, texture
+    // filter, dithers). Mario Golf never sets the texture conversion and
+    // relies on it: from 0 its textures were read as YUV (grey courses).
+    if (g->sys->options.gfxOtherModeInit) { g->omH = 0x080CFF; g->omL = 0; }
     g->uc = u;
 
     // Per-task state, as the microcode starts each task (GLideN64 RSP_ProcessDList).

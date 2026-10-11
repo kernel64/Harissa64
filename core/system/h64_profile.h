@@ -16,7 +16,10 @@ enum
 {
     H64_GP_LATE_PARSE = 1,      // options.gfxLateParse
     H64_GP_VIEWPORT_CLIP = 2,   // options.gfxViewportClip
-    H64_GP_CPU_WRITTEN = 4      // options.gfxCpuWritten
+    H64_GP_CPU_WRITTEN = 4,     // options.gfxCpuWritten
+    H64_GP_IPL3_BOOT = 8,       // boot through the cartridge's real IPL3 (h64_hle_boot)
+    H64_GP_OTHERMODE_INIT = 16, // options.gfxOtherModeInit
+    H64_GP_NO_COPY_BACK = 32    // options.gfxNoCopyBack
 };
 
 // The flags for a game code (4 characters, the region ignored); *name gets

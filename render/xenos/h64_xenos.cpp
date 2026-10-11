@@ -1475,6 +1475,15 @@ static void load_rdram_range(const H64RdpState *st, const u32 *w, u32 op, u32 *l
     }
 }
 
+// No copy backs: xenosdebug=5 (diagnosis), or the game's profile (Mario
+// Golf and Mario Tennis: their courses, players and HUD were garbled or
+// missing with them, and come out right without; Golf's pause menu then
+// has a black background).
+static int no_copy_back(const Xenos *x)
+{
+    return x->debug == 5 || x->sys->options.gfxNoCopyBack;
+}
+
 // Copies back the lines of a GPU image a load reads, unless done since it was drawn.
 static void copy_back_timed(Xenos *x, int slot);
 static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
@@ -1485,7 +1494,7 @@ static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
     s = &x->fb[slot];
     rb = (s->width ? s->width : 320) * (s->bytes ? s->bytes : 2);
     load_rdram_range(x->st, w, op, &lo, &hi);
-    if (hi <= s->addr || x->debug == 5) { copy_back_timed(x, slot); return; }
+    if (hi <= s->addr || no_copy_back(x)) { copy_back_timed(x, slot); return; }
     r0 = lo > s->addr ? (lo - s->addr) / rb : 0;
     r1 = (hi - s->addr + rb - 1) / rb;
     if (s->cleanHi > s->cleanLo && r0 >= s->cleanLo && r1 <= s->cleanHi &&
@@ -1553,7 +1562,7 @@ static void copy_back_timed(Xenos *x, int slot)
         if (s->drawnH && s->drawnH < h) h = s->drawnH;
         if (s->cleanSnap && x->st->loadRam && s->cleanGen == x->st->loadRamGen && s->cleanLo == 0 && s->cleanHi >= h) return;
     }
-    if (x->debug != 5)   // xenosdebug=5: no copy backs (diagnosis)
+    if (!no_copy_back(x))
     {
         u64 t0 = h64_prof_now(x->sys);
         copy_back(x, slot);
@@ -2035,7 +2044,7 @@ static void fb_load(Xenos *x, const u32 *w, int block)
     u32 a = st->texAddr & 0xFFFFFF, i, bytes = st->texSize == 2 ? 2 : st->texSize == 3 ? 4 : 0;
     u32 sl = (w[0] >> 12) & 0xFFF, tl = w[0] & 0xFFF, sh = (w[1] >> 12) & 0xFFF, th = w[1] & 0xFFF;
     int found = -1;
-    if (!bytes || st->texFmt != 0 || x->debug == 5) return;
+    if (!bytes || st->texFmt != 0 || no_copy_back(x)) return;
     for (i = 0; i < FB_SLOTS; i++)
     {
         const FbSlot *s = &x->fb[i];
@@ -2343,7 +2352,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
             memset(x->staleTmem, 0, sizeof(x->staleTmem));
             x->staleCount = 0;
         }
-        if (slot >= 0 && x->fb[slot].gpuDirty && op != 0x30 && x->fbLoad.valid && x->fbLoad.slot == slot && x->debug != 5 &&
+        if (slot >= 0 && x->fb[slot].gpuDirty && op != 0x30 && x->fbLoad.valid && x->fbLoad.slot == slot && !no_copy_back(x) &&
             x->loadLog.size() < 64)
         {
             log_load(x, w, op, slot);
