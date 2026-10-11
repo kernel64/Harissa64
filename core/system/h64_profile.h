@@ -23,7 +23,9 @@ enum
     H64_GP_S2DEX1 = 64,         // options.gfxS2dex1
     H64_GP_COPY_BACK_FULL = 128,// options.gfxCopyBackFull
     H64_GP_RDRAM_COPY = 256,    // options.gfxRdramCopy
-    H64_GP_COPY_BACK_WHOLE = 512 // options.gfxCopyBackWhole
+    H64_GP_COPY_BACK_WHOLE = 512, // options.gfxCopyBackWhole
+    H64_GP_FRAME_TO_RDRAM = 1024, // options.gfxFrameToRdram
+    H64_GP_SMALL_TO_RDRAM = 2048  // options.gfxSmallToRdram
 };
 
 // The flags for a game code (4 characters, the region ignored); *name gets

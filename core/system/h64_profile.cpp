@@ -39,6 +39,10 @@ static const GameProfile s_profiles[] = {
     // Reads its background back six lines at a time (~40 copy backs a frame,
     // ~47 VI/s in a match): one whole copy instead, 60 VI/s.
     { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE },
+    // Draws Link into a 64-pixel image on the equipment screen and copies his
+    // pixels with the CPU (noise without).
+    { "CZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM },
+    { "NZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
@@ -74,4 +78,6 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxCopyBackFull = (f & H64_GP_COPY_BACK_FULL) != 0;
     sys->options.gfxRdramCopy = (f & H64_GP_RDRAM_COPY) != 0;
     sys->options.gfxCopyBackWhole = (f & H64_GP_COPY_BACK_WHOLE) != 0;
+    sys->options.gfxFrameToRdram = (f & H64_GP_FRAME_TO_RDRAM) != 0;
+    sys->options.gfxSmallToRdram = (f & H64_GP_SMALL_TO_RDRAM) != 0;
 }
