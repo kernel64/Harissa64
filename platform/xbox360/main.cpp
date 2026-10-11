@@ -26,6 +26,7 @@
 #include "../../core/common/h64_version.h"
 #include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
+#include "../../core/system/h64_profile.h"
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
@@ -1085,10 +1086,9 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
     sys->options.gfxTiming = c->gfxTiming;
-    // Late parse (see H64Options.gfxLateParse): on by default only for the
-    // games checked with it (Conker's cutscenes 50 -> 60 VI/s); SM64, MK64 and
-    // Majora's Mask rewrite their display lists right after a task ends.
-    sys->options.gfxLateParse = c->lateParse >= 0 ? c->lateParse : !memcmp(sys->rom.gameCode, "NFU", 3);
+    // Per-game settings (core/system/h64_profile.cpp); the ini may still force late parse.
+    h64_apply_game_profile(sys);
+    if (c->lateParse >= 0) sys->options.gfxLateParse = c->lateParse;
     if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
