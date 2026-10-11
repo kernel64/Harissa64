@@ -15,7 +15,9 @@
 #include "../../core/cart/h64_zip.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
+#include "../../core/common/h64_fenv.h"
 #include "xb_ui.h"
+#include "xb_update.h"
 
 // Moves an animated value towards its target (exponential, ~70 ms), or
 // jumps there when the animation restarts.
@@ -674,6 +676,8 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     UiScreenFooter(n ? "A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard" : "Y:Settings|X:About|BACK:Dashboard");
 }
 
+#define UPDATE_MSG_MS 8000   // how long the "new version" message stays
+
 int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char *path, size_t pathSize)
 {
     std::vector<RomEntry> roms;
@@ -681,6 +685,9 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     int sel = 0, top = 0, detailsFor = -1, i;
     RomInfo details;
     const int rows = 13;
+    char newVersion[32], updateMsg[96];
+    DWORD updateAt = 0;
+    updateMsg[0] = 0;
     scan_roms(&roms);
     for (i = 0; i < (int)roms.size(); i++)
         if (!_stricmp(roms[i].file.c_str(), c->lastRom)) sel = i;
@@ -695,9 +702,19 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     }
     UiInputInit(&in);
     memset(&details, 0, sizeof(details));
+    // A newer release on GitHub: a message for a few seconds (the check runs
+    // in the background and may answer later, or never without a network).
+    // updatecheck=2 (testing): as if this were version 0.0.0, so any release is newer.
+    if (c->updateCheck && !c->xenia && h64_fenv_reliable()) UpdateCheckStart(c->updateCheck == 2 ? "0.0.0" : H64_VERSION_STRING);
     for (;;)
     {
         WORD down = UiInputPoll(&in);
+        if (UpdateCheckTake(newVersion, sizeof(newVersion)))
+        {
+            _snprintf(updateMsg, sizeof(updateMsg) - 1, "Harissa64 %s is available on GitHub", newVersion);
+            updateMsg[sizeof(updateMsg) - 1] = 0;
+            updateAt = GetTickCount();
+        }
         int n = (int)roms.size();
         if ((down & XINPUT_GAMEPAD_BACK) && confirm_quit(dev)) return 0;
         if (n)
@@ -732,6 +749,12 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
         UiBegin(dev);
         browser_draw(roms, sel, top, rows, &details);
+        if (updateMsg[0])
+        {
+            DWORD age = GetTickCount() - updateAt;
+            if (age < UPDATE_MSG_MS) UiToast(updateMsg, (float)age, (float)UPDATE_MSG_MS);
+            else updateMsg[0] = 0;
+        }
         UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
