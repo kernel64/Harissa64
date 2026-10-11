@@ -27,10 +27,11 @@ static const GameProfile s_profiles[] = {
     // whose tasks start from the default other modes.
     { "NYS", "Yoshi's Story", H64_GP_IPL3_BOOT | H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
     // Relies on the microcode's default other modes (texture conversion):
-    // grey courses.
-    // Garbled courses and HUD (Golf), missing players and net (Tennis) with
-    // copy backs; right without (Golf's pause menu loses its background).
-    { "NMF", "Mario Golf", H64_GP_OTHERMODE_INIT | H64_GP_NO_COPY_BACK },
+    // grey courses. Keeps its course picture in a full-size image and copies the
+    // frame into narrow strips: copying those strips back garbled the HUD,
+    // and no copy back at all left the course black once the camera stops.
+    { "NMF", "Mario Golf", H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_FULL },
+    // Missing players and net with copy backs; right without.
     { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK },
 };
 
@@ -64,4 +65,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxOtherModeInit = (f & H64_GP_OTHERMODE_INIT) != 0;
     sys->options.gfxNoCopyBack = (f & H64_GP_NO_COPY_BACK) != 0;
     sys->options.gfxS2dex1 = (f & H64_GP_S2DEX1) != 0;
+    sys->options.gfxCopyBackFull = (f & H64_GP_COPY_BACK_FULL) != 0;
 }
