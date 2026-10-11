@@ -108,6 +108,8 @@ struct H64Options
     int gfxCopyBackFull;    // GPU renderer (game profile): copy back only images at least 320 pixels wide
     int gfxRdramCopy;       // GPU renderer (game profile): copy-mode 1:1 rectangles move memory (xenos rdram_copy_rect)
     int gfxCopyBackWhole;   // GPU renderer (game profile): a copy back for a load copies the whole image
+    int gfxFrameToRdram;    // GPU renderer (game profile): the picture the VI shows is copied back to RDRAM
+    int gfxSmallToRdram;    // GPU renderer (game profile): small images the RDP leaves are copied back to RDRAM
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts

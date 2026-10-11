@@ -1259,6 +1259,26 @@ static void resolve_current(Xenos *x)
 static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32);
 static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 width, int bpp32);
 
+static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1);
+
+// Profile gfxSmallToRdram: a small colour image (narrower than 320) the GPU
+// just drew goes back to RDRAM itself when the RDP leaves it, because the
+// CPU reads it (Ocarina of Time draws Link into a 64-pixel image on the
+// equipment screen and copies his pixels with the CPU: noise without). From a
+// deferred job the write lands a little late: the CPU may copy the previous
+// frame's picture, never garbage.
+static void small_image_to_rdram(Xenos *x, int slot)
+{
+    const u8 *keep = x->st->loadRam;
+    FbSlot *s = &x->fb[slot];
+    if (!x->sys->options.gfxSmallToRdram || slot < 0 || !s->gpuDirty || !s->drawnH || s->width >= 320 || s->bytes < 2) return;
+    x->st->loadRam = 0;   // copy_back_rows writes RDRAM when there is no snapshot
+    copy_back_rows(x, slot, 0, 0xFFFFFFFFu);
+    x->st->loadRam = keep;
+    s->gpuDirty = 1;      // the snapshot (if any) still lacks it: later loads copy it there too
+    s->cleanLo = s->cleanHi = 0;
+}
+
 // Makes the N64 target hold the colour image the RDP draws to now.
 static void select_framebuffer(Xenos *x)
 {
@@ -1274,6 +1294,7 @@ static void select_framebuffer(Xenos *x)
     }
     if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound)
         return;
+    if (x->curSlot >= 0 && x->fb[x->curSlot].addr != addr) small_image_to_rdram(x, x->curSlot);
     resolve_current(x);
     bind_n64_target(x);
     x->stats.fbSwitches++;
@@ -2596,6 +2617,15 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             if (x->fb[i].tex)
                 H64_INFO("[xenos]   slot %u: addr %06X %ux%u bytes %u valid %d drawnH %u lastUse %u", i, x->fb[i].addr, x->fb[i].width,
                          x->fb[i].height, x->fb[i].bytes, x->fb[i].valid, x->fb[i].drawnH, x->fb[i].lastUse);
+    }
+    if (found >= 0 && x->fb[found].gpuDirty && x->sys->options.gfxFrameToRdram && !x->st->loadRam)
+    {
+        // Profile: the picture shown goes back to RDRAM, where the CPU reads it
+        // (Castlevania's magnifying glass on the character select enlarges
+        // what is on screen; it showed an empty frame).
+        u64 t0 = h64_prof_now(x->sys);
+        copy_back(x, found);
+        x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
     }
     x->dev->SetRenderTarget(0, x->backBuffer);
     x->dev->SetDepthStencilSurface(NULL);
