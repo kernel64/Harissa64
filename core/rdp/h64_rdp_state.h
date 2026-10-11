@@ -74,6 +74,8 @@ struct H64RdpState
     u8 tmem[4096];               // N64 byte order (logical)
     const u8 *loadRam;           // where texture loads read (NULL: RDRAM); a snapshot for deferred rendering
     u32 loadRamGen;              // changes each time a deferred job sets loadRam (one per task or DPC batch)
+    const u32 *cpuRanges;        // with loadRam: start, end pairs of colour images the CPU wrote over since
+    u32 cpuRangeCount;           // the GPU drew them (loads there read the snapshot, see h64_gfx.cpp)
     H64RdpTile tiles[8];
 
     u32 rasterFlags;             // RS_*

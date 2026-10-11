@@ -98,6 +98,14 @@ struct H64Options
     int gfxLateParse;   // asynchronous graphics tasks end without waiting for their display list's parse (it
                         // must be done before the next task starts); the end's flags are the previous task's
                         // (experimental: a game rewriting the list right after the task ends would see it read late)
+    int gfxViewportClip;    // graphics HLE (game profile): drop triangles outside the viewport, clip at the
+                            // clip ratio's guard band and take clipped vertices' fog from their depth, as the
+                            // microcodes do
+    int gfxKeepOffscreen;   // 16:9 widescreen: gfxViewportClip off (more than the viewport is shown)
+    int gfxOtherModeInit;   // graphics HLE (game profile): each task starts from the microcode's other modes
+    int gfxNoCopyBack;      // GPU renderer (game profile): frames it drew are never copied back for texture loads
+    int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
+                            // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
     int hleAudioCheck;  // 1: audio tasks run on the LLE RSP, and the HLE runs each one on a copy
                         //    of RDRAM; the results are compared when the LLE task ends (debug)

@@ -8,6 +8,7 @@
 
 #include <xtl.h>
 #include <xgraphics.h>
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -386,10 +387,14 @@ enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8 };
 static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int second)
 {
     char *p;
+    const char *ra = rgb_a(c->rgbMulAdd), *rb = rgb_b(c->rgbMulSub), *rc = rgb_c(c->rgbMul), *rd = rgb_d(c->rgbAdd);
+    // Only constants (0.0, 1.0) make a scalar, which the XDK's float3() does
+    // not take: the shader did not compile and the fallback drew instead.
+    int scalar = isdigit((u8)ra[0]) && isdigit((u8)rb[0]) && isdigit((u8)rc[0]) && isdigit((u8)rd[0]);
     sprintf_s(out, len,
-              "  comb = float4(float3(saturate((%s - %s) * %s + %s)), saturate((%s - %s) * %s + %s));\n",
-              rgb_a(c->rgbMulAdd), rgb_b(c->rgbMulSub), rgb_c(c->rgbMul), rgb_d(c->rgbAdd), a_abd(c->aMulAdd),
-              a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
+              scalar ? "  comb = float4(saturate((%s - %s) * %s + %s).xxx, saturate((%s - %s) * %s + %s));\n"
+                     : "  comb = float4(float3(saturate((%s - %s) * %s + %s)), saturate((%s - %s) * %s + %s));\n",
+              ra, rb, rc, rd, a_abd(c->aMulAdd), a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
     if (!second) return;
     for (p = out; *p; p++)
         if (p[0] == 't' && (p[1] == '0' || p[1] == '1') && p[2] == '.')
@@ -1268,6 +1273,8 @@ static void select_framebuffer(Xenos *x)
         s->addr = addr;
         s->valid = 0;
         s->drawnH = 0;
+        x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);   // Clear() keeps to the scissor
+        x->stateDirty = 1;
         x->dev->Clear(0, NULL, D3DCLEAR_TARGET, x->debug == 1 ? 0xFF0000FF : 0xFF000000, 1.0f, 0);
     }
     else if (best != x->edramOwner)
@@ -1468,6 +1475,15 @@ static void load_rdram_range(const H64RdpState *st, const u32 *w, u32 op, u32 *l
     }
 }
 
+// No copy backs: xenosdebug=5 (diagnosis), or the game's profile (Mario
+// Golf and Mario Tennis: their courses, players and HUD were garbled or
+// missing with them, and come out right without; Golf's pause menu then
+// has a black background).
+static int no_copy_back(const Xenos *x)
+{
+    return x->debug == 5 || x->sys->options.gfxNoCopyBack;
+}
+
 // Copies back the lines of a GPU image a load reads, unless done since it was drawn.
 static void copy_back_timed(Xenos *x, int slot);
 static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
@@ -1478,7 +1494,7 @@ static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
     s = &x->fb[slot];
     rb = (s->width ? s->width : 320) * (s->bytes ? s->bytes : 2);
     load_rdram_range(x->st, w, op, &lo, &hi);
-    if (hi <= s->addr || x->debug == 5) { copy_back_timed(x, slot); return; }
+    if (hi <= s->addr || no_copy_back(x)) { copy_back_timed(x, slot); return; }
     r0 = lo > s->addr ? (lo - s->addr) / rb : 0;
     r1 = (hi - s->addr + rb - 1) / rb;
     if (s->cleanHi > s->cleanLo && r0 >= s->cleanLo && r1 <= s->cleanHi &&
@@ -1489,6 +1505,33 @@ static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
         copy_back_rows(x, slot, r0, r1);
         x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
     }
+}
+
+// Whether a load reads lines of a colour image the CPU wrote over since the GPU
+// drew it (H64RdpState.cpuRanges): it reads the snapshot as it is then.
+static int load_cpu_written(Xenos *x, const u32 *w, u32 op)
+{
+    const H64RdpState *st = x->st;
+    u32 sl = (w[0] >> 12) & 0xFFF, tl = w[0] & 0xFFF, sh = (w[1] >> 12) & 0xFFF, th = w[1] & 0xFFF;
+    u32 sz = st->texSize ? st->texSize : 1, width = st->texWidth, lo, hi, i;
+    if (!st->loadRam || !st->cpuRangeCount) return 0;
+    // The bytes read, exactly (the snapshot's ranges are rounded up: the
+    // line after a 16x1 palette image may well hold the CPU's data).
+    if (op == 0x33)
+    {
+        lo = (st->texAddr & 0xFFFFFF) + ((tl * width + sl) << (sz - 1));
+        hi = lo + ((((sh - sl + 1) & 0xFFF) << sz) >> 1);
+    }
+    else
+    {
+        u32 lines = (th >> 2) >= (tl >> 2) ? (th >> 2) - (tl >> 2) + 1 : 1;
+        u32 pixels = ((sh >> 2) - (sl >> 2) + 1) & 0xFFF;
+        lo = (st->texAddr & 0xFFFFFF) + (((tl >> 2) * width + (sl >> 2)) << (sz - 1));
+        hi = op == 0x30 ? lo + pixels * 2 : lo + (lines - 1) * (width << (sz - 1)) + (pixels << (sz - 1));
+    }
+    for (i = 0; i < st->cpuRangeCount; i++)
+        if (lo < st->cpuRanges[2 * i + 1] && hi > st->cpuRanges[2 * i]) { x->stats.cpuWrittenLoads++; return 1; }
+    return 0;
 }
 
 // The colour image (slot) a texture load reads, if the GPU drew it (-1: none).
@@ -1519,7 +1562,7 @@ static void copy_back_timed(Xenos *x, int slot)
         if (s->drawnH && s->drawnH < h) h = s->drawnH;
         if (s->cleanSnap && x->st->loadRam && s->cleanGen == x->st->loadRamGen && s->cleanLo == 0 && s->cleanHi >= h) return;
     }
-    if (x->debug != 5)   // xenosdebug=5: no copy backs (diagnosis)
+    if (!no_copy_back(x))
     {
         u64 t0 = h64_prof_now(x->sys);
         copy_back(x, slot);
@@ -1713,11 +1756,13 @@ static void set_blend(Xenos *x, int lastCycle)
 static void set_depth(Xenos *x, int hasDepth)
 {
     const H64RdpState *st = x->st;
-    int test = hasDepth && (st->depthBlendFlags & DB_DEPTH_TEST);
-    int update = hasDepth && (st->depthBlendFlags & DB_DEPTH_UPDATE);
+    int test = hasDepth && (st->depthBlendFlags & DB_DEPTH_TEST) && x->debug != 10;   // xenosdebug=10: no depth (diagnosis)
+    int update = hasDepth && (st->depthBlendFlags & DB_DEPTH_UPDATE) && x->debug != 10;
     if ((test || update) && (st->depthAddr & 0xFFFFFF) != x->edramDepthAddr)
     {
         // Another depth image than the one in EDRAM: its content is unknown.
+        // (The scissor is set after this, see setup_combined.)
+        x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
         x->dev->Clear(0, NULL, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
     }
@@ -1957,8 +2002,13 @@ static void fill_rect(Xenos *x, const u32 *w)
         // EDRAM): it is bound again first (unbound after a present or a copy
         // back, which used to skip the clear; harmless while every change of
         // colour image cleared the depth too).
+        // Clear() keeps to the scissor of the last draw: Mario Kart 64
+        // clears each player's view after drawing the one beside it, and the
+        // top-right view kept the previous frame's depth (holes in its walls).
         flush_batch(x);
         bind_n64_target(x);
+        x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+        x->stateDirty = 1;
         x->dev->Clear(1, &r, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
         return;
@@ -1994,7 +2044,7 @@ static void fb_load(Xenos *x, const u32 *w, int block)
     u32 a = st->texAddr & 0xFFFFFF, i, bytes = st->texSize == 2 ? 2 : st->texSize == 3 ? 4 : 0;
     u32 sl = (w[0] >> 12) & 0xFFF, tl = w[0] & 0xFFF, sh = (w[1] >> 12) & 0xFFF, th = w[1] & 0xFFF;
     int found = -1;
-    if (!bytes || st->texFmt != 0 || x->debug == 5) return;
+    if (!bytes || st->texFmt != 0 || no_copy_back(x)) return;
     for (i = 0; i < FB_SLOTS; i++)
     {
         const FbSlot *s = &x->fb[i];
@@ -2290,6 +2340,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     if (op == 0x30 || op == 0x33 || op == 0x34)
     {
         int slot = find_texture_slot(x);
+        if (slot >= 0 && load_cpu_written(x, w, op)) slot = -1;
         x->tmemDataGen++;
         x->fbLoad.valid = 0;
         if (op != 0x30) fb_load(x, w, op == 0x33);
@@ -2301,7 +2352,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
             memset(x->staleTmem, 0, sizeof(x->staleTmem));
             x->staleCount = 0;
         }
-        if (slot >= 0 && x->fb[slot].gpuDirty && op != 0x30 && x->fbLoad.valid && x->fbLoad.slot == slot && x->debug != 5 &&
+        if (slot >= 0 && x->fb[slot].gpuDirty && op != 0x30 && x->fbLoad.valid && x->fbLoad.slot == slot && !no_copy_back(x) &&
             x->loadLog.size() < 64)
         {
             log_load(x, w, op, slot);
@@ -2310,7 +2361,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         else
         {
             if (x->loadLog.size() >= 64) resolve_loads(x);
-            if (x->debug == 9 && slot >= 0 && x->fb[slot].gpuDirty && x->debugLines < 40)
+            if (x->debug == 9 && slot >= 0 && x->fb[slot].gpuDirty && x->debugLines < 40 && x->presentCount >= x->debugFrom)
             {
                 // xenosdebug=9: why a load copies a GPU image back (three presents).
                 const FbSlot *fs = &x->fb[slot];
@@ -2815,7 +2866,9 @@ void h64_xenos_set_debug(H64Renderer *r, int mode)
     Xenos *x = X(r);
     x->debugFrom = 2500;
     x->debugLines = 0;
-    if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
+    if (mode >= 9000) { x->debugFrom = (u32)(mode - 9000); mode = 9; }   // 9000 + N: copy-backs from present N
+    else if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
+    else if (mode == 9) x->debugFrom = 0;
     x->debug = mode;
     x->shaders.clear();   // leaks the compiled shaders: debug only
     x->shaderT1.clear();
