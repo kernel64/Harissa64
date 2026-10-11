@@ -27,7 +27,7 @@
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 
-enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2 };
+enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1 };
 // Rare's modified microcodes, recognised by the CRC of their code (GLideN64's
 // table): F3D with other commands and vertex formats.
 enum { RARE_NONE = 0, RARE_GOLDEN, RARE_PD, RARE_DKR, RARE_JFG, RARE_CBFD };
@@ -206,6 +206,15 @@ struct H64Gfx
     int texFromCimg;
     CimgSig cimgSig[8];            // small colour images drawn, with their lines' signatures
     u32 cimgUse;
+
+    // S2DEX 1.x: the 2D matrix (uObjMtx), object render mode, the status
+    // words G_OBJ_LOADTXTR and G_SELECT_DL test, a pending G_SELECT_DL.
+    s32 objA, objB, objC, objD;
+    s16 objX, objY;
+    u16 objScaleX, objScaleY;
+    u32 objRender;
+    u32 objStatus[4];
+    u32 selAddr, selSid, selFlag;
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -525,10 +534,17 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             const char *v = strstr(str, "fifo ");
             if (!v) v = strstr(str, "xbus ");
             if (v && v[5] == '2') u->type = UC_S2DEX2;
+            else if (!v && g->sys->options.gfxS2dex1)
+            {
+                // S2DEX 1.05 and later (Yoshi's Story: 1.06); 1.03 places its
+                // sprites differently (GLideN64) and stays with the LLE RSP.
+                const char *n = strstr(str + 19, " 1.");
+                if (n && n[3] >= '0' && n[3] <= '9' && n[4] >= '5' && n[4] <= '9') u->type = UC_S2DEX1;
+            }
         }
         H64_INFO("[gfx] microcode \"%s\" at %06X: %s", str, u->start,
                  u->type == UC_F3D ? "F3D" : u->type == UC_F3DEX ? "F3DEX" :
-                 u->type == UC_F3DEX2 ? (u->zex ? "F3DZEX" : "F3DEX2") : u->type == UC_S2DEX2 ? "S2DEX2" : "not handled (LLE)");
+                 u->type == UC_F3DEX2 ? (u->zex ? "F3DZEX" : "F3DEX2") : u->type == UC_S2DEX2 ? "S2DEX2" : u->type == UC_S2DEX1 ? "S2DEX 1.x" : "not handled (LLE)");
         return;
     }
     H64_INFO("[gfx] microcode at %06X: no name string, not handled (LLE)", u->start);
@@ -2106,6 +2122,297 @@ static void bg_1cyc(H64Gfx *g, u32 addr)
     }
 }
 
+// ---- S2DEX 1.05+ (Yoshi's Story), per game (options.gfxS2dex1): 2D objects
+// drawn from TMEM. Studied in GLideN64 (uCodes/S2DEX.cpp, GPL v2: the
+// structures, G_OBJ_LOADTXTR, and the fixed-point placement of sprites
+// decoded by olivieryuyu) and rewritten; the RDP commands are the ones the
+// microcode sends (checked against the LLE RSP): a rectangle is a TEXRECT, a
+// sprite (which the 2D matrix may rotate) two texture triangles.
+// Structures in RDRAM (big-endian, gs2dex.h): uObjSprite = objX, scaleW,
+// imageW, paddingX, objY, scaleH, imageH, paddingY, imageStride, imageAdrs
+// (16 bits each), then fmt, siz, pal, flags (bytes); uObjTxtr = type, image
+// (32 bits), then 16-bit fields that depend on the type, sid, then flag and
+// mask (32 bits); uObjMtx = A, B, C, D (s15.16), X, Y (s10.2), BaseScaleX,
+// BaseScaleY (u5.10).
+#define OBJRM_SHRINK1 0x10
+#define OBJRM_SHRINK2 0x20
+#define OBJRM_WIDEN 0x40
+#define OBJRM_BILERP 0x08
+
+struct ObjSprite
+{
+    s16 objX, objY;
+    u16 scaleW, scaleH, imageW, imageH, stride, adrs;
+    u8 fmt, siz, pal, flags;
+};
+
+static void read_obj_sprite(H64Gfx *g, u32 a, ObjSprite *o)
+{
+    o->objX = rd16(g, a + 0);
+    o->scaleW = (u16)rd16(g, a + 2);
+    o->imageW = (u16)rd16(g, a + 4);
+    o->objY = rd16(g, a + 8);
+    o->scaleH = (u16)rd16(g, a + 10);
+    o->imageH = (u16)rd16(g, a + 12);
+    o->stride = (u16)rd16(g, a + 16);
+    o->adrs = (u16)rd16(g, a + 18);
+    o->fmt = rd8(g, a + 20);
+    o->siz = rd8(g, a + 21);
+    o->pal = rd8(g, a + 22);
+    o->flags = rd8(g, a + 23);
+    if (!o->scaleW) o->scaleW = 1;
+    if (!o->scaleH) o->scaleH = 1;
+}
+
+// The microcode's rounding corrections, by object render mode (the
+// CorrectorsA01/A23/B03 tables, S2DEX 1.05 and later).
+struct ObjCorr { s16 A0, A1, A2, A3, B0, B2, B3; };
+
+static void obj_corr(u32 rm, ObjCorr *c)
+{
+    static const s16 a01[16] = { 0, 0, 0x10, 0x20, 0x20, 0x40, 0x30, 0x60, 0, -12, 0x10, 0x14, 0x20, 0x34, 0x30, 0x54 };
+    static const s16 a23[8] = { 1, -2, -2, -2, 1, 0, 0, 0 };
+    static const s16 b03[8] = { -4, 0, 0, 1, -1, 3, -16, 0 };
+    u32 o1 = (rm & (OBJRM_SHRINK1 | OBJRM_SHRINK2 | OBJRM_WIDEN)) >> 3;
+    u32 o2 = (rm & (OBJRM_SHRINK1 | OBJRM_BILERP)) >> 2;
+    u32 o3 = (rm & OBJRM_BILERP) >> 1;
+    c->A0 = a01[o1];
+    c->A1 = a01[o1 + 1];
+    c->A2 = a23[o2];
+    c->A3 = a23[o2 + 1];
+    c->B0 = b03[o3];
+    c->B2 = b03[2 + o3];
+    c->B3 = b03[3 + o3];
+}
+
+// Tile 0 for the sprite's texels (clamped, no mirror), as the microcode sets it.
+static void obj_tile(H64Gfx *g, const ObjSprite *o)
+{
+    u32 w = o->imageW >> 5, h = o->imageH >> 5;
+    if (!w) w = 1;
+    if (!h) h = 1;
+    out_rdp1(g, 0xE7000000u, 0);                                                                   // PIPESYNC
+    out_rdp1(g, 0xF5000000u | ((u32)(o->fmt & 7) << 21) | ((u32)(o->siz & 3) << 19) | (((u32)o->stride & 0x1FF) << 9) |
+             ((u32)o->adrs & 0x1FF), ((u32)(o->pal & 15) << 20) | (2u << 18) | (2u << 8));          // SETTILE 0
+    out_rdp1(g, 0xF2000000u, ((w - 1) << 14) | ((h - 1) << 2));                                      // SETTILESIZE 0
+}
+
+// G_OBJ_LOADTXTR: a block, a tile or a palette into TMEM through tile 7,
+// unless the status word says it is there already.
+static void obj_load(H64Gfx *g, u32 addr)
+{
+    u32 a = seg_to_phys(g, addr);
+    u32 type = rd32(g, a), image = seg_to_phys(g, rd32(g, a + 4));
+    u32 f8 = (u16)rd16(g, a + 8), f10 = (u16)rd16(g, a + 10), f12 = (u16)rd16(g, a + 12), sid = (u16)rd16(g, a + 14);
+    u32 flag = rd32(g, a + 16), mask = rd32(g, a + 20);
+    if (sid > 12) return;
+    if ((g->objStatus[sid >> 2] & mask) == flag) return;
+    if (type == 0x00001033)        // G_OBJLT_TXTRBLOCK: tmem, tsize, tline
+    {
+        out_rdp1(g, 0xFD000000u | (2u << 19) | (f10 & 0x3FF), image);                     // SETTIMG RGBA16, width tsize + 1
+        out_rdp1(g, 0xF5000000u | (2u << 19) | (f8 & 0x1FF), 0x07000000u);                // SETTILE 7
+        out_rdp1(g, 0xE6000000u, 0);                                                      // LOADSYNC
+        out_rdp1(g, 0xF3000000u, 0x07000000u | (((f10 << 2) & 0xFFF) << 12) | (f12 & 0xFFF));   // LOADBLOCK (tsize * 4, as the microcode sends it)
+    }
+    else if (type == 0x00FC1034)   // G_OBJLT_TXTRTILE: tmem, twidth, theight
+    {
+        out_rdp1(g, 0xFD000000u | (2u << 19) | (f10 & 0x3FF), image);                     // SETTIMG RGBA16, width twidth + 1
+        out_rdp1(g, 0xF5000000u | (2u << 19) | ((((f10 + 1) >> 2) & 0x1FF) << 9) | (f8 & 0x1FF), 0x07000000u);
+        out_rdp1(g, 0xE6000000u, 0);
+        out_rdp1(g, 0xF4000000u, 0x07000000u | (((f10 << 2) & 0xFFF) << 12) | (f12 & 0xFFF));   // LOADTILE
+    }
+    else if (type == 0x00000030)   // G_OBJLT_TLUT: phead, pnum
+    {
+        out_rdp1(g, 0xFD000000u | (2u << 19), image);                                     // SETTIMG RGBA16, width 1
+        out_rdp1(g, 0xF5000000u | (f8 & 0x1FF), 0x07000000u);                             // SETTILE 7 at the palette
+        out_rdp1(g, 0xE6000000u, 0);
+        out_rdp1(g, 0xF0000000u, 0x07000000u | (((f10 << 2) & 0xFFF) << 12));             // LOADTLUT
+    }
+    else
+        return;
+    g->objStatus[sid >> 2] = (g->objStatus[sid >> 2] & ~mask) | (flag & mask);
+}
+
+// G_OBJ_RECTANGLE (matrix 0) and G_OBJ_RECTANGLE_R (the 2D matrix's position
+// and base scale, no rotation): one TEXRECT.
+static void obj_rect(H64Gfx *g, u32 addr, int useMatrix)
+{
+    ObjSprite o;
+    ObjCorr cc;
+    s32 xh, xl, yh, yl, sh, th, dsdx, dtdy;
+    u32 scaleW, scaleH, cycle = (g->omH >> 20) & 3;
+    u64 w[2];
+    read_obj_sprite(g, seg_to_phys(g, addr), &o);
+    obj_corr(g->objRender, &cc);
+    if (useMatrix)
+    {
+        u32 bx = g->objScaleX ? g->objScaleX : 1, by = g->objScaleY ? g->objScaleY : 1;
+        s32 xhp, yhp;
+        scaleW = ((u32)g->objScaleX * 0x40 * o.scaleW) >> 16;
+        scaleH = ((u32)g->objScaleY * 0x40 * o.scaleH) >> 16;
+        if (!scaleW) scaleW = 1;
+        if (!scaleH) scaleH = 1;
+        xhp = (s32)((((s64)o.objX << 16) * 0x0800 * (s64)(0x80007FFFu / bx)) >> 32) + ((s32)(s16)((g->objX + cc.A2) & cc.B0) << 16);
+        yhp = (s32)((((s64)o.objY << 16) * 0x0800 * (s64)(0x80007FFFu / by)) >> 32) + ((s32)(s16)((g->objY + cc.A2) & cc.B0) << 16);
+        xh = (s16)(xhp >> 16);
+        yh = (s16)(yhp >> 16);
+        xl = (s16)((xhp + (s32)(((u64)(u32)((s32)o.imageW - cc.A1) << 24) * (0x80007FFFu / scaleW) >> 32)) >> 16);
+        yl = (s16)((yhp + (s32)(((u64)(u32)((s32)o.imageH - cc.A1) << 24) * (0x80007FFFu / scaleH) >> 32)) >> 16);
+    }
+    else
+    {
+        scaleW = o.scaleW;
+        scaleH = o.scaleH;
+        xh = (s16)((o.objX + cc.A2) & cc.B0);
+        yh = (s16)((o.objY + cc.A2) & cc.B0);
+        xl = (s16)((((u64)(u32)((s32)o.imageW - cc.A1) << 24) * (0x80007FFFu / scaleW)) >> 48) + xh;
+        yl = (s16)((((u64)(u32)((s32)o.imageH - cc.A1) << 24) * (0x80007FFFu / scaleH)) >> 48) + yh;
+    }
+    sh = cc.A0 + cc.B2;
+    th = sh - (s32)((((u32)yh & 3) * 0x0200 * scaleH) >> 16);
+    dsdx = (s32)scaleW;
+    dtdy = (s32)scaleH;
+    if (o.flags & 0x01) { sh = sh + o.imageW + cc.A0 - cc.A1 - 1; dsdx = -dsdx; }   // G_BG_FLAG_FLIPS: from the right
+    if (o.flags & 0x10) { th = th + o.imageH + cc.A0 - cc.A1 - 1; dtdy = -dtdy; }   // G_BG_FLAG_FLIPT: from the bottom
+    if (cycle == 2) dsdx *= 4;   // copy mode: four pixels a step
+    // Off the top or left of the screen: the texture moves on by as much.
+    if (xh < 0) { sh += (s32)(((s64)(-xh) * dsdx) >> 7); xh = 0; }
+    if (yh < 0) { th += (s32)(((s64)(-yh) * dtdy) >> 7); yh = 0; }
+    if (xl <= xh || yl <= yh) return;
+    obj_tile(g, &o);
+    w[0] = ((u64)(0xE4000000u | (((u32)xl & 0xFFF) << 12) | ((u32)yl & 0xFFF)) << 32) | ((((u32)xh & 0xFFF) << 12) | ((u32)yh & 0xFFF));
+    w[1] = ((u64)((((u32)sh & 0xFFFF) << 16) | ((u32)th & 0xFFFF)) << 32) | ((((u32)dsdx & 0xFFFF) << 16) | ((u32)dtdy & 0xFFFF));
+    out_rdp(g, w, 2);
+}
+
+// G_OBJ_SPRITE: the sprite through the whole 2D matrix (it may turn), as two
+// texture triangles.
+static void obj_sprite(H64Gfx *g, u32 addr)
+{
+    ObjSprite o;
+    ObjCorr cc;
+    H64RenderVertex v[4];
+    s16 x0, y0, ulx, uly, lrx, lry, px[4], py[4];
+    float s0 = 0, s1, t0 = 0, t1;
+    u32 k, oldTile = g->texTile, oldLevel = g->texLevel;
+    read_obj_sprite(g, seg_to_phys(g, addr), &o);
+    obj_corr(g->objRender, &cc);
+    x0 = (s16)((g->objX + cc.B3) & cc.B0);
+    y0 = (s16)((g->objY + cc.B3) & cc.B0);
+    ulx = (s16)(o.objX + cc.A3);
+    uly = (s16)(o.objY + cc.A3);
+    lrx = (s16)((((u64)(u32)((s32)o.imageW - cc.A1) << 8) * (0x80007FFFu / o.scaleW)) >> 32) + ulx;
+    lry = (s16)((((u64)(u32)((s32)o.imageH - cc.A1) << 8) * (0x80007FFFu / o.scaleH)) >> 32) + uly;
+    px[0] = ulx; py[0] = uly;
+    px[1] = lrx; py[1] = uly;
+    px[2] = ulx; py[2] = lry;
+    px[3] = lrx; py[3] = lry;
+    s1 = (float)o.imageW - 32.0f;   // the last texel, in 10.5
+    t1 = (float)o.imageH - 32.0f;
+    if (o.flags & 0x01) { float t = s0; s0 = s1; s1 = t; }
+    if (o.flags & 0x10) { float t = t0; t0 = t1; t1 = t; }
+    for (k = 0; k < 4; k++)
+    {
+        s16 X = (s16)(x0 + (s16)(((s32)px[k] * g->objA) >> 16) + (s16)(((s32)py[k] * g->objB) >> 16));
+        s16 Y = (s16)(y0 + (s16)(((s32)px[k] * g->objC) >> 16) + (s16)(((s32)py[k] * g->objD) >> 16));
+        memset(&v[k], 0, sizeof(v[k]));
+        v[k].x = X * 0.25f;
+        v[k].y = Y * 0.25f;
+        v[k].invw = 1.0f;
+        v[k].r = v[k].g = v[k].b = v[k].a = 255.0f;
+        v[k].s = (k & 1) ? s1 : s0;
+        v[k].t = (k & 2) ? t1 : t0;
+    }
+    obj_tile(g, &o);
+    g->texTile = 0;
+    g->texLevel = 0;
+    out_tri(g, &v[0], &v[1], &v[2], H64_TRI_TEXTURE);
+    out_tri(g, &v[1], &v[3], &v[2], H64_TRI_TEXTURE);
+    g->texTile = oldTile;
+    g->texLevel = oldLevel;
+}
+
+static void run_s2dex1(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 cmd = w0 >> 24;
+    switch (cmd)
+    {
+    case 0x00: break;                                              // G_SPNOOP
+    case 0x01: bg_1cyc(g, w1); break;                              // G_BG_1CYC
+    case 0x02: bg_copy(g, w1); break;                              // G_BG_COPY
+    case 0x03: obj_rect(g, w1, 0); break;                          // G_OBJ_RECTANGLE
+    case 0x04: obj_sprite(g, w1); break;                           // G_OBJ_SPRITE
+    case 0x05:          // G_OBJ_MOVEMEM
+    {
+        u32 a = seg_to_phys(g, w1), idx = w0 & 0xFFFF;
+        if (idx == 0)   // uObjMtx
+        {
+            g->objA = (s32)rd32(g, a);
+            g->objB = (s32)rd32(g, a + 4);
+            g->objC = (s32)rd32(g, a + 8);
+            g->objD = (s32)rd32(g, a + 12);
+            g->objX = rd16(g, a + 16);
+            g->objY = rd16(g, a + 18);
+            g->objScaleX = (u16)rd16(g, a + 20);
+            g->objScaleY = (u16)rd16(g, a + 22);
+        }
+        else if (idx == 2)   // uObjSubMtx
+        {
+            g->objX = rd16(g, a);
+            g->objY = rd16(g, a + 2);
+            g->objScaleX = (u16)rd16(g, a + 4);
+            g->objScaleY = (u16)rd16(g, a + 6);
+        }
+        else if (idx == 8) set_viewport(g, w1);
+        break;
+    }
+    case 0x06: call_dl(g, w1, ((w0 >> 16) & 0xFF) == 0); break;   // G_DL
+    case 0xAF:          // G_LOAD_UCODE (Yoshi switches to F3DEX for its 3D and back)
+        if (!load_ucode(g, w1, g->half1, (w0 & 0xFFFF) + 1)) g->abort = 1;
+        break;
+    case 0xB0:          // G_SELECT_DL (after G_RDPHALF_0)
+    {
+        u32 sid = g->selSid, mask = w1, addr = g->selAddr | ((w0 & 0xFFFF) << 16);
+        if (sid >= 4 || (g->objStatus[sid] & mask) == g->selFlag) break;
+        g->objStatus[sid] = (g->objStatus[sid] & ~mask) | (g->selFlag & mask);
+        call_dl(g, addr, ((w0 >> 16) & 0xFF) == 0);
+        break;
+    }
+    case 0xB1: g->objRender = w1; break;                           // G_OBJ_RENDERMODE
+    case 0xB2: obj_rect(g, w1, 1); break;                          // G_OBJ_RECTANGLE_R
+    case 0xB3: break;                                              // G_RDPHALF_2 (read with TEXRECT)
+    case 0xB4: g->half1 = w1; break;                               // G_RDPHALF_1
+    case 0xB8: end_dl(g); break;                                   // G_ENDDL
+    case 0xB9: set_othermode(g, 0, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;
+    case 0xBA: set_othermode(g, 1, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;
+    case 0xBC:          // G_MOVEWORD: G_MW_GENSTAT sets a status word
+        if ((w0 & 0xFF) == 0x08) { u32 off = (w0 >> 8) & 0xFFFF; if (off < 16) g->objStatus[off >> 2] = w1; }
+        else f3d_moveword(g, w0, w1);
+        break;
+    case 0xC1: obj_load(g, w1); break;                                       // G_OBJ_LOADTXTR
+    case 0xC2: obj_load(g, w1); obj_sprite(g, w1 + 24); break;               // G_OBJ_LDTX_SPRITE
+    case 0xC3: obj_load(g, w1); obj_rect(g, w1 + 24, 0); break;              // G_OBJ_LDTX_RECT
+    case 0xC4: obj_load(g, w1); obj_rect(g, w1 + 24, 1); break;              // G_OBJ_LDTX_RECT_R
+    case 0xE4:          // G_RDPHALF_0: G_SELECT_DL's first half, else a TEXRECT
+        if ((rd32(g, g->pc[g->pci]) >> 24) == 0xB0)
+        {
+            g->selAddr = w0 & 0xFFFF;
+            g->selSid = (w0 >> 18) & 0xFF;
+            g->selFlag = w1;
+        }
+        else rdp_passthrough(g, w0, w1);
+        break;
+    default:
+        if (cmd >= 0xC0) rdp_passthrough(g, w0, w1);
+        else
+        {
+            if (!(g->warned & 8)) { H64_INFO("[gfx] S2DEX 1.x command %02X not handled: task left to the LLE RSP", cmd); g->warned |= 8; }
+            g->abort = 1;
+        }
+        break;
+    }
+}
+
 static void run_s2dex2(H64Gfx *g, u32 w0, u32 w1)
 {
     u32 cmd = w0 >> 24;
@@ -2357,6 +2664,13 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     if (u->type == UC_NONE)
         return 0;
     g->clipRatio = 2.0f;   // the microcode's data is loaded again with each task
+    g->objA = g->objD = 1 << 16;   // S2DEX: identity 2D matrix, no render mode, status cleared
+    g->objB = g->objC = 0;
+    g->objX = g->objY = 0;
+    g->objScaleX = g->objScaleY = 1 << 10;
+    g->objRender = 0;
+    memset(g->objStatus, 0, sizeof(g->objStatus));
+    g->selAddr = g->selSid = g->selFlag = 0;
     // ... and with it the other modes' default (F3DEX2: perspective, texture
     // filter, dithers). Mario Golf never sets the texture conversion and
     // relies on it: from 0 its textures were read as YUV (grey courses).
@@ -2398,6 +2712,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
         g->pc[g->pci] = a + 8;
         if (g->uc->type == UC_F3DEX2) run_f3dex2(g, w0, w1);
         else if (g->uc->type == UC_S2DEX2) run_s2dex2(g, w0, w1);
+        else if (g->uc->type == UC_S2DEX1) run_s2dex1(g, w0, w1);
         else run_f3d(g, w0, w1);
         if (g->dlCount > 0 && --g->dlCount == 0)
         {

@@ -22,8 +22,10 @@ static const GameProfile s_profiles[] = {
     { "NKT", "Mario Kart 64", H64_GP_VIEWPORT_CLIP },
     // Textures and palettes kept where small images were drawn earlier.
     { "NMQ", "Paper Mario", H64_GP_CPU_WRITTEN },
-    // A null pointer read at boot with the HLE boot: the game stopped.
-    { "NYS", "Yoshi's Story", H64_GP_IPL3_BOOT },
+    // A null pointer read at boot with the HLE boot: the game stopped. Its
+    // sprites and backgrounds use S2DEX 1.06 (LLE: ~11 VI/s on the console),
+    // whose tasks start from the default other modes.
+    { "NYS", "Yoshi's Story", H64_GP_IPL3_BOOT | H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
     // Relies on the microcode's default other modes (texture conversion):
     // grey courses.
     // Garbled courses and HUD (Golf), missing players and net (Tennis) with
@@ -55,5 +57,6 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxCpuWritten = (f & H64_GP_CPU_WRITTEN) != 0;
     sys->options.gfxOtherModeInit = (f & H64_GP_OTHERMODE_INIT) != 0;
     sys->options.gfxNoCopyBack = (f & H64_GP_NO_COPY_BACK) != 0;
+    sys->options.gfxS2dex1 = (f & H64_GP_S2DEX1) != 0;
     if (name) H64_INFO("[profile] %s: flags %X", name, f);
 }
