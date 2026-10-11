@@ -111,7 +111,7 @@ void UiFpsBadge(const char *text);
 struct UiInput
 {
     WORD held, prev;
-    DWORD repeatAt;
+    DWORD repeatAt, holdStart;
 };
 void UiInputInit(UiInput *in);
 WORD UiInputPoll(UiInput *in);   // XINPUT_GAMEPAD_* bits newly pressed (or repeating)

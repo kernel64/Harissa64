@@ -70,7 +70,7 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>xapilibd.lib;d3d9d.lib;d3dx9d.lib;xgraphicsd.lib;xboxkrnl.lib;xaudiod2.lib;xmcored.lib;xinput2.lib;xbdm.lib</AdditionalDependencies>
+      <AdditionalDependencies>xapilibd.lib;d3d9d.lib;d3dx9d.lib;xgraphicsd.lib;xboxkrnl.lib;xaudiod2.lib;xmcored.lib;xinput2.lib;xnetd.lib;xbdm.lib</AdditionalDependencies>
       <AdditionalOptions>/SECTION:.jitc,ERW %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
@@ -86,7 +86,7 @@
     <Link>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
-      <AdditionalDependencies>xapilib.lib;d3d9.lib;d3dx9.lib;xgraphics.lib;xboxkrnl.lib;xaudio2.lib;xmcore.lib;xinput2.lib</AdditionalDependencies>
+      <AdditionalDependencies>xapilib.lib;d3d9.lib;d3dx9.lib;xgraphics.lib;xboxkrnl.lib;xaudio2.lib;xmcore.lib;xinput2.lib;xnet.lib</AdditionalDependencies>
       <AdditionalOptions>/SECTION:.jitc,ERW %(AdditionalOptions)</AdditionalOptions>
     </Link>
   </ItemDefinitionGroup>
@@ -102,11 +102,22 @@
       <CompileAs>CompileAsC</CompileAs>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
     </ClCompile>
+    <!-- BearSSL 0.6 (TLS for the update check), compiled as C; no OS random or
+         time source (xb_update.cpp gives both), portable code paths only. -->
+    <ClCompile Include="..\..\third_party\bearssl\src\**\*.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <AdditionalIncludeDirectories>..\..\third_party\bearssl\inc;..\..\third_party\bearssl\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>inline=__inline;BR_USE_WIN32_RAND=0;BR_USE_WIN32_TIME=0;BR_USE_URANDOM=0;BR_USE_UNIX_TIME=0;BR_RDRAND=0;BR_AES_X86NI=0;BR_SSE2=0;BR_POWER8=0;BR_INT128=0;BR_UMUL128=0;BR_LE_UNALIGNED=0;BR_BE_UNALIGNED=0;BR_64=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <ClCompile Include="main.cpp" />
     <ClCompile Include="xb_audio.cpp" />
     <ClCompile Include="xb_config.cpp" />
     <ClCompile Include="xb_menu.cpp" />
     <ClCompile Include="xb_ui.cpp" />
+    <ClCompile Include="xb_update.cpp">
+      <AdditionalIncludeDirectories>..\..\third_party\bearssl\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\core\**\*.h" />

@@ -612,15 +612,20 @@ void UiFpsBadge(const char *text)
 }
 
 // ---- Menu input ----
+// A held direction or shoulder button repeats (LB/RB page through the ROM
+// list as if pressed again and again), faster after REPEAT_FAST_AFTER_MS.
 #define REPEAT_FIRST_MS 350
 #define REPEAT_NEXT_MS 90
-static const WORD REPEATS = XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT;
+#define REPEAT_FAST_MS 45
+#define REPEAT_FAST_AFTER_MS 1000
+static const WORD REPEATS = XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN | XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT |
+                            XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER;
 
 void UiInputInit(UiInput *in)
 {
     XINPUT_STATE st;
     in->held = in->prev = 0;
-    in->repeatAt = 0;
+    in->repeatAt = in->holdStart = 0;
     // Buttons already down (the press that opened the menu) do not count.
     if (XInputGetState(0, &st) == ERROR_SUCCESS) in->prev = st.Gamepad.wButtons;
 }
@@ -639,11 +644,15 @@ WORD UiInputPoll(UiInput *in)
         if (st.Gamepad.sThumbLX > 20000) b |= XINPUT_GAMEPAD_DPAD_RIGHT;
     }
     down = b & ~in->prev;
-    if (down & REPEATS) in->repeatAt = now + REPEAT_FIRST_MS;
+    if (down & REPEATS)
+    {
+        in->repeatAt = now + REPEAT_FIRST_MS;
+        in->holdStart = now;
+    }
     else if ((b & REPEATS) && (s32)(now - in->repeatAt) >= 0)
     {
         down |= b & REPEATS;
-        in->repeatAt = now + REPEAT_NEXT_MS;
+        in->repeatAt = now + (now - in->holdStart >= REPEAT_FAST_AFTER_MS ? REPEAT_FAST_MS : REPEAT_NEXT_MS);
     }
     in->prev = b;
     in->held = b;
