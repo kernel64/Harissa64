@@ -714,6 +714,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             _snprintf(updateMsg, sizeof(updateMsg) - 1, "Harissa64 %s is available on GitHub", newVersion);
             updateMsg[sizeof(updateMsg) - 1] = 0;
             updateAt = GetTickCount();
+            H64_INFO("[update] %s", updateMsg);
         }
         int n = (int)roms.size();
         if ((down & XINPUT_GAMEPAD_BACK) && confirm_quit(dev)) return 0;
