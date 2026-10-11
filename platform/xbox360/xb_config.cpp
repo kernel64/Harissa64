@@ -65,7 +65,7 @@ void ConfigDefaults(Config *c)
 int ConfigParseFile(Config *c, const char *path)
 {
     FILE *f = fopen(path, "r");
-    char line[1024];
+    static char line[8192];   // input= scripts run long (one line)
     if (!f) return 0;
     while (fgets(line, sizeof(line), f))
     {

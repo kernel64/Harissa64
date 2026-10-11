@@ -134,6 +134,18 @@ struct GfxTri
     u32 flags, tile, levels;
 };
 
+// A small colour image the display lists drew, with a signature of each of
+// its lines' RDRAM when the drawing started. The GPU never writes RDRAM, so
+// a line whose signature changed since was written by the CPU (or a DMA): a
+// texture load there reads that, not the GPU's picture. Paper Mario draws
+// small images at 0x28E000 and later keeps textures and palettes in that
+// memory; copying the old pictures back over them spoilt its colours.
+struct CimgSig
+{
+    u32 start, rowBytes, rows, use;
+    std::vector<u32> sig;
+};
+
 struct H64Gfx
 {
     H64System *sys;
@@ -191,6 +203,8 @@ struct H64Gfx
     u32 cimg[8][2];                // recent colour images: start, end
     u32 cimgNext;
     int texFromCimg;
+    CimgSig cimgSig[8];            // small colour images drawn, with their lines' signatures
+    u32 cimgUse;
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -200,6 +214,7 @@ struct H64GfxOut
     PodVec<GfxTri> tris;
     PodVec<GfxOp> ops;
     u8 *snapshot;                  // RDRAM-sized; only the task's load ranges are valid
+    std::vector<u32> cpuRanges;    // start, end pairs: loaded colour image lines the CPU wrote since they were drawn
 };
 
 // ---------------------------------------------------------------- memory
@@ -280,6 +295,63 @@ static void out_rdp(H64Gfx *g, const u64 *w, u32 n)
     op->count = n;
 }
 
+// Sampled words of an image line (up to 16, at most 20 bytes apart on lines
+// up to 320 bytes: a palette or a small texture written there changes one).
+static u32 row_sig(const u8 *ram, u32 a, u32 rowBytes)
+{
+    u32 step = (rowBytes / 16) & ~3u, h = 0x811C9DC5u, i;
+    if (step < 4) step = 4;
+    for (i = 0; i < 16 && i * step + 4 <= rowBytes; i++)
+        h = (h ^ h64_load_be32(ram + ((a + i * step) & ~3u))) * 16777619u;
+    return h;
+}
+
+// Small images only (up to 96 KB, guessed height): the frames the VI shows
+// are drawn again every frame and keep the old behaviour.
+static void cimg_track(H64Gfx *g, u32 start, u32 rowBytes, u32 rows)
+{
+    CimgSig *c = 0;
+    u32 k, r;
+    if (!rowBytes || rowBytes * rows > 96 * 1024 || start + rowBytes * rows > H64_RDRAM_SIZE) return;
+    for (k = 0; k < 8 && !c; k++)
+        if (g->cimgSig[k].rows && g->cimgSig[k].start == start) c = &g->cimgSig[k];
+    for (k = 0; k < 8 && !c; k++)
+        if (!g->cimgSig[k].rows) c = &g->cimgSig[k];
+    if (!c)
+    {
+        c = &g->cimgSig[0];
+        for (k = 1; k < 8; k++)
+            if (g->cimgSig[k].use < c->use) c = &g->cimgSig[k];
+    }
+    c->start = start;
+    c->rowBytes = rowBytes;
+    c->rows = rows;
+    c->use = ++g->cimgUse;
+    if (c->sig.size() < rows) c->sig.resize(rows);
+    for (r = 0; r < rows; r++) c->sig[r] = row_sig(g->sys->rdram, start + r * rowBytes, rowBytes);
+}
+
+// The lines of tracked images in [lo, hi) whose RDRAM changed since they were drawn.
+static void cimg_check(H64Gfx *g, u32 lo, u32 hi, std::vector<u32> &out)
+{
+    u32 k, r, r0, r1;
+    for (k = 0; k < 8; k++)
+    {
+        const CimgSig *c = &g->cimgSig[k];
+        u32 end = c->start + c->rowBytes * c->rows;
+        if (!c->rows || hi <= c->start || lo >= end) continue;
+        r0 = lo > c->start ? (lo - c->start) / c->rowBytes : 0;
+        r1 = (hi < end ? hi - c->start + c->rowBytes - 1 : end - c->start) / c->rowBytes;
+        for (r = r0; r < r1; r++)
+            if (row_sig(g->sys->rdram, c->start + r * c->rowBytes, c->rowBytes) != c->sig[r])
+            {
+                u32 a = c->start + r * c->rowBytes;
+                if (!out.empty() && out.back() == a) out.back() = a + c->rowBytes;
+                else { out.push_back(a); out.push_back(a + c->rowBytes); }
+            }
+    }
+}
+
 // Texture images and loads (h64_rdp_load's arithmetic): the RDRAM a load reads.
 static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
 {
@@ -300,6 +372,7 @@ static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
         g->cimg[g->cimgNext & 7][0] = start;
         g->cimg[g->cimgNext & 7][1] = start + bytes;
         g->cimgNext++;
+        cimg_track(g, start, width << (size ? size - 1 : 0), width <= 320 ? 240 : width * 3 / 4);
     }
     else if (op == 0x30 || op == 0x33 || op == 0x34)   // LOAD_TLUT, LOAD_BLOCK, LOAD_TILE
     {
@@ -1027,8 +1100,12 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     v[0] = &g->vtx[i0];
     v[1] = &g->vtx[i1];
     v[2] = &g->vtx[i2];
-    // Entirely outside one plane (screen sides at the clip ratio, or behind the eye).
-    if (v[0]->clip & v[1]->clip & v[2]->clip & CL_W) return;
+    // Entirely outside one plane (a side of the viewport, or behind the eye):
+    // dropped as the microcodes do. The scissor does not always stop them:
+    // Mario Kart 64's points screen draws each player's view in a quarter of
+    // a full-screen scissor, and the clouds of one view showed in another.
+    if (v[0]->clip & v[1]->clip & v[2]->clip & (g->sys->options.gfxKeepOffscreen ? CL_W : CL_POSX | CL_NEGX | CL_POSY | CL_NEGY | CL_W))
+        return;
     if (v[0]->projGen == g->vpGen && v[1]->projGen == g->vpGen && v[2]->projGen == g->vpGen)
     {
         // No clipping: the vertices' own screen positions (same results as below).
@@ -2074,6 +2151,8 @@ H64Gfx *h64_gfx_create(H64System *sys)
     memset(g->cimg, 0, sizeof(g->cimg));
     g->cimgNext = 0;
     g->texFromCimg = 0;
+    for (i = 0; i < 8; i++) g->cimgSig[i].rows = g->cimgSig[i].use = 0;
+    g->cimgUse = 0;
     return g;
 }
 
@@ -2185,6 +2264,7 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync,
     // A task that reads a colour image as a texture renders from the snapshot
     // too: the renderer copies the image back into both (h64_gfx_render).
     *mustSync = 0;
+    out->cpuRanges.clear();
     if (!out->snapshot) out->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
     if (!out->snapshot) { *mustSync = 1; return 1; }
     {
@@ -2202,6 +2282,7 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync,
             for (n++; n < r.size() && (u32)(r[n] >> 32) <= hi; n++)
                 if ((u32)r[n] > hi) hi = (u32)r[n];
             memcpy(out->snapshot + lo, sys->rdram + lo, hi - lo);
+            cimg_check(g, lo, hi, out->cpuRanges);
             sys->prof[H64_PROF_SNAP_BYTES] += hi - lo;
         }
         sys->prof[H64_PROF_GFX_SNAPSHOT] += h64_prof_now(sys) - t0;
@@ -2220,8 +2301,12 @@ void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
     (void)g;
     st->loadRam = out->snapshot;
     st->loadRamGen++;
+    st->cpuRanges = out->cpuRanges.empty() ? 0 : &out->cpuRanges[0];
+    st->cpuRangeCount = (u32)out->cpuRanges.size() / 2;
     flush_lists(sys, out->words, out->tris, out->ops);
     st->loadRam = 0;
+    st->cpuRanges = 0;
+    st->cpuRangeCount = 0;
 }
 
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)

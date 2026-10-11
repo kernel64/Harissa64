@@ -8,6 +8,7 @@
 
 #include <xtl.h>
 #include <xgraphics.h>
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -386,10 +387,14 @@ enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8 };
 static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int second)
 {
     char *p;
+    const char *ra = rgb_a(c->rgbMulAdd), *rb = rgb_b(c->rgbMulSub), *rc = rgb_c(c->rgbMul), *rd = rgb_d(c->rgbAdd);
+    // Only constants (0.0, 1.0) make a scalar, which the XDK's float3() does
+    // not take: the shader did not compile and the fallback drew instead.
+    int scalar = isdigit((u8)ra[0]) && isdigit((u8)rb[0]) && isdigit((u8)rc[0]) && isdigit((u8)rd[0]);
     sprintf_s(out, len,
-              "  comb = float4(float3(saturate((%s - %s) * %s + %s)), saturate((%s - %s) * %s + %s));\n",
-              rgb_a(c->rgbMulAdd), rgb_b(c->rgbMulSub), rgb_c(c->rgbMul), rgb_d(c->rgbAdd), a_abd(c->aMulAdd),
-              a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
+              scalar ? "  comb = float4(saturate((%s - %s) * %s + %s).xxx, saturate((%s - %s) * %s + %s));\n"
+                     : "  comb = float4(float3(saturate((%s - %s) * %s + %s)), saturate((%s - %s) * %s + %s));\n",
+              ra, rb, rc, rd, a_abd(c->aMulAdd), a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
     if (!second) return;
     for (p = out; *p; p++)
         if (p[0] == 't' && (p[1] == '0' || p[1] == '1') && p[2] == '.')
@@ -1491,6 +1496,33 @@ static void copy_back_for_load(Xenos *x, int slot, const u32 *w, u32 op)
     }
 }
 
+// Whether a load reads lines of a colour image the CPU wrote over since the GPU
+// drew it (H64RdpState.cpuRanges): it reads the snapshot as it is then.
+static int load_cpu_written(Xenos *x, const u32 *w, u32 op)
+{
+    const H64RdpState *st = x->st;
+    u32 sl = (w[0] >> 12) & 0xFFF, tl = w[0] & 0xFFF, sh = (w[1] >> 12) & 0xFFF, th = w[1] & 0xFFF;
+    u32 sz = st->texSize ? st->texSize : 1, width = st->texWidth, lo, hi, i;
+    if (!st->loadRam || !st->cpuRangeCount) return 0;
+    // The bytes read, exactly (the snapshot's ranges are rounded up: the
+    // line after a 16x1 palette image may well hold the CPU's data).
+    if (op == 0x33)
+    {
+        lo = (st->texAddr & 0xFFFFFF) + ((tl * width + sl) << (sz - 1));
+        hi = lo + ((((sh - sl + 1) & 0xFFF) << sz) >> 1);
+    }
+    else
+    {
+        u32 lines = (th >> 2) >= (tl >> 2) ? (th >> 2) - (tl >> 2) + 1 : 1;
+        u32 pixels = ((sh >> 2) - (sl >> 2) + 1) & 0xFFF;
+        lo = (st->texAddr & 0xFFFFFF) + (((tl >> 2) * width + (sl >> 2)) << (sz - 1));
+        hi = op == 0x30 ? lo + pixels * 2 : lo + (lines - 1) * (width << (sz - 1)) + (pixels << (sz - 1));
+    }
+    for (i = 0; i < st->cpuRangeCount; i++)
+        if (lo < st->cpuRanges[2 * i + 1] && hi > st->cpuRanges[2 * i]) { x->stats.cpuWrittenLoads++; return 1; }
+    return 0;
+}
+
 // The colour image (slot) a texture load reads, if the GPU drew it (-1: none).
 static int find_texture_slot(Xenos *x)
 {
@@ -2290,6 +2322,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     if (op == 0x30 || op == 0x33 || op == 0x34)
     {
         int slot = find_texture_slot(x);
+        if (slot >= 0 && load_cpu_written(x, w, op)) slot = -1;
         x->tmemDataGen++;
         x->fbLoad.valid = 0;
         if (op != 0x30) fb_load(x, w, op == 0x33);
@@ -2310,7 +2343,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         else
         {
             if (x->loadLog.size() >= 64) resolve_loads(x);
-            if (x->debug == 9 && slot >= 0 && x->fb[slot].gpuDirty && x->debugLines < 40)
+            if (x->debug == 9 && slot >= 0 && x->fb[slot].gpuDirty && x->debugLines < 40 && x->presentCount >= x->debugFrom)
             {
                 // xenosdebug=9: why a load copies a GPU image back (three presents).
                 const FbSlot *fs = &x->fb[slot];
@@ -2815,7 +2848,9 @@ void h64_xenos_set_debug(H64Renderer *r, int mode)
     Xenos *x = X(r);
     x->debugFrom = 2500;
     x->debugLines = 0;
-    if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
+    if (mode >= 9000) { x->debugFrom = (u32)(mode - 9000); mode = 9; }   // 9000 + N: copy-backs from present N
+    else if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
+    else if (mode == 9) x->debugFrom = 0;
     x->debug = mode;
     x->shaders.clear();   // leaks the compiled shaders: debug only
     x->shaderT1.clear();

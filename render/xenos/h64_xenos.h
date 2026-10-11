@@ -57,6 +57,7 @@ struct H64XenosStats
     u64 tLoads;       // texture loads in the software RDP (inside tState)
     u32 loadResolves; // copy backs put off, then needed (resolve_loads)
     u32 resolveCopyBacks;   // copy backs those made
+    u32 cpuWrittenLoads;    // loads from GPU frames the CPU wrote over since (no copy back)
     // The largest texture decoded: its size, tile (fmt, size, stride, masks, flags) and source
     // (0 triangle, 1 rectangle).
     u32 bigW, bigH, bigFmt, bigSize, bigStride, bigMaskS, bigMaskT, bigFlags, bigRect, bigCount;
