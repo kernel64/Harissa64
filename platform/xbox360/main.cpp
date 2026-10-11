@@ -1088,6 +1088,11 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     sys->options.gfxTiming = c->gfxTiming;
     // Per-game settings (core/system/h64_profile.cpp); the ini may still force late parse.
     h64_apply_game_profile(sys);
+    if (c->gameFlags >= 0)
+    {
+        h64_apply_profile_flags(sys, (u32)c->gameFlags);
+        H64_INFO("[profile] gameflags=%X from the ini", c->gameFlags);
+    }
     if (c->lateParse >= 0) sys->options.gfxLateParse = c->lateParse;
     if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;

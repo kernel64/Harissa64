@@ -2040,32 +2040,14 @@ static void bg_copy(H64Gfx *g, u32 addr)
 // go to TMEM through tile 7 (one more line and column for the bilinear
 // filter) and a scaled rectangle draws each band with tile 0. The picture is
 // split where it wraps horizontally; a flipped, 4-bit or 32-bit picture, or
-// one that wraps vertically, is left to the LLE RSP.
-static void bg_1cyc(H64Gfx *g, u32 addr)
+// one that wraps vertically (except under S2DEX 1.x, see below), is left to
+// the LLE RSP.
+// G_BG_1CYC's bands for frame lines [frameY, frameY + frameH) (10.2), the
+// picture not wrapping vertically in between (see bg_1cyc).
+static void bg_1cyc_part(H64Gfx *g, u32 ptr, u32 fmt, u32 siz, u32 pal, u32 bpp, u32 tmemBytes, s32 imageX, s32 imageW,
+                         s32 imageY, s32 imageH, s32 frameX, s32 frameW, s32 frameY, s32 frameH, s32 scaleW, s32 scaleH)
 {
-    u32 a = seg_to_phys(g, addr);
-    s32 imageX = (u16)rd16(g, a + 0), imageW = (u16)rd16(g, a + 2) >> 2;   // 10.5, texels
-    s32 frameX = rd16(g, a + 4), frameW = (u16)rd16(g, a + 6);             // 10.2
-    s32 imageY = (u16)rd16(g, a + 8), imageH = (u16)rd16(g, a + 10) >> 2;
-    s32 frameY = rd16(g, a + 12), frameH = (u16)rd16(g, a + 14);
-    u32 ptr = seg_to_phys(g, rd32(g, a + 16));
-    u32 fmt = rd8(g, a + 22), siz = rd8(g, a + 23), pal = (u16)rd16(g, a + 24), flip = (u16)rd16(g, a + 26);
-    s32 scaleW = (u16)rd16(g, a + 28), scaleH = (u16)rd16(g, a + 30);
-    u32 bpp = 4u << siz, tmemBytes = fmt == 2 ? 2048 : 4096, cycle = (g->omH >> 20) & 3;
     s32 xa, xw;
-    if (flip || (siz != 1 && siz != 2) || cycle > 1 || imageW <= 0 || imageH <= 0 || scaleW <= 0 || scaleH <= 0)
-    {
-        g->abort = 1;   // not handled here: the LLE RSP draws it
-        return;
-    }
-    // A frame starting above or left of the screen: the picture moves on by
-    // as many pixels (10.2 pixels * 5.10 texels a pixel = 10.5 texels * 128).
-    if (frameX < 0) { imageX += (-frameX) * scaleW / 128; frameW += frameX; frameX = 0; }
-    if (frameY < 0) { imageY += (-frameY) * scaleH / 128; frameH += frameY; frameY = 0; }
-    if (frameW <= 0 || frameH <= 0) return;
-    imageX %= imageW * 32;
-    imageY %= imageH * 32;
-    if (imageY + (frameH * scaleH) / 128 > imageH * 32) { g->abort = 1; return; }   // wraps vertically
     for (xa = 0; xa < frameW; xa += xw)
     {
         // A piece of the frame's width: up to where the picture wraps, and
@@ -2119,6 +2101,50 @@ static void bg_1cyc(H64Gfx *g, u32 addr)
                    (((u32)scaleW & 0xFFFF) << 16) | ((u32)scaleH & 0xFFFF);
             out_rdp(g, w, 2);
         }
+    }
+}
+
+static void bg_1cyc(H64Gfx *g, u32 addr)
+{
+    u32 a = seg_to_phys(g, addr);
+    s32 imageX = (u16)rd16(g, a + 0), imageW = (u16)rd16(g, a + 2) >> 2;   // 10.5, texels
+    s32 frameX = rd16(g, a + 4), frameW = (u16)rd16(g, a + 6);             // 10.2
+    s32 imageY = (u16)rd16(g, a + 8), imageH = (u16)rd16(g, a + 10) >> 2;
+    s32 frameY = rd16(g, a + 12), frameH = (u16)rd16(g, a + 14);
+    u32 ptr = seg_to_phys(g, rd32(g, a + 16));
+    u32 fmt = rd8(g, a + 22), siz = rd8(g, a + 23), pal = (u16)rd16(g, a + 24), flip = (u16)rd16(g, a + 26);
+    s32 scaleW = (u16)rd16(g, a + 28), scaleH = (u16)rd16(g, a + 30);
+    u32 bpp = 4u << siz, tmemBytes = fmt == 2 ? 2048 : 4096, cycle = (g->omH >> 20) & 3;
+    if (flip || (siz != 1 && siz != 2) || cycle > 1 || imageW <= 0 || imageH <= 0 || scaleW <= 0 || scaleH <= 0)
+    {
+        g->abort = 1;   // not handled here: the LLE RSP draws it
+        return;
+    }
+    // A frame starting above or left of the screen: the picture moves on by
+    // as many pixels (10.2 pixels * 5.10 texels a pixel = 10.5 texels * 128).
+    if (frameX < 0) { imageX += (-frameX) * scaleW / 128; frameW += frameX; frameX = 0; }
+    if (frameY < 0) { imageY += (-frameY) * scaleH / 128; frameH += frameY; frameY = 0; }
+    if (frameW <= 0 || frameH <= 0) return;
+    imageX %= imageW * 32;
+    imageY %= imageH * 32;
+    // A picture that wraps vertically (Yoshi's Story's scrolling backgrounds)
+    // is drawn in parts, each from its own first line (only for the games
+    // whose profile turns S2DEX 1.x on, so far).
+    for (;;)
+    {
+        s32 partH = frameH;
+        if (imageY + (s32)(((s64)frameH * scaleH) / 128) > imageH * 32)
+        {
+            if (!g->sys->options.gfxS2dex1) { g->abort = 1; return; }   // other games: the LLE RSP draws it
+            partH = (s32)(((s64)(imageH * 32 - imageY) * 128) / scaleH) & ~3;   // whole pixels before the wrap
+            if (partH <= 0) partH = 4;
+            if (partH > frameH) partH = frameH;
+        }
+        bg_1cyc_part(g, ptr, fmt, siz, pal, bpp, tmemBytes, imageX, imageW, imageY, imageH, frameX, frameW, frameY, partH, scaleW, scaleH);
+        if (g->abort || partH >= frameH) break;
+        imageY = (imageY + (s32)(((s64)partH * scaleH) / 128)) % (imageH * 32);
+        frameY += partH;
+        frameH -= partH;
     }
 }
 

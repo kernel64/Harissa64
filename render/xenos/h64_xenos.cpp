@@ -585,8 +585,12 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b)
         u32 rows = (t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 / stride : 4096 / stride;
         if (rowTexels < 1) rowTexels = 1;
         if (rows < 1) rows = 1;
-        if (b->clampS && b->w > rowTexels) b->w = rowTexels;
-        if (b->clampT && b->h > rows) b->h = rows;
+        // Not with a mask: the decode then wraps or mirrors inside it, and a
+        // clamped, mirrored tile is wider than the TMEM rows (Smash Bros.'
+        // Mario: half a face and half the cap's M, mirrored over 64 texels,
+        // were cut at 32).
+        if (b->clampS && !ms && b->w > rowTexels) b->w = rowTexels;
+        if (b->clampT && !mt && b->h > rows) b->h = rows;
         // Wrapped in T over more lines than TMEM holds: line y reads the same
         // TMEM words as line y mod (TMEM bytes / stride), so one such period is
         // the whole texture (a power of two dividing the mask; at least 2 for

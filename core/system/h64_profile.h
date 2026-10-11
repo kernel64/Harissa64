@@ -30,4 +30,8 @@ u32 h64_game_profile(const char *gameCode, const char **name);
 // Sets sys->options from the loaded ROM's profile (and logs it).
 void h64_apply_game_profile(H64System *sys);
 
+// Sets sys->options from H64_GP_* flags (ini gameflags= for checks; the boot
+// flag H64_GP_IPL3_BOOT is read from the table at boot only).
+void h64_apply_profile_flags(H64System *sys, u32 flags);
+
 #endif
