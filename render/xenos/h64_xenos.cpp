@@ -1273,6 +1273,8 @@ static void select_framebuffer(Xenos *x)
         s->addr = addr;
         s->valid = 0;
         s->drawnH = 0;
+        x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);   // Clear() keeps to the scissor
+        x->stateDirty = 1;
         x->dev->Clear(0, NULL, D3DCLEAR_TARGET, x->debug == 1 ? 0xFF0000FF : 0xFF000000, 1.0f, 0);
     }
     else if (best != x->edramOwner)
@@ -1745,11 +1747,13 @@ static void set_blend(Xenos *x, int lastCycle)
 static void set_depth(Xenos *x, int hasDepth)
 {
     const H64RdpState *st = x->st;
-    int test = hasDepth && (st->depthBlendFlags & DB_DEPTH_TEST);
-    int update = hasDepth && (st->depthBlendFlags & DB_DEPTH_UPDATE);
+    int test = hasDepth && (st->depthBlendFlags & DB_DEPTH_TEST) && x->debug != 10;   // xenosdebug=10: no depth (diagnosis)
+    int update = hasDepth && (st->depthBlendFlags & DB_DEPTH_UPDATE) && x->debug != 10;
     if ((test || update) && (st->depthAddr & 0xFFFFFF) != x->edramDepthAddr)
     {
         // Another depth image than the one in EDRAM: its content is unknown.
+        // (The scissor is set after this, see setup_combined.)
+        x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
         x->dev->Clear(0, NULL, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
     }
@@ -1989,8 +1993,13 @@ static void fill_rect(Xenos *x, const u32 *w)
         // EDRAM): it is bound again first (unbound after a present or a copy
         // back, which used to skip the clear; harmless while every change of
         // colour image cleared the depth too).
+        // Clear() keeps to the scissor of the last draw: Mario Kart 64
+        // clears each player's view after drawing the one beside it, and the
+        // top-right view kept the previous frame's depth (holes in its walls).
         flush_batch(x);
         bind_n64_target(x);
+        x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+        x->stateDirty = 1;
         x->dev->Clear(1, &r, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
         return;

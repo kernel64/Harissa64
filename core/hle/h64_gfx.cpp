@@ -47,7 +47,8 @@ enum
 };
 
 // Vertex clip flags.
-enum { CL_POSX = 1, CL_NEGX = 2, CL_POSY = 4, CL_NEGY = 8, CL_W = 16 };
+// CL_GUARD: outside the clip ratio's guard band (G_MW_CLIP), where the microcodes clip.
+enum { CL_POSX = 1, CL_NEGX = 2, CL_POSY = 4, CL_NEGY = 8, CL_W = 16, CL_GUARD = 32 };
 
 #define GFX_VTX_MAX 80
 #define GFX_STACK_MAX 32
@@ -808,7 +809,7 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
     u32 i, stride = fmt == VF_PD ? 12 : fmt == VF_DKR ? 10 : 16;
     u32 gm = geom(g);
     float ldir[10][3], look[2][3], lc[10][3], m[4][4];
-    float texS = g->texScaleS, texT = g->texScaleT, fogMul = g->fogMul, fogOff = g->fogOff;
+    float texS = g->texScaleS, texT = g->texScaleT, fogMul = g->fogMul, fogOff = g->fogOff, cr = g->clipRatio;
     int l, lighting = (gm & GM_LIGHTING) && fmt != VF_DKR, cbfd = (gm & GM_LIGHTING) && fmt == VF_CBFD;
     int billboard = fmt == VF_DKR && g->billboard, nLights = g->numLights, noNear = g->uc->noNear;
     float vs0 = g->vscale[0], vs1 = g->vscale[1], vs2 = g->vscale[2], vt0 = g->vtrans[0], vt1 = g->vtrans[1], vt2 = g->vtrans[2];
@@ -956,6 +957,7 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
         if (y > w) clip |= CL_POSY;
         if (y < -w) clip |= CL_NEGY;
         if (w < 0.01f) clip |= CL_W;
+        if (x > cr * w || x < -cr * w || y > cr * w || y < -cr * w) clip |= CL_GUARD;
         v->x = x; v->y = y; v->z = z; v->w = w;
         v->r = r; v->g = gg; v->b = b; v->a = al;
         v->s = s * texS;
@@ -1005,7 +1007,7 @@ static void modify_vertex(H64Gfx *g, u32 n, u32 where, u32 val)
         v->projGen = 0;
         v->sx = (s16)(val >> 16) / 4.0f;
         v->sy = (s16)val / 4.0f;
-        v->clip &= ~(CL_POSX | CL_NEGX | CL_POSY | CL_NEGY);
+        v->clip &= ~(CL_POSX | CL_NEGX | CL_POSY | CL_NEGY | CL_GUARD);
         break;
     case 0x1C:   // G_MWO_POINT_ZSCREEN (16.16 in G_MAXZ units)
         v->zOverride = 1;
@@ -1093,7 +1095,7 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     ClipVtx poly[2][16];
     H64RenderVertex sv[16];
     u32 gm = geom(g), flags = 0;
-    int n = 3, cur = 0, k, needClip = 0;
+    int n = 3, cur = 0, k, needClip = 0, guard, keep = g->sys->options.gfxKeepOffscreen;
     float area = 0, iw[3];
     g->nTris++;
     if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || i2 >= GFX_VTX_MAX) return;
@@ -1104,9 +1106,13 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
     // dropped as the microcodes do. The scissor does not always stop them:
     // Mario Kart 64's points screen draws each player's view in a quarter of
     // a full-screen scissor, and the clouds of one view showed in another.
-    if (v[0]->clip & v[1]->clip & v[2]->clip & (g->sys->options.gfxKeepOffscreen ? CL_W : CL_POSX | CL_NEGX | CL_POSY | CL_NEGY | CL_W))
+    if (v[0]->clip & v[1]->clip & v[2]->clip & (keep ? CL_W : CL_POSX | CL_NEGX | CL_POSY | CL_NEGY | CL_W))
         return;
-    if (v[0]->projGen == g->vpGen && v[1]->projGen == g->vpGen && v[2]->projGen == g->vpGen)
+    // Across the guard band (clip ratio times the viewport): clipped there as
+    // the microcodes do. With a ratio of 1 the triangles stop at the
+    // viewport's sides: Mario Kart 64's views in a full-screen scissor.
+    guard = !keep && ((v[0]->clip | v[1]->clip | v[2]->clip) & CL_GUARD);
+    if (!guard && v[0]->projGen == g->vpGen && v[1]->projGen == g->vpGen && v[2]->projGen == g->vpGen)
     {
         // No clipping: the vertices' own screen positions (same results as below).
         GfxTri *t;
@@ -1153,6 +1159,7 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         else if (c->w < 0.0001f || (!g->uc->noNear && c->z < -c->w))
             needClip = 1;
     }
+    if (guard) needClip = 1;
     if (!(gm & GM_SMOOTH))
         for (k = 1; k < 3; k++)
         {
@@ -1179,7 +1186,7 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         // Planes, as p . (x, y, z, w) >= 0: w > 0 (just in front of the eye),
         // the near plane z >= -w unless the microcode does not clip it, and a
         // guard band keeping screen positions in [-1000, 2000].
-        float p[6][4];
+        float p[10][4];
         int j, planes = 0;
         p[planes][0] = 0; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = 1.0f; planes++;
         if (!g->uc->noNear) { p[planes][0] = 0; p[planes][1] = 0; p[planes][2] = 1.0f; p[planes][3] = 1.0f; planes++; }
@@ -1187,6 +1194,14 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         p[planes][0] = -g->vscale[0]; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = 2000.0f - g->vtrans[0]; planes++;
         p[planes][0] = 0; p[planes][1] = -g->vscale[1]; p[planes][2] = 0; p[planes][3] = g->vtrans[1] + 1000.0f; planes++;
         p[planes][0] = 0; p[planes][1] = g->vscale[1]; p[planes][2] = 0; p[planes][3] = 2000.0f - g->vtrans[1]; planes++;
+        if (guard)
+        {
+            float cr = g->clipRatio;
+            p[planes][0] = -1.0f; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = cr; planes++;
+            p[planes][0] = 1.0f; p[planes][1] = 0; p[planes][2] = 0; p[planes][3] = cr; planes++;
+            p[planes][0] = 0; p[planes][1] = -1.0f; p[planes][2] = 0; p[planes][3] = cr; planes++;
+            p[planes][0] = 0; p[planes][1] = 1.0f; p[planes][2] = 0; p[planes][3] = cr; planes++;
+        }
         for (j = 0; j < planes && n >= 3; j++)
         {
             n = clip_plane(poly[cur], n, poly[cur ^ 1], p[j]);
@@ -1441,7 +1456,14 @@ static void f3d_moveword(H64Gfx *g, u32 w0, u32 w1)
         if (g->numLights > 8) g->numLights = 8;
         if (g->numLights < 0) g->numLights = 0;
         break;
-    case 0x04: break;   // G_MW_CLIP
+    case 0x04:   // G_MW_CLIP: the clip ratio (gSPClipRatio writes r, r, -r, -r)
+        if (offset == 0x04)
+        {
+            int r = (s16)w1;
+            if (r < 0) r = -r;
+            if (r >= 1 && r <= 6) g->clipRatio = (float)r;
+        }
+        break;
     case 0x06: g->segments[(offset >> 2) & 0xF] = w1 & 0x00FFFFFF; break;
     case 0x08:
         g->fogMul = (float)(s16)(w1 >> 16);
@@ -1859,7 +1881,14 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
         {
         case 0x00: insert_matrix(g, offset, w1); break;
         case 0x02: g->numLights = (int)(w1 / 24); if (g->numLights > 8) g->numLights = 8; break;
-        case 0x04: break;
+        case 0x04:   // G_MW_CLIP, as in f3d_moveword
+            if (offset == 0x04)
+            {
+                int r = (s16)w1;
+                if (r < 0) r = -r;
+                if (r >= 1 && r <= 6) g->clipRatio = (float)r;
+            }
+            break;
         case 0x06: g->segments[(offset >> 2) & 0xF] = w1 & 0x00FFFFFF; break;
         case 0x08:
             g->fogMul = (float)(s16)(w1 >> 16);
@@ -2135,7 +2164,7 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->vpGen = 1;
     g->pTri = g->pNtri = g->pVtx = g->pNvtx = g->pNlight = 0;
     memset(g->vtrans, 0, sizeof(g->vtrans));
-    g->clipRatio = 1.0f;
+    g->clipRatio = 2.0f;   // the microcodes' default (FRUSTRATIO_2)
     g->texScaleS = g->texScaleT = 1.0f;
     g->texLevel = g->texTile = 0;
     g->texOn = 0;
@@ -2318,6 +2347,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     const GfxUcode *u = find_ucode(g, ucStart & 0x7FFFFF, ucData & 0x7FFFFF, ucDataSize);
     if (u->type == UC_NONE)
         return 0;
+    g->clipRatio = 2.0f;   // the microcode's data is loaded again with each task
     g->uc = u;
 
     // Per-task state, as the microcode starts each task (GLideN64 RSP_ProcessDList).
