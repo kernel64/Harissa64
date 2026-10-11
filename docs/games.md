@@ -1,6 +1,6 @@
 # Games
 
-How the games we tried run on a real Xbox 360 (RGH) with Harissa64 2.0.0. Measured in October 2026, mostly on the intro and title screens, without playing far into the games.
+How the games we tried run on a real Xbox 360 (RGH) with Harissa64 2.0.1. Measured in October 2026, mostly on the intro and title screens, without playing far into the games.
 
 The speed is the number of frames per second the game shows. 60 means full speed for American and Japanese games, 50 for European ones. A range means it changes from scene to scene.
 
@@ -63,7 +63,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | ClayFighter 63 1/3 | Not tested yet | - | |
 | ClayFighter: Sculptor's Cut | Not tested yet | - | |
 | Command & Conquer | Not tested yet | - | |
-| Conker's Bad Fur Day | Runs | 55-60 | Full speed almost everywhere, the busiest moments of the cutscene after the intro dip to about 55. Black screen for about 4 seconds at start, that's normal. |
+| Conker's Bad Fur Day | Runs | 55-60 | Full speed almost everywhere, the busiest moments of the cutscene after the intro dip to about 55. Black screen for about 4 seconds at start, that's normal. (Needs more testing). |
 | Cruis'n Exotica | Not tested yet | - | |
 | Cruis'n USA | Not tested yet | - | |
 | Cruis'n World | Not tested yet | - | |
@@ -75,7 +75,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Donald Duck: Goin' Quackers | Not tested yet | - | |
 | Donkey Kong 64 | Runs | 60 | Black screen for about 4 seconds at start, that's normal. |
 | Doom 64 | Runs | ~40 | Slow: about 40 in the intro. |
-| Dr. Mario 64 | Runs | 60 | Full speed. |
+| Dr. Mario 64 | Runs | 46-60 | Menus at full speed, about 47 during a match. |
 | Dual Heroes | Not tested yet | - | |
 | Duck Dodgers Starring Daffy Duck | Not tested yet | - | |
 | Duke Nukem 64 | Not tested yet | - | |
@@ -145,12 +145,12 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Madden NFL 99 | Not tested yet | - | |
 | Magical Tetris Challenge | Not tested yet | - | |
 | Major League Baseball Featuring Ken Griffey Jr. | Not tested yet | - | |
-| Mario Golf | Runs | 56-60 | Intro and title screen at full speed. Gameplay needs more testing. |
-| Mario Kart 64 | Playable | 60 | Menus and races at full speed. The European version runs at its normal 50. Widescreen works well. |
-| Mario Party | Runs | 56-60 | Intro at full speed. The picture doesn't fill the whole screen in some scenes. |
-| Mario Party 2 | Runs | 56-60 | Intro and title screen at full speed. Gameplay needs more testing. |
-| Mario Party 3 | Runs | 60 | Starts and runs, the old freeze at boot is gone. |
-| Mario Tennis | Runs | 54-60 | Intro and title screen at full speed. Gameplay needs more testing. |
+| Mario Golf | Runs | 60 | Courses, players and scores look right at full speed. The pause menu has a black background. |
+| Mario Kart 64 | Playable | 60 | Menus and races at full speed. The European version runs at its normal 50. Widescreen works well. The points screen between races is fixed. |
+| Mario Party | Runs | 56-60 | Intro, menus and the first board at full speed. |
+| Mario Party 2 | Runs | 56-60 | Intro, menus and the first board at full speed. |
+| Mario Party 3 | Runs | 60 | Intro, menus and the first board at full speed. |
+| Mario Tennis | Runs | 60 | Menus and matches look right at full speed. |
 | Mega Man 64 | Not tested yet | - | |
 | Mia Hamm Soccer 64 | Not tested yet | - | |
 | Mickey's Speedway USA | Runs | 60 | Black screen for about 4 seconds at start, that's normal. |
@@ -163,7 +163,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Monaco Grand Prix | Not tested yet | - | |
 | Monopoly | Not tested yet | - | |
 | Monster Truck Madness 64 | Not tested yet | - | |
-| Mortal Kombat 4 | Runs | 57-60 | Intro and title screen at full speed. Gameplay needs more testing. |
+| Mortal Kombat 4 | Not tested yet | - | Needs more testing. |
 | Mortal Kombat Mythologies: Sub-Zero | Not tested yet | - | |
 | Mortal Kombat Trilogy | Not tested yet | - | |
 | MRC: Multi-Racing Championship | Not tested yet | - | |
@@ -202,7 +202,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Off Road Challenge | Not tested yet | - | |
 | Ogre Battle 64: Person of Lordly Caliber | Not tested yet | - | |
 | Olympic Hockey Nagano '98 | Not tested yet | - | |
-| Paper Mario | Playable | 60 | Some screen transitions drop to about 40 for a moment. |
+| Paper Mario | Runs | 60 | Colours are right again from the start of a new game. Some screen transitions drop to about 40 for a moment. Needs more testing. |
 | Paperboy | Not tested yet | - | |
 | Penny Racers | Not tested yet | - | |
 | Perfect Dark | Runs | 50-60 | 60 in the intro and menus, 50-60 in the cutscene after the intro. Black screen for about 4 seconds at start, that's normal. |
@@ -314,4 +314,4 @@ Tried a game that isn't tested yet? Tell us how it went.
 | WWF WrestleMania 2000 | Not tested yet | - | |
 | WWF: War Zone | Not tested yet | - | |
 | Xena: Warrior Princess - The Talisman of Fate | Not tested yet | - | |
-| Yoshi's Story | Problems | 60 | Runs at full speed but the picture is garbled. |
+| Yoshi's Story | Problems | ~11 | Starts now and the menus look right, but in the levels the background is garbled and the game is slow (about 11). |
