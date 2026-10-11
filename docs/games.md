@@ -145,7 +145,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Madden NFL 99 | Not tested yet | - | |
 | Magical Tetris Challenge | Not tested yet | - | |
 | Major League Baseball Featuring Ken Griffey Jr. | Not tested yet | - | |
-| Mario Golf | Runs | 60 | Courses, players and scores look right at full speed. The pause menu has a black background. |
+| Mario Golf | Runs | 56-60 | Courses, players and scores look right at full speed. |
 | Mario Kart 64 | Playable | 60 | Menus and races at full speed. The European version runs at its normal 50. Widescreen works well. The points screen between races is fixed. |
 | Mario Party | Runs | 56-60 | Intro, menus and the first board at full speed. |
 | Mario Party 2 | Runs | 56-60 | Intro, menus and the first board at full speed. |
@@ -263,7 +263,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Stunt Racer 64 | Not tested yet | - | |
 | Super Bowling 64 | Not tested yet | - | |
 | Super Mario 64 | Playable | 60 | Full speed with sound. The European version runs at its normal 50. |
-| Super Smash Bros. | Runs | 56-60 | Intro and title screen at full speed. Gameplay needs more testing. |
+| Super Smash Bros. | Runs | 56-60 | Menus and fights look right at full speed. |
 | Supercross 2000 | Not tested yet | - | |
 | Superman | Not tested yet | - | |
 | Tarzan | Runs | 57-60 | Intro and title screen at full speed. Gameplay needs more testing. |
@@ -314,4 +314,4 @@ Tried a game that isn't tested yet? Tell us how it went.
 | WWF WrestleMania 2000 | Not tested yet | - | |
 | WWF: War Zone | Not tested yet | - | |
 | Xena: Warrior Princess - The Talisman of Fate | Not tested yet | - | |
-| Yoshi's Story | Problems | ~11 | Starts now and the menus look right, but in the levels the background is garbled and the game is slow (about 11). |
+| Yoshi's Story | Runs | ~48 | Menus and levels look right now. Levels run at about 48. |
