@@ -2345,6 +2345,9 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     {
         int slot = find_texture_slot(x);
         if (slot >= 0 && load_cpu_written(x, w, op)) slot = -1;
+        // Profile: only full-width images are copied back (Mario Golf keeps
+        // its course picture in one; its narrow strips garbled the HUD).
+        if (slot >= 0 && x->sys->options.gfxCopyBackFull && x->fb[slot].width < 320) slot = -1;
         x->tmemDataGen++;
         x->fbLoad.valid = 0;
         if (op != 0x30) fb_load(x, w, op == 0x33);

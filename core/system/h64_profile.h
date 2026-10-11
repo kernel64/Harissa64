@@ -20,7 +20,8 @@ enum
     H64_GP_IPL3_BOOT = 8,       // boot through the cartridge's real IPL3 (h64_hle_boot)
     H64_GP_OTHERMODE_INIT = 16, // options.gfxOtherModeInit
     H64_GP_NO_COPY_BACK = 32,   // options.gfxNoCopyBack
-    H64_GP_S2DEX1 = 64          // options.gfxS2dex1
+    H64_GP_S2DEX1 = 64,         // options.gfxS2dex1
+    H64_GP_COPY_BACK_FULL = 128 // options.gfxCopyBackFull
 };
 
 // The flags for a game code (4 characters, the region ignored); *name gets
