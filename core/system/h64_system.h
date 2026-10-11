@@ -106,6 +106,8 @@ struct H64Options
     int gfxNoCopyBack;      // GPU renderer (game profile): frames it drew are never copied back for texture loads
     int gfxS2dex1;          // graphics HLE (game profile): S2DEX 1.05+ in C++ (else the LLE RSP runs it)
     int gfxCopyBackFull;    // GPU renderer (game profile): copy back only images at least 320 pixels wide
+    int gfxRdramCopy;       // GPU renderer (game profile): copy-mode 1:1 rectangles move memory (xenos rdram_copy_rect)
+    int gfxCopyBackWhole;   // GPU renderer (game profile): a copy back for a load copies the whole image
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
