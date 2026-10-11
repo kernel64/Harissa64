@@ -244,13 +244,14 @@ static DWORD WINAPI update_thread(LPVOID)
     XNetStartupParams xnsp;
     WSADATA wsa;
     char latest[32];
+    DWORD t0 = GetTickCount();
     memset(&xnsp, 0, sizeof(xnsp));
     xnsp.cfgSizeOfStruct = sizeof(xnsp);
     xnsp.cfgFlags = XNET_STARTUP_BYPASS_SECURITY;
     if (XNetStartup(&xnsp) != 0 || WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { H64_INFO("[update] no network stack"); return 0; }
     if (!wait_network()) { H64_INFO("[update] no network"); return 0; }
     if (!fetch_latest(latest, sizeof(latest))) return 0;
-    H64_INFO("[update] latest release %s, running %s", latest, s_current);
+    H64_INFO("[update] latest release %s, running %s (%u ms)", latest, s_current, (unsigned)(GetTickCount() - t0));
     if (newer(latest, s_current))
     {
         strncpy(s_latest, latest, sizeof(s_latest) - 1);
