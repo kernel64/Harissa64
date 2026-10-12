@@ -110,6 +110,7 @@ struct H64Options
     int gfxCopyBackWhole;   // GPU renderer (game profile): a copy back for a load copies the whole image
     int gfxFrameToRdram;    // GPU renderer (game profile): the picture the VI shows is copied back to RDRAM
     int gfxSmallToRdram;    // GPU renderer (game profile): small images the RDP leaves are copied back to RDRAM
+    int gfxSlotByWidth;     // GPU renderer (game profile): one frame slot per address and width
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
