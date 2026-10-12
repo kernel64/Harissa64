@@ -34,8 +34,9 @@ static const GameProfile s_profiles[] = {
     // Missing players and net with copy backs; right without.
     { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK },
     // Copies its background into the frame's memory through 512-pixel
-    // images with copy-mode rectangles, then draws in a 328-pixel frame.
-    { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY },
+    // images with copy-mode rectangles, then draws in a 328-pixel frame at
+    // the same address (one slot for both showed horizontal streaks).
+    { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY | H64_GP_SLOT_BY_WIDTH },
     // Reads its background back six lines at a time (~40 copy backs a frame,
     // ~47 VI/s in a match): one whole copy instead, 60 VI/s.
     { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE },

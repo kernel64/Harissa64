@@ -2656,6 +2656,11 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         u32 bpr = (fs->width ? fs->width : 320) * (fs->bytes ? fs->bytes : 2), off = origin - fs->addr;
         float oy = (float)(off / bpr), ox = (float)((off % bpr) / (fs->bytes ? fs->bytes : 2));
         int haveGeom = vi_geometry(vi, &g);
+        // The VI reads memory line after line: an origin in the second half
+        // of a line is the next line, a few pixels to the left. Resident
+        // Evil 2's origin is 324 pixels into its 328-pixel lines; read from
+        // pixel 324 of one line, the picture became horizontal streaks.
+        if (fs->width && ox > fs->width / 2) { ox -= (float)fs->width; oy += 1.0f; }
         if (haveGeom && fs->width && width > fs->width && width % fs->width == 0)
         {
             // The VI's line stride is several image lines (DK64's interlaced
