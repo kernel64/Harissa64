@@ -1,0 +1,13 @@
+# Console regression cases (tests/scripts/console_regress.py): one per game fix.
+# name|rom (in the roms folder)|state file (tests/console/data)|state frame|input (frames after the state)|pauseat (VIs after launch)|extra ini keys (;)
+oot_equipment|Legend of Zelda The - Ocarina of Time.zip|oot_kokiri.h64s|17123|START@60-64|380|resolution=3;smooth=1
+oot_map|Legend of Zelda The - Ocarina of Time.zip|oot_kokiri.h64s|17123|START@60-64,R@400-404,R@600-604|760|resolution=3;smooth=1
+oot_field|Legend of Zelda The - Ocarina of Time.zip|oot_kokiri.h64s|17123||60|
+cv64_lens|Castlevania (U) (V1.2).zip|cv64_book.h64s|1450||74|
+mk64_points|Mario Kart 64 (Europe) (Rev 1).zip|mk64pal_points.h64s|12253||67|
+yoshi_level|Yoshi's Story (U) (M2).zip|yoshi_level.h64s|2650||30|
+smash_mario|Super Smash Bros. (U).zip|smash_select.h64s|1000|Y=70@5-34,X=20@5-15,A@60-63,START@100-104,START@200-204|160|
+re2_street|Resident Evil 2 (U) (V1.1).zip|re2_street.h64s|6590||60|
+drmario|Dr. Mario 64 (U).zip|drmario.h64s|2650||40|
+golf_hole|Mario Golf (U).zip|golf_hole1.h64s|860|A@200-204|300|
+pm_house|Paper Mario (U).zip|pm_house.h64s|6000||60|

@@ -1292,14 +1292,21 @@ static void select_framebuffer(Xenos *x)
         u32 bytes = x->st->colorWidth * fb_height(x->st->colorWidth) * 2;
         ramFresh = x->ramShadow && x->ramCopyHi > x->ramCopyLo && addr < x->ramCopyHi && addr + bytes > x->ramCopyLo;
     }
-    if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound)
+    if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound &&
+        (!x->sys->options.gfxSlotByWidth || x->fb[x->curSlot].width == x->st->colorWidth))
         return;
-    if (x->curSlot >= 0 && x->fb[x->curSlot].addr != addr) small_image_to_rdram(x, x->curSlot);
+    if (x->curSlot >= 0 && (x->fb[x->curSlot].addr != addr || x->fb[x->curSlot].width != x->st->colorWidth))
+        small_image_to_rdram(x, x->curSlot);
     resolve_current(x);
     bind_n64_target(x);
     x->stats.fbSwitches++;
+    // Profile gfxSlotByWidth: images of different widths at one address keep
+    // their own slots (Ocarina of Time draws Link into a 64-pixel image at the
+    // start of its 320-pixel frame: one slot took the last width, and the VI
+    // showed the frame as 64 pixels wide, small in a corner).
     for (i = 0; i < FB_SLOTS; i++)
-        if (x->fb[i].tex && x->fb[i].addr == addr && x->fb[i].valid) { best = (int)i; break; }
+        if (x->fb[i].tex && x->fb[i].addr == addr && x->fb[i].valid &&
+            (!x->sys->options.gfxSlotByWidth || x->fb[i].width == x->st->colorWidth)) { best = (int)i; break; }
     if (best < 0)
     {
         // A colour image the GPU has not drawn yet: it starts black. (Loading
@@ -2601,6 +2608,15 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             (found < 0 || s->addr > x->fb[found].addr ||
              (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;
+    }
+    if (x->sys->options.gfxSlotByWidth && found >= 0 && x->fb[found].width != width)
+    {
+        // Profile gfxSlotByWidth: at the same address, the image as wide as the VI line.
+        for (i = 0; i < FB_SLOTS; i++)
+        {
+            const FbSlot *s = &x->fb[i];
+            if (s->valid && s->tex && s->addr == x->fb[found].addr && s->width == width) { found = (int)i; break; }
+        }
     }
     if (x->debug == 7 && x->presentCount >= 600 && x->presentCount < 624)
     {

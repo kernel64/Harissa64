@@ -81,3 +81,7 @@ docs-local/
 !/release/
 /release/*
 !/release/*.zip
+
+# console regression data (game memory and pictures) and console settings: local only
+/tests/console/data/
+/tests/console/console.local

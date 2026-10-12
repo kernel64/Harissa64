@@ -39,10 +39,11 @@ static const GameProfile s_profiles[] = {
     // Reads its background back six lines at a time (~40 copy backs a frame,
     // ~47 VI/s in a match): one whole copy instead, 60 VI/s.
     { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE },
-    // Draws Link into a 64-pixel image on the equipment screen and copies his
-    // pixels with the CPU (noise without).
-    { "CZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM },
-    { "NZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM },
+    // Draws Link into a 64-pixel image at the start of its 320-pixel frame on
+    // the pause screens and copies his pixels with the CPU (noise without;
+    // one slot for both widths showed the pause screens small in a corner).
+    { "CZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM | H64_GP_SLOT_BY_WIDTH },
+    { "NZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM | H64_GP_SLOT_BY_WIDTH },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
@@ -80,4 +81,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxCopyBackWhole = (f & H64_GP_COPY_BACK_WHOLE) != 0;
     sys->options.gfxFrameToRdram = (f & H64_GP_FRAME_TO_RDRAM) != 0;
     sys->options.gfxSmallToRdram = (f & H64_GP_SMALL_TO_RDRAM) != 0;
+    sys->options.gfxSlotByWidth = (f & H64_GP_SLOT_BY_WIDTH) != 0;
 }
