@@ -221,10 +221,38 @@ static ucode_func_t try_audio_task_detection(struct hle_t *hle)
     return NULL;
 }
 
+static void task_done(struct hle_t *hle)
+{
+    rsp_break(hle, SP_STATUS_TASKDONE);
+}
+
+// Other tasks by the byte sum of their microcode (hle.c's
+// try_normal_task_detection): the JPEG decoders, and OoT's StoreVe12, which
+// has nothing to emulate. Graphics tasks never get here.
+static ucode_func_t try_normal_task_detection(struct hle_t *hle)
+{
+    uint32_t uc = *dmem_u32(hle, TASK_UCODE), size = *dmem_u32(hle, TASK_UCODE_SIZE), n, i, sum = 0;
+    n = (size < 0xf80 ? size : 0xf80) >> 1;
+    for (i = 0; i < n; i++) sum += hle->dram[(uc + i) & HLE_DRAM_MASK];
+    switch (sum)
+    {
+    case 0x278: return &task_done;           // StoreVe12 (Ocarina of Time)
+    case 0x2c85a: return &jpeg_decode_PS0;   // Pokemon Stadium (J)
+    case 0x2caa6: return &jpeg_decode_PS;    // Ocarina of Time, Pokemon Stadium 1 and 2
+    case 0x130de: case 0x278b0: return &jpeg_decode_OB;   // Ogre Battle 64, Bottom of the 9th
+    }
+    return NULL;
+}
+
 static ucode_func_t task_detection(struct hle_t *hle)
 {
     if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) == 2) {
         ucode_func_t f = try_audio_task_detection(hle);
+        if (f)
+            return f;
+    }
+    if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) != 1) {
+        ucode_func_t f = try_normal_task_detection(hle);
         if (f)
             return f;
     }
