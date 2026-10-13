@@ -28,6 +28,7 @@
 #include "../../render/api.h"
 
 enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT, UC_BOSS, UC_F5ROGUE, UC_F5INDI };
+enum { UC_TURBO3D = 40 };   // Turbo3D (Dark Rift): h64_gfx_turbo3d.inc
 // Rare's modified microcodes, recognised by the CRC of their code (GLideN64's
 // table): F3D with other commands and vertex formats.
 enum { RARE_NONE = 0, RARE_GOLDEN, RARE_PD, RARE_DKR, RARE_JFG, RARE_CBFD };
@@ -532,6 +533,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             { 0xDA51CCDBu, UC_F5ROGUE, RARE_NONE, 0, "Star Wars: Rogue Squadron (Factor 5)" },
             { 0x23FEF05Fu, UC_F5INDI, RARE_NONE, 0, "Star Wars Episode I: Battle for Naboo (Factor 5)" },
             { 0x6859BF8Eu, UC_F5INDI, RARE_NONE, 0, "Indiana Jones and the Infernal Machine (Factor 5)" },
+            { 0x2BDCFC8Au, UC_TURBO3D, RARE_NONE, 0, "Turbo3D (Dark Rift)" },   // no name string
         };
         u8 code[4096];
         u32 crc, k;
@@ -3914,6 +3916,7 @@ void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
 }
 
 #include "h64_gfx_f5.inc"
+#include "h64_gfx_turbo3d.inc"
 
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
@@ -4008,6 +4011,12 @@ static int gfx_loop(H64System *sys, H64Gfx *g, int *fullSync)
 {
     while (!g->halt && !g->abort)
     {
+        if (g->uc->type == UC_TURBO3D)
+        {
+            t3d_step(g);
+            if (++g->commands > GFX_MAX_COMMANDS) g->abort = 1;
+            continue;
+        }
         u32 a = g->pc[g->pci];
         u32 w0 = rd32(g, a), w1 = rd32(g, a + 4);
         g->pc[g->pci] = a + 8;
