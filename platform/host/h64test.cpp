@@ -793,7 +793,12 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             if (ok == 0 && h64_png_write_rgb(out, rgb, w, h) == 0)
                 printf("[run] %s %dx%d written to %s\n", k == 0 ? "VI output" : "framebuffer", w, h, out);
             else
+            {
+                const u32 *v = sys->vi.regs;
                 printf("[run] no %s (VI blank)\n", k == 0 ? "VI output" : "framebuffer");
+                printf("[run] VI regs %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X\n",
+                       v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
+            }
         }
     }
     if (wavPath)

@@ -13,6 +13,11 @@ static const CicInfo s_cics[] = {
     { 0x6170A4A1u, H64_CIC_6101, 0x3F },
     { 0x90BB6CB5u, H64_CIC_6102, 0x3F },
     { 0x0B050EE0u, H64_CIC_6103, 0x78 },
+    // The 6103 IPL3 with its two checksum branches (0x63C, 0x648) replaced by
+    // nops, so a modified ROM boots without a new header checksum (Paper
+    // Mario: Master Quest and Master Quest Jr.). As unknown, the HLE boot
+    // jumped to the header's entry point instead of entry - 0x100000.
+    { 0x9CE7C6E5u, H64_CIC_6103, 0x78 },
     { 0x98BC2C86u, H64_CIC_6105, 0x91 },
     { 0xACC8580Au, H64_CIC_6106, 0x85 },
     { 0x009E9EA3u, H64_CIC_7102, 0x3F },
