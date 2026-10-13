@@ -27,7 +27,7 @@
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 
-enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT, UC_BOSS };
+enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT, UC_BOSS, UC_F5ROGUE };
 // Rare's modified microcodes, recognised by the CRC of their code (GLideN64's
 // table): F3D with other commands and vertex formats.
 enum { RARE_NONE = 0, RARE_GOLDEN, RARE_PD, RARE_DKR, RARE_JFG, RARE_CBFD };
@@ -244,6 +244,10 @@ struct H64Gfx
     float bossVS[2], bossVT[2], bossInvw, bossFogM, bossFogO, bossLookat[2][3];
     u8 bossFog[256];
     s16 bossTable[8][8];
+    // Factor 5 (h64_gfx_f5.inc): each list's link word, the vertex colour
+    // table, texture coordinate scales, the viewport's and projection's addresses.
+    u32 f5dl[GFX_PC_MAX];
+    u32 f5ColorBase, f5TexScale[2], f5VpAddr, f5PerspAddr;
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -513,6 +517,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             { 0x8D91244Fu, UC_F3D, RARE_DKR, 0, "Diddy Kong Racing" },
             { 0xBDE9D1FBu, UC_F3D, RARE_JFG, 0, "Jet Force Gemini, Mickey's Speedway" },
             { 0x1B4ACE88u, UC_F3DEX2, RARE_CBFD, 1, "Conker's Bad Fur Day" },   // F3DEXBG.NoN
+            { 0xDA51CCDBu, UC_F5ROGUE, RARE_NONE, 0, "Star Wars: Rogue Squadron (Factor 5)" },
         };
         u8 code[4096];
         u32 crc, k;
@@ -3882,6 +3887,8 @@ void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
     st->cpuRangeCount = 0;
 }
 
+#include "h64_gfx_f5.inc"
+
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
     const u8 *dmem = sys->spMem;
@@ -3938,6 +3945,12 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     g->words.clear();
     g->tris.clear();
     g->ops.clear();
+    if (u->type == UC_F5ROGUE)
+    {
+        g->f5ColorBase = g->f5VpAddr = g->f5PerspAddr = 0;
+        g->f5TexScale[0] = g->f5TexScale[1] = 0;
+        f5_enter(g);   // the task's list starts with its link word too
+    }
     g->bossWait = 0;
     if (u->type == UC_BOSS)
     {
@@ -3965,6 +3978,7 @@ static int gfx_loop(H64System *sys, H64Gfx *g, int *fullSync)
         else if (g->uc->type == UC_S2DEX1) run_s2dex1(g, w0, w1);
         else if (g->uc->type == UC_ZSORT) run_zsort(g, w0, w1);
         else if (g->uc->type == UC_BOSS) run_boss(g, w0, w1);
+        else if (g->uc->type == UC_F5ROGUE) run_f5rogue(g, w0, w1);
         else run_f3d(g, w0, w1);
         if (g->dlCount > 0 && --g->dlCount == 0)
         {
