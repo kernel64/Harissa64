@@ -60,6 +60,8 @@ The **Graphics** page has four presets:
 
 You can also pick the resolution (native, x2, x3, or HD 1280x720, the sharpest in widescreen), widescreen 16:9 (the 3D view gets wider instead of being stretched; it works better in some games than others), texture filtering, edge smoothing and a few screen effects.
 
+Every setting is explained in [docs/settings.md](docs/settings.md).
+
 ## Good to know
 
 - Some games show a black screen for about 4 seconds when they start. That's the cartridge's own boot check, it's normal.
