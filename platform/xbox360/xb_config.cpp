@@ -22,6 +22,7 @@ void ConfigDefaults(Config *c)
     c->showFps = 0;
     c->updateCheck = 1;
     c->gameFlags = -1;
+    c->logCpu = 5;
     c->menuAt = 0;
     c->aboutAt = 0;
     c->autoStart = 0;
@@ -82,6 +83,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
         else if (!strcmp(line, "updatecheck")) c->updateCheck = atoi(eq + 1);
         else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtol(eq + 1, NULL, 16);
+        else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "aboutat")) c->aboutAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "autostart")) c->autoStart = atoi(eq + 1);
