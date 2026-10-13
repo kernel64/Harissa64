@@ -31,6 +31,8 @@ def main():
     ap.add_argument('--exit', type=int, default=0)
     ap.add_argument('--ini', nargs='*', default=[])
     ap.add_argument('--timeout', type=int, default=600)
+    ap.add_argument('--state', help='save state to load first (slot 9); --input/--shots frames are then counted as the console does')
+    ap.add_argument('--folder', help='save folder name of the game (h64test --info), needed with --state')
     ap.add_argument('--xenia', default=r'E:\vs-projects\xenia\build\bin\Windows\Release\xenia.exe')
     ap.add_argument('--dir', default=r'E:\h64v2_xenia\dynarec')
     a = ap.parse_args()
@@ -48,6 +50,11 @@ def main():
         ini.append('shots=' + a.shots)
     if a.exit:
         ini.append('exitafter=%d' % a.exit)
+    if a.state:
+        sd = os.path.join(cache, 'saves', a.folder)
+        os.makedirs(sd, exist_ok=True)
+        shutil.copyfile(a.state, os.path.join(sd, 'state9.h64s'))
+        ini += ['stateslot=9', 'loadstate=1']
     ini += a.ini
     open(os.path.join(game, 'harissa64v2.ini'), 'w', newline='').write('\r\n'.join(ini) + '\r\n')
     for f in glob.glob(os.path.join(cache, 'shot_*.bmp')) + [os.path.join(cache, 'harissa64v2.log')]:
