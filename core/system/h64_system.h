@@ -112,6 +112,7 @@ struct H64Options
     int gfxFrameToRdram;    // GPU renderer (game profile): the picture the VI shows is copied back to RDRAM
     int gfxSmallToRdram;    // GPU renderer (game profile): small images the RDP leaves are copied back to RDRAM
     int gfxSlotByWidth;     // GPU renderer (game profile): one frame slot per address and width
+    int gfxBigTexPool;          // GPU renderer (game profile): textures over 512 KB are kept outside the texture arena
     int gfxCopyBackSameWidth;   // GPU renderer (game profile): a texture load copies a GPU image back only when it is
                                 // as wide as the image (other loads read data the game keeps in that memory)
     int gfxWsBorder;        // GPU renderer (game profile), 16:9 widescreen: a scissor within 16 pixels of both edges
