@@ -202,6 +202,7 @@ struct Xenos
     std::vector<u32> copyBuf;
     IDirect3DSurface9 *rbSurf;     // EDRAM target at EDRAM_READBACK
     IDirect3DTexture9 *rbTex;      // its resolve, in CPU-cached memory (D3DUSAGE_CPU_CACHED_MEMORY)
+    IDirect3DTexture9 *shotTex;    // screenshots: the shown frame resolved into CPU-cached memory (made on first use)
     u32 copyBacks;
     u32 useCounter;
     int debug;
@@ -2865,6 +2866,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     sp.HierarchicalZBase = 0xFFFFFFFF;
     x->rbSurf = NULL;
     x->rbTex = NULL;
+    x->shotTex = NULL;
     if (FAILED(dev->CreateRenderTarget(RB_WIDTH, RB_HEIGHT, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &x->rbSurf, &sp))) x->rbSurf = NULL;
     if (FAILED(dev->CreateTexture(RB_WIDTH, RB_HEIGHT, 1, D3DUSAGE_CPU_CACHED_MEMORY, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &x->rbTex, NULL)))
         x->rbTex = NULL;
@@ -2966,6 +2968,7 @@ void h64_xenos_free(H64Renderer *r)
     if (x->n64Depth) x->n64Depth->Release();
     if (x->rbSurf) x->rbSurf->Release();
     if (x->rbTex) x->rbTex->Release();
+    if (x->shotTex) x->shotTex->Release();
     if (x->backBuffer) x->backBuffer->Release();
     x->sys->options.rdpStateOnly = 0;
     free(x->ramShadow);
@@ -2983,22 +2986,49 @@ int h64_xenos_save_frame(H64Renderer *r, const char *path)
     u32 *untiled = NULL;
     FILE *f;
     if (!x->shown) return -1;
+    IDirect3DTexture9 *src = x->shown;
     w = (u32)(x->shownU * RT_WIDTH);
     h = (u32)(x->shownV * RT_HEIGHT);
+    if (x->shownTiled)
+    {
+        // Read through a copy in CPU-cached memory: the frame textures are
+        // write-combined, which Xenia (d3d12_readback_resolve_skip_write_
+        // combined) no longer reads back from the GPU. Taken after the
+        // present: the N64 target is restored at the next draw.
+        if (!x->shotTex && FAILED(x->dev->CreateTexture(RT_WIDTH, RT_HEIGHT, 1, D3DUSAGE_CPU_CACHED_MEMORY, D3DFMT_A8R8G8B8,
+                                                        D3DPOOL_DEFAULT, &x->shotTex, NULL)))
+            x->shotTex = NULL;
+        if (x->shotTex)
+        {
+            x->dev->SetRenderTarget(0, x->n64Color);
+            x->dev->SetDepthStencilSurface(NULL);
+            x->targetBound = 0;
+            x->stateDirty = 1;
+            x->curSlot = -1;
+            draw_textured(x, x->shown, 1.0f, 1.0f, 0.0f, 0.0f, (float)RT_WIDTH, (float)RT_HEIGHT, (float)RT_WIDTH, (float)RT_HEIGHT);
+            x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, NULL, x->shotTex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
+            src = x->shotTex;
+        }
+    }
     x->dev->BlockUntilIdle();
-    if (FAILED(x->shown->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) return -1;
+    if (FAILED(src->LockRect(0, &lr, NULL, D3DLOCK_READONLY))) return -1;
     bits = (const u8 *)lr.pBits;
     pitch = lr.Pitch;
+    if (src == x->shotTex)
+    {
+        u32 i;
+        for (i = 0; i < RT_WIDTH * RT_HEIGHT * 4; i += 128) __dcbf(i, lr.pBits);   // the GPU wrote behind the caches
+    }
     if (x->shownTiled)
     {
         untiled = (u32 *)malloc(RT_WIDTH * RT_HEIGHT * 4);
-        if (!untiled) { x->shown->UnlockRect(0); return -1; }
+        if (!untiled) { src->UnlockRect(0); return -1; }
         XGUntileSurface(untiled, RT_WIDTH * 4, NULL, lr.pBits, RT_WIDTH, RT_HEIGHT, NULL, 4);
         bits = (const u8 *)untiled;
         pitch = RT_WIDTH * 4;
     }
     f = fopen(path, "wb");
-    if (!f) { free(untiled); x->shown->UnlockRect(0); return -1; }
+    if (!f) { free(untiled); src->UnlockRect(0); return -1; }
     rowBytes = (w * 3 + 3) & ~3u;
     memset(header, 0, sizeof(header));
     header[0] = 'B'; header[1] = 'M';
@@ -3031,7 +3061,7 @@ int h64_xenos_save_frame(H64Renderer *r, const char *path)
     free(row);
     free(untiled);
     fclose(f);
-    x->shown->UnlockRect(0);
+    src->UnlockRect(0);
     return 0;
 }
 

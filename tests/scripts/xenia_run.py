@@ -62,7 +62,8 @@ def main():
             os.remove(f)
     t0 = time.time()
     p = subprocess.Popen([a.xenia, '--log_file=' + os.path.join(work, 'xenia.log'), '--mount_cache=true',
-                          '--d3d12_readback_resolve=true', os.path.join(game, 'harissa64v2.xex')], cwd=work)
+                          '--d3d12_readback_resolve=true',
+                          '--d3d12_readback_resolve_skip_write_combined=true', os.path.join(game, 'harissa64v2.xex')], cwd=work)
     try:
         while p.poll() is None and time.time() - t0 < a.timeout:
             log = os.path.join(cache, 'harissa64v2.log')
