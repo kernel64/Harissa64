@@ -385,7 +385,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 asyncCycles = 0;
     u32 traceFrames = 0, traceStep = 0;
-    int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0, noFpCache = 0, fastFpu = 0, fullExits = 0, noSuper = 0;
+    int jitOps = 0, noJitFpu = 0, cpi = 1, cpiGiven = 0, noLink = 0, noRegCache = 0, noFpCache = 0, fastFpu = 0, fullExits = 0, noSuper = 0;
     H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
@@ -469,7 +469,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--fast-fpu")) fastFpu = 1;
         else if (!strcmp(argv[i], "--full-exits")) fullExits = 1;
         else if (!strcmp(argv[i], "--no-superblocks")) noSuper = 1;
-        else if (!strcmp(argv[i], "--cpi") && i + 1 < argc) cpi = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--cpi") && i + 1 < argc) { cpi = atoi(argv[++i]); cpiGiven = 1; }
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hle")) { hleGfx = 1; hleAudio = 1; }
@@ -592,6 +592,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         if (!st || h64_state_load(sys, st, n)) { fprintf(stderr, "cannot load the state %s\n", loadState); return 2; }
         if (ref && h64_state_load(ref, st, n)) { fprintf(stderr, "cannot load the state into the reference system\n"); return 2; }   // --lockstep
         free(st);
+        // A state keeps the cpi it was saved with; an explicit --cpi wins.
+        if (cpiGiven) { sys->cpu.cpi = (u32)(cpi > 0 ? cpi : 1); if (ref) ref->cpu.cpi = sys->cpu.cpi; }
     }
     if (traceFrames && traceStep >= 1000000000u)
     {
