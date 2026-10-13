@@ -27,7 +27,7 @@
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 
-enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT };
+enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT, UC_BOSS };
 // Rare's modified microcodes, recognised by the CRC of their code (GLideN64's
 // table): F3D with other commands and vertex formats.
 enum { RARE_NONE = 0, RARE_GOLDEN, RARE_PD, RARE_DKR, RARE_JFG, RARE_CBFD };
@@ -235,6 +235,15 @@ struct H64Gfx
     float zsScale[2], zsTrans[2], zsFogM, zsFogO;
     float zsLightCol[9][3], zsLightDir[8][3], zsLookat[2][3];
     int zsNumLights, zsLookatOn;
+
+    // Boss Game Studios' ZSort (World Driver Championship, Stunt Racer 64):
+    // the task waits for the CPU (signals) between its main and sub display
+    // lists and inside the sub list (bossWait: the parse stopped there).
+    int bossWait, bossMain, bossSub, bossWaiting;
+    u32 bossRdp[3], bossMask[2];
+    float bossVS[2], bossVT[2], bossInvw, bossFogM, bossFogO, bossLookat[2][3];
+    u8 bossFog[256];
+    s16 bossTable[8][8];
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -517,6 +526,15 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
         }
         crc = h64_crc32(0, code, sizeof(code));
         u->crc = crc;
+        // Boss's microcode is shorter than 4 KB and what follows it in RDRAM
+        // changes as the game runs (detected again after a state load: another
+        // CRC): its first 2 KB, the same in both its games, identify it.
+        if (h64_crc32(0, code, 2048) == 0x57B8095Au)
+        {
+            u->type = UC_BOSS;
+            H64_INFO("[gfx] microcode at %06X: Boss Game Studios' ZSort", u->start);
+            return;
+        }
         for (k = 0; k < sizeof(known) / sizeof(known[0]); k++)
             if (known[k].crc == crc)
             {
@@ -3176,10 +3194,10 @@ static void run_zsort(H64Gfx *g, u32 w0, u32 w1)
     case 0xD0: case 0xD3: case 0xD4: case 0xD7: case 0xD8: case 0xD9: case 0xDA: break;   // ignored, as GLideN64
     case 0xD1: zs_xfmlight(g, w1); break;                          // G_ZS_XFMLIGHT
     case 0xD2: zs_lighting(g, w0, w1); break;                      // G_ZS_LIGHTING
-    case 0xD5:          // G_ZS_MTXCAT: D = S x T
+    case 0xD5:          // G_ZS_MTXCAT
     {
         float (*s)[4] = zs_mtx(g, w0 & 0xF), (*t)[4] = zs_mtx(g, (w1 >> 16) & 0xF), (*d)[4] = zs_mtx(g, w1 & 0xF);
-        if (s && t && d) mat_mul(d, s, t);
+        if (s && t && d) mat_mul(d, t, s);   // GLideN64's MultMatrix(s, t) is t x s
         break;
     }
     case 0xD6: zs_mult_mpmtx(g, w1); break;                        // G_ZS_MULT_MPMTX
@@ -3213,6 +3231,434 @@ static void run_zsort(H64Gfx *g, u32 w0, u32 w1)
 }
 
 // ---------------------------------------------------------------- task
+static int gfx_loop(H64System *sys, H64Gfx *g, int *fullSync);
+static void flush_output(H64Gfx *g);
+
+// ---- Boss Game Studios' ZSort microcode (World Driver Championship, Stunt
+// Racer 64), recognised by its code CRC. Studied in GLideN64
+// (uCodes/ZSortBOSS.cpp, GPL v2) and rewritten. Like ZSortp, the RSP
+// transforms vertices in DMEM for the CPU to sort and draws the CPU's object
+// lists; it also mixes sound (the Audio commands) in the same tasks. A task
+// runs its main display list, then waits for SIG0 from the CPU before its sub
+// display list, and inside the sub list G_ZSBOSS_WAITSIGNAL sets SIG3 and
+// waits for the CPU to clear it: the parse stops there (bossWait) and goes on
+// when the CPU writes SP_STATUS (h64_gfx_resume).
+static s16 bd16(const H64Gfx *g, u32 off) { off &= 0xFFE; return (s16)h64_load_be16(g->zdmem + off); }
+static void bs16(H64Gfx *g, u32 off, s16 v) { off &= 0xFFE; h64_store_be16(g->zdmem + off, (u16)v); }
+static u32 bd32(const H64Gfx *g, u32 off) { off &= 0xFFC; return h64_load_be32(g->zdmem + off); }
+static void bs32(H64Gfx *g, u32 off, u32 v) { off &= 0xFFC; h64_store_be32(g->zdmem + off, v); }
+
+static float (*boss_mtx(H64Gfx *g, u32 off))[4]
+{
+    if (off == 0x830) return g->mv[g->mvi];
+    if (off == 0x870) return g->proj;
+    if (off == 0x8B0) return g->combined;
+    return 0;
+}
+
+// G_ZSBOSS_SETOTHERMODE_L/H: the field is w0's low 5 bits (length) and bits
+// 8-12 (shift from the top), as the microcode masks it.
+static void boss_othermode(H64Gfx *g, int high, u32 w0, u32 w1)
+{
+    u32 mask = (u32)((s32)0x80000000 >> (w0 & 0x1F));
+    mask >>= (w0 >> 8) & 0x1F;
+    if (high) g->omH = ((g->omH & ~mask) | w1) & 0x00FFFFFF;
+    else g->omL = (g->omL & ~mask) | w1;
+    out_othermode(g);
+}
+
+static void boss_rdp_command(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 cmd = w0 >> 24;
+    switch (cmd)
+    {
+    case 0xE2: boss_othermode(g, 0, w0, w1); break;
+    case 0xE3: boss_othermode(g, 1, w0, w1); break;
+    case 0xEF:          // RDP SETOTHERMODE through the update mask (G_ZSBOSS_UPDATEMASK)
+        g->omH = ((w0 & g->bossMask[0]) | (g->omH & ~g->bossMask[0])) & 0x00FFFFFF;
+        g->omL = (w1 & g->bossMask[1]) | (g->omL & ~g->bossMask[1]);
+        out_othermode(g);
+        break;
+    case 0xDD: g->bossMask[0] = w0 | 0xFF000000u; g->bossMask[1] = w1; break;   // G_ZSBOSS_UPDATEMASK
+    case 0xDE:          // G_ZSBOSS_TRIANGLECOMMAND: shaded, textured triangles with this tile
+        g->texLevel = (w1 >> 3) & 7;
+        g->texTile = w1 & 7;
+        g->texOn = 1;
+        break;
+    case 0xE1: g->half1 = w1; break;
+    case 0xF1: case 0xDF: break;
+    default:
+        if (cmd >= 0xC0) rdp_passthrough(g, w0, w1);
+        break;
+    }
+}
+
+// G_ZSBOSS_RDPCMD and the object lists: RDP commands in RDRAM up to 0xDF.
+static void boss_rdpcmd(H64Gfx *g, u32 addr)
+{
+    u32 a = seg_to_phys(g, addr) & 0x7FFFFF, n;
+    if (!a) return;
+    for (n = 0; n < 65536; n++)
+    {
+        u32 w0 = rd32(g, a), w1 = rd32(g, a + 4), save;
+        if ((w0 >> 24) == 0xDF) break;
+        save = g->pc[g->pci];
+        g->pc[g->pci] = a + 8;
+        boss_rdp_command(g, w0, w1);
+        a = g->pc[g->pci];
+        g->pc[g->pci] = save;
+    }
+}
+
+static u32 boss_object(H64Gfx *g, u32 zh)
+{
+    u32 type = zh & 7, a = zh & 0x7FFFF8, k;
+    for (k = 0; k < 3; k++)
+    {
+        u32 w1 = rd32(g, a + 4 + k * 4);
+        if (w1 != g->bossRdp[k]) { g->bossRdp[k] = w1; boss_rdpcmd(g, w1); }
+    }
+    if (type == 2 || type == 4)   // textured triangle, textured quad (16-byte vertices)
+    {
+        H64RenderVertex v[4];
+        u32 vnum = type == 2 ? 3 : 4, p = a + 16, flags = H64_TRI_SHADE | H64_TRI_TEXTURE;
+        int persp = (g->omH & 0x80000) != 0;
+        for (k = 0; k < vnum; k++, p += 16)
+        {
+            H64RenderVertex *o = &v[k];
+            s32 iw = (s32)rd32(g, p + 12), rgba = (s32)rd32(g, p + 4);
+            o->x = rd16(g, p) / 4.0f;
+            o->y = rd16(g, p + 2) / 4.0f;
+            o->z = 0;
+            o->r = rdf8(g, p + 4); o->g = rdf8(g, p + 5); o->b = rdf8(g, p + 6); o->a = rdf8(g, p + 7);
+            o->s = (float)rd16(g, p + 8);
+            o->t = (float)rd16(g, p + 10);
+            if (!persp) { o->s *= 0.5f; o->t *= 0.5f; }
+            // w from 0x7FFFFFFF / (w * invw factor); 1 when the field is unset.
+            o->invw = (iw == rgba || iw <= 0) ? 1.0f : g->bossInvw * (float)iw / 2147483647.0f;
+        }
+        out_tri(g, &v[0], &v[1], &v[2], flags);
+        if (vnum == 4) out_tri(g, &v[1], &v[2], &v[3], flags);
+    }
+    return seg_to_phys(g, rd32(g, a)) & 0x7FFFFF;
+}
+
+static void boss_movemem(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 flag = (w0 >> 23) & 1, len = 1 + ((w0 >> 12) & 0x7FF), off = w0 & 0xFFF;
+    u32 addr = seg_to_phys(g, w1) & 0x7FFFFF, k;
+    float (*m)[4] = boss_mtx(g, off);
+    if (m)
+    {
+        if (!flag) { load_matrix(g, addr, m); if (m != g->combined) g->combinedValid = 0; }
+        else if (m == g->combined)
+            for (k = 0; k < 16; k++)   // the combined matrix back to RDRAM, N64 fixed point
+            {
+                double v = m[k >> 2][k & 3] * 65536.0;
+                s32 fx = (s32)(v < 0 ? v - 0.5 : v + 0.5);
+                h64_store_be16(g->sys->rdram + ((addr + k * 2) & 0x7FFFFE), (u16)(fx >> 16));
+                h64_store_be16(g->sys->rdram + ((addr + 32 + k * 2) & 0x7FFFFE), (u16)fx);
+            }
+        return;
+    }
+    if (off == 0)   // the viewport
+    {
+        g->bossVS[0] = (float)rd16(g, addr);
+        g->bossVS[1] = (float)rd16(g, addr + 2);
+        g->bossFogM = (float)rd16(g, addr + 6);
+        g->bossVT[0] = (float)rd16(g, addr + 8);
+        g->bossVT[1] = (float)rd16(g, addr + 10);
+        g->bossFogO = (float)rd16(g, addr + 14);
+        set_viewport(g, w1);
+        return;
+    }
+    if (off + len > sizeof(g->zdmem) || addr + len > H64_RDRAM_SIZE) return;
+    if (off == 0x730)   // the fog table (also kept in DMEM)
+        for (k = 0; k < len && k < 256; k++) g->bossFog[k] = rd8(g, addr + k);
+    if (!flag)
+        for (k = 0; k < len; k++) g->zdmem[off + k] = rd8(g, addr + k);
+    else
+        for (k = 0; k < len; k++) g->sys->rdram[addr + k] = g->zdmem[off + k];
+}
+
+static void boss_mult_mpmtx(H64Gfx *g, u32 w1)
+{
+    u32 num = 1 + (w1 >> 24), src = (w1 >> 12) & 0xFFF, dst = w1 & 0xFFF, i;
+    const float (*m)[4] = g->combined;
+    float f = g->bossInvw;
+    if (src + num * 6 > sizeof(g->zdmem) || dst + num * 16 > sizeof(g->zdmem)) return;
+    for (i = 0; i < num; i++, src += 6, dst += 16)
+    {
+        float sx = (float)bd16(g, src), sy = (float)bd16(g, src + 2), sz = (float)bd16(g, src + 4);
+        float x = sx * m[0][0] + sy * m[1][0] + sz * m[2][0] + m[3][0];
+        float y = sx * m[0][1] + sy * m[1][1] + sz * m[2][1] + m[3][1];
+        float z = sx * m[0][2] + sy * m[1][2] + sz * m[2][2] + m[3][2];
+        float w = sx * m[0][3] + sy * m[1][3] + sz * m[2][3] + m[3][3];
+        float iw = w <= 0.0f ? f : 1.0f / w, xw = x * iw, yw = y * iw, px, py;
+        s32 wi = (s32)(w * f), fog;
+        u32 cc = 0;
+        if (xw > f) xw = f; else if (xw < -f) xw = -f;
+        if (yw > f) yw = f; else if (yw < -f) yw = -f;
+        px = g->bossVT[0] + xw * g->bossVS[0];
+        py = g->bossVT[1] + yw * g->bossVS[1];
+        bs16(g, dst, (s16)px);
+        bs16(g, dst + 2, (s16)py);
+        bs32(g, dst + 4, (u32)(wi == 0 ? 0x7FFFFFFF : 0x7FFFFFFF / wi));
+        bs16(g, dst + 8, (s16)x);
+        bs16(g, dst + 10, (s16)y);
+        fog = (s32)(w * (g->bossFogM / 65536.0f) + g->bossFogO);
+        if (fog > 127) fog = 127; else if (fog < -128) fog = -128;
+        if (x >= w) cc |= 0x10;
+        if (y >= w) cc |= 0x20;
+        if (z >= w) cc |= 0x40;
+        if (x <= -w) cc |= 0x01;
+        if (y <= -w) cc |= 0x02;
+        if (z <= -w) cc |= 0x04;
+        g->zdmem[dst + 12] = (u8)cc;
+        g->zdmem[dst + 13] = g->bossFog[fog + 128];
+        bs16(g, dst + 14, (s16)w);
+    }
+}
+
+// Normal or light direction times the matrix's 3x3, normalised (recipro-
+// cal of the length at most 256, as the microcode).
+static void boss_normalize(const float m[4][4], float v[3])
+{
+    float x = m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2];
+    float y = m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2];
+    float z = m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2];
+    float len = x * x + y * y + z * z, r = 256.0f;
+    if (len != 0) r = 1.0f / sqrtf(len);
+    if (r > 256.0f) r = 256.0f;
+    v[0] = x * r; v[1] = y * r; v[2] = z * r;
+}
+
+static void boss_audio2(H64Gfx *g, u32 w0, u32 w1)
+{
+    int len = (int)(w1 >> 24), i, j, k;
+    u32 dst = bd32(g, 0x10);
+    float f1 = (float)((w0 >> 16) & 0xFF) + (float)(w0 & 0xFFFF) / 65536.0f;
+    float f2 = (float)((w1 >> 16) & 0xFF) + (float)(w1 & 0xFFFF) / 65536.0f;
+    u16 v11[2];
+    v11[0] = (u16)bd16(g, 0x904);
+    v11[1] = (u16)bd16(g, 0x906);
+    for (i = 0; i < len; i += 4)
+        for (j = 0; j < 4; j++)
+        {
+            float val = i * f1 + j * f1 + f2, fr;
+            double ip;
+            s32 index;
+            s16 v9, v10, v12, v13;
+            fr = (float)fabs(modf((double)val, &ip));
+            index = ((s32)ip) << 1;
+            v9 = bd16(g, 0x30 + index);
+            v10 = bd16(g, 0x32 + index);
+            v12 = (s16)(v10 - v9);
+            v13 = bd16(g, dst);
+            for (k = 0; k < 2; k++)
+            {
+                s32 r1 = v12 * (s32)(u16)(fr * 65536.0f), r2 = (s32)v9 << 16;
+                s16 r3 = (s16)((r2 + r1) >> 16);
+                r1 = (s32)v11[k] * r3;
+                r2 = (s32)v13 << 16;
+                r3 = (s16)((r2 + r1) >> 16);
+                bs16(g, dst, r3);
+                dst += 2;
+            }
+        }
+}
+
+static void boss_audio4(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 addr = seg_to_phys(g, w1) & 0x7FFFFF, src = ((w0 & 0xF000) >> 12) + addr, dst = 0x30;
+    s32 l1 = (s32)(w0 & 0xFFF), l2, i, j, k;
+    s16 v1 = bd16(g, 0), v2 = bd16(g, 2);
+    for (; l1 > 0; l1 -= 9)
+    {
+        u32 r9 = rd8(g, src++);
+        s32 index = (s32)(r9 & 0xF) << 1;
+        s16 c1 = (s16)(1 << ((r9 >> 4) & 0x1F)), c2 = 0x20;
+        if (index > 6) break;
+        for (l2 = 0; l2 < 2; l2++)
+        {
+            s32 a = (s8)rd8(g, src), b = (s8)rd8(g, src + 1), c = (s8)rd8(g, src + 2), d = (s8)rd8(g, src + 3);
+            s16 coeff[8];
+            src += 4;
+            coeff[0] = (s16)(a >> 4); coeff[1] = (s16)((s32)((u32)a << 28) >> 28);
+            coeff[2] = (s16)(b >> 4); coeff[3] = (s16)((s32)((u32)b << 28) >> 28);
+            coeff[4] = (s16)(c >> 4); coeff[5] = (s16)((s32)((u32)c << 28) >> 28);
+            coeff[6] = (s16)(d >> 4); coeff[7] = (s16)((s32)((u32)d << 28) >> 28);
+            if (dst + 16 > sizeof(g->zdmem)) return;
+            for (i = 0; i < 8; i++)
+            {
+                s32 r1 = 0, r2;
+                for (j = 0, k = i; j < i; j++, k--) r1 += g->bossTable[index + 1][k - 1] * coeff[j];
+                r1 += coeff[i] * (s16)0x0800;
+                r1 *= c1;
+                r2 = v1 * g->bossTable[index][i] + v2 * g->bossTable[index + 1][i];
+                bs16(g, dst + i * 2, (s16)((r1 * c2 + r2 * c2) >> 16));
+            }
+            v1 = bd16(g, dst + 12);
+            v2 = bd16(g, dst + 14);
+            dst += 16;
+        }
+    }
+}
+
+static void boss_wait(H64Gfx *g)
+{
+    g->pc[g->pci] -= 8;   // the command runs again when the parse goes on
+    g->bossWait = 1;
+    g->halt = 1;
+}
+
+static void run_boss(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 cmd = w0 >> 24, *status = &g->sys->rsp.status;
+    switch (cmd)
+    {
+    case 0x00: break;
+    case 0x02:          // G_ZSBOSS_ENDMAINDL: the sub list once the CPU gives SIG0
+        if (g->bossSub) { g->halt = 1; g->bossMain = g->bossSub = 0; break; }
+        g->bossMain = 1;
+        if (!(*status & 0x80)) boss_wait(g);
+        else { g->pci = 1; *status &= ~0x80u; }
+        break;
+    case 0x1A:          // G_ZSBOSS_ENDSUBDL
+        if (g->bossMain) { g->halt = 1; g->bossMain = g->bossSub = 0; }
+        else { g->pci = 0; g->bossSub = 1; }
+        break;
+    case 0x12:          // G_ZSBOSS_WAITSIGNAL: SIG3 set, wait until the CPU clears it
+        if (!g->bossWaiting)
+        {
+            // The CPU learns of it through an SP interrupt (the game idles
+            // until then; GLideN64 under mupen64plus gets one from rsp_break).
+            *status &= ~0x300u;
+            *status |= 0x400u;
+            h64_mi_raise(g->sys, MI_INTR_SP);
+        }
+        if (*status & 0x400) { g->bossWaiting = 1; boss_wait(g); }
+        else g->bossWaiting = 0;
+        break;
+    case 0x04: boss_movemem(g, w0, w1); break;
+    case 0x06:          // G_ZSBOSS_MOVEWORD: a word into DMEM (0x10 before a MOVEMEM: the 1/w factor)
+        if ((w0 & 0xFFF) == 0x10 && (rd32(g, g->pc[g->pci]) >> 24) == 0x04) g->bossInvw = (float)w1;
+        bs32(g, w0 & 0xFFF, w1);
+        break;
+    case 0x08:          // G_ZSBOSS_TRANSPOSEMTX: the 3x3 part
+    {
+        float (*m)[4] = boss_mtx(g, w1 & 0xFFF), t;
+        int i, j;
+        if (!m) break;
+        for (i = 0; i < 3; i++)
+            for (j = i + 1; j < 3; j++) { t = m[i][j]; m[i][j] = m[j][i]; m[j][i] = t; }
+        g->combinedValid = 0;
+        break;
+    }
+    case 0x0A:          // G_ZSBOSS_MTXCAT
+    {
+        float (*s)[4] = boss_mtx(g, (w1 >> 16) & 0xFFF), (*t)[4] = boss_mtx(g, w0 & 0xFFF), (*d)[4] = boss_mtx(g, w1 & 0xFFF);
+        if (s && t && d) mat_mul(d, t, s);   // GLideN64's MultMatrix(s, t) is t x s
+        break;
+    }
+    case 0x0C: boss_mult_mpmtx(g, w1); break;
+    case 0x0E: boss_rdpcmd(g, w1); break;
+    case 0x10:          // G_ZSBOSS_OBJ: two object lists
+    {
+        u32 list[2], i, n;
+        list[0] = w0;
+        list[1] = w1;
+        for (i = 0; i < 2; i++)
+        {
+            u32 zh = seg_to_phys(g, list[i]) & 0x7FFFFF;
+            for (n = 0; zh && n < 200000; n++) zh = boss_object(g, zh);
+        }
+        break;
+    }
+    case 0x14:          // G_ZSBOSS_LIGHTING: s, t for reflections from the normals and the lookat
+    {
+        u32 num = 1 + (w1 >> 24), nsrs = w0 & 0xFFF, tdest = w1 & 0xFFF, i;
+        if (nsrs + num * 3 > sizeof(g->zdmem) || tdest + num * 4 > sizeof(g->zdmem)) break;
+        for (i = 0; i < num; i++, nsrs += 3, tdest += 4)
+        {
+            float n0 = (s8)g->zdmem[nsrs] / 256.0f, n1 = (s8)g->zdmem[nsrs + 1] / 256.0f, n2 = (s8)g->zdmem[nsrs + 2] / 256.0f;
+            float x = g->bossLookat[0][0] * n0 + g->bossLookat[0][1] * n1 + g->bossLookat[0][2] * n2;
+            float y = g->bossLookat[1][0] * n0 + g->bossLookat[1][1] * n1 + g->bossLookat[1][2] * n2;
+            bs16(g, tdest, (s16)((x + 0.5f) * 1024.0f));
+            bs16(g, tdest + 2, (s16)((y + 0.5f) * 1024.0f));
+        }
+        break;
+    }
+    case 0x18:          // G_ZSBOSS_TRANSFORMLIGHTS: the two lookat directions (no lights)
+    {
+        u32 a = w1 & 0xFFF, i;
+        s32 nl = 1 - (s32)(w1 >> 12);
+        if (nl < 0 || nl >= 12) break;
+        a += (u32)nl * 24;
+        for (i = 0; i < 2; i++, a += 24)
+        {
+            if (a + 19 > sizeof(g->zdmem)) break;
+            g->bossLookat[i][0] = (s8)g->zdmem[a + 16] / 256.0f;
+            g->bossLookat[i][1] = (s8)g->zdmem[a + 17] / 256.0f;
+            g->bossLookat[i][2] = (s8)g->zdmem[a + 18] / 256.0f;
+            boss_normalize(g->mv[g->mvi], g->bossLookat[i]);
+        }
+        break;
+    }
+    case 0x1C: boss_audio2(g, w0, w1); break;
+    case 0x1E: memset(g->zdmem + 0xC20, 0, 512); break;   // G_ZSBOSS_CLEARBUFFER
+    case 0x22:          // G_ZSBOSS_AUDIO3: the ADPCM table, then 8 bytes and the address into DMEM
+    {
+        u32 a = seg_to_phys(g, w0) & 0x7FFFFF, i, j;
+        for (i = 0; i < 8; i++)
+            for (j = 0; j < 8; j++) g->bossTable[i][j] = rd16(g, a + (i << 4) + (j << 1));
+        a = seg_to_phys(g, w1) & 0x7FFFFF;
+        for (i = 0; i < 8; i++) g->zdmem[i] = rd8(g, a + i);
+        bs32(g, 8, a);
+        break;
+    }
+    case 0x24: boss_audio4(g, w0, w1); break;
+    case 0x26:          // G_ZSBOSS_AUDIO1: a DMEM word to DMEM 0, then 8 bytes to RDRAM
+    {
+        u32 a = seg_to_phys(g, w1) & 0x7FFFFF, i;
+        bs32(g, 0, bd32(g, w0 & 0xFFF));
+        for (i = 0; i < 8; i++) g->sys->rdram[(a + i) & 0x7FFFFF] = g->zdmem[i];
+        break;
+    }
+    case 0x16: case 0x20: break;   // reserved
+    default:
+        boss_rdp_command(g, w0, w1);
+        break;
+    }
+}
+
+int h64_gfx_waiting(const H64Gfx *g)
+{
+    return g->bossWait;
+}
+
+int h64_gfx_resume(H64System *sys, H64Gfx *g, int *fullSync)
+{
+    if (!g->bossWait) return 1;
+    g->bossWait = 0;
+    g->halt = 0;
+    g->words.clear();
+    g->tris.clear();
+    g->ops.clear();
+    if (!gfx_loop(sys, g, fullSync)) return 0;
+    if (g->bossWait) g->fullSync = 0;
+    flush_output(g);
+    return 1;
+}
+
+int h64_gfx_task_sync(H64System *sys, H64Gfx *g)
+{
+    const u8 *dmem = sys->spMem;
+    u32 ucStart = h64_load_be32(dmem + 0xFD0), ucData = h64_load_be32(dmem + 0xFD8);
+    u32 ucDataSize = h64_load_be32(dmem + 0xFDC);
+    return find_ucode(g, ucStart & 0x7FFFFF, ucData & 0x7FFFFF, ucDataSize)->type == UC_BOSS;
+}
+
 H64Gfx *h64_gfx_create(H64System *sys)
 {
     init_tables();
@@ -3268,6 +3714,15 @@ H64Gfx *h64_gfx_create(H64System *sys)
     memset(g->zsLookat, 0, sizeof(g->zsLookat));
     g->zsNumLights = 0;
     g->zsLookatOn = 0;
+    g->bossWait = g->bossMain = g->bossSub = g->bossWaiting = 0;
+    g->bossRdp[0] = g->bossRdp[1] = g->bossRdp[2] = 0;
+    g->bossMask[0] = g->bossMask[1] = 0;
+    g->bossVS[0] = g->bossVS[1] = g->bossVT[0] = g->bossVT[1] = 0;
+    g->bossInvw = 10.0f;
+    g->bossFogM = g->bossFogO = 0;
+    memset(g->bossLookat, 0, sizeof(g->bossLookat));
+    memset(g->bossFog, 0, sizeof(g->bossFog));
+    memset(g->bossTable, 0, sizeof(g->bossTable));
     return g;
 }
 
@@ -3362,6 +3817,7 @@ int h64_gfx_measure(H64System *sys, H64Gfx *g, u32 *verts, u32 *tris, u32 *comma
 int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
     if (!parse_task(sys, g, fullSync)) return 0;
+    if (g->bossWait) g->fullSync = 0;   // the caller raises it now
     flush_output(g);
     return 1;
 }
@@ -3448,7 +3904,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     // relies on it: from 0 its textures were read as YUV (grey courses).
     if (g->sys->options.gfxOtherModeInit || u->omInit) { g->omH = 0x080CFF; g->omL = 0; }
     g->uc = u;
-    if (u->type == UC_ZSORT)   // the task loads the microcode's data into DMEM
+    if (u->type == UC_ZSORT || u->type == UC_BOSS)   // the task loads the microcode's data into DMEM
     {
         u32 k, n = ucDataSize < sizeof(g->zdmem) ? ucDataSize : (u32)sizeof(g->zdmem);
         for (k = 0; k < n; k++) g->zdmem[k] = rd8(g, (ucData & 0x7FFFFF) + k);
@@ -3482,7 +3938,23 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     g->words.clear();
     g->tris.clear();
     g->ops.clear();
+    g->bossWait = 0;
+    if (u->type == UC_BOSS)
+    {
+        // The sub display list (yield_data_ptr); signals as the microcode
+        // leaves them at its start (GLideN64 RSP_ProcessDList).
+        g->pc[1] = h64_load_be32(dmem + 0xFF8) & 0x7FFFFF;
+        g->bossMain = g->bossSub = g->bossWaiting = 0;
+        g->bossRdp[0] = g->bossRdp[1] = g->bossRdp[2] = 0;
+        sys->rsp.status = (sys->rsp.status & ~0x300u) | 0x800u;   // clear SIG1/SIG2, set SIG4
+    }
+    return gfx_loop(sys, g, fullSync);
+}
 
+// The display list from where it stands (a Boss task resumes here after a
+// wait for the CPU).
+static int gfx_loop(H64System *sys, H64Gfx *g, int *fullSync)
+{
     while (!g->halt && !g->abort)
     {
         u32 a = g->pc[g->pci];
@@ -3492,6 +3964,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
         else if (g->uc->type == UC_S2DEX2) run_s2dex2(g, w0, w1);
         else if (g->uc->type == UC_S2DEX1) run_s2dex1(g, w0, w1);
         else if (g->uc->type == UC_ZSORT) run_zsort(g, w0, w1);
+        else if (g->uc->type == UC_BOSS) run_boss(g, w0, w1);
         else run_f3d(g, w0, w1);
         if (g->dlCount > 0 && --g->dlCount == 0)
         {

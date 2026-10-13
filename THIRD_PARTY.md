@@ -73,3 +73,5 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 The S2DEX2 background command (`bg_copy` in `core/hle/h64_gfx.cpp`) reads the `uObjBg` structure as laid out in the N64 SDK's `gs2dex.h` (field order and fixed-point formats only) and emits the RDP command sequence written for V2.
 
 ZSortp (Mia Hamm Soccer 64) in the graphics HLE follows GLideN64's `uCodes/ZSort.cpp` (same commit, GPL v2): command numbers, the zHeader object lists, the zSortVDest layout, the DMEM bias, MultMPMTX/Lighting/XFMLight; studied and rewritten.
+
+Boss Game Studios' ZSort microcode (World Driver Championship, Stunt Racer 64) follows GLideN64's `uCodes/ZSortBOSS.cpp` and `RSP.cpp` (same commit, GPL v2): command numbers, the main/sub display lists and their signals, matrices and vertex transform, object lists, the update mask, and the four audio commands; studied and rewritten.

@@ -33,6 +33,7 @@
 #include "h64_hle.h"
 #include "h64_gfx.h"
 #include "../common/h64_log.h"
+#include "../rdp/h64_rdp.h"
 #include "../system/h64_system.h"
 
 #if defined(_MSC_VER) && _MSC_VER < 1900
@@ -425,6 +426,24 @@ int h64_hle_gfx_measure(H64System *sys, u32 *verts, u32 *tris, u32 *commands)
     return h64_gfx_measure(sys, hle->gfx, verts, tris, commands);
 }
 
+int h64_hle_resume(H64System *sys, int *dpInterrupt)
+{
+    struct hle_t *hle = sys->hle;
+    int fullSync = 0;
+    u64 t0 = h64_prof_now(sys);
+    *dpInterrupt = 0;
+    if (!hle || !hle->gfx) return 1;
+    h64_gfx_resume(sys, hle->gfx, &fullSync);
+    sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+    if (h64_gfx_waiting(hle->gfx))
+    {
+        if (fullSync) h64_rdp_hle_full_sync(sys);
+        return 0;
+    }
+    *dpInterrupt = fullSync;
+    return 1;
+}
+
 int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpInterrupt)
 {
     struct hle_t *hle = sys->hle;
@@ -446,6 +465,25 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
         if (!sys->options.hleGfx)
             return 0;
         if (!hle->gfx) hle->gfx = h64_gfx_create(sys);
+        if (h64_gfx_task_sync(sys, hle->gfx))
+        {
+            // Boss's ZSort waits for the CPU inside its tasks: run here, on the
+            // CPU thread (after the workers), in parts.
+            u64 t0;
+            h64_hle_async_wait(sys);
+            t0 = h64_prof_now(sys);
+            if (!h64_gfx_run_task(sys, hle->gfx, &fullSync)) return 0;
+            sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+            *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
+            *busyCycles = H64_HLE_GFX_CYCLES;
+            if (h64_gfx_waiting(hle->gfx))
+            {
+                sys->rsp.hleWait = 1;
+                if (fullSync) h64_rdp_hle_full_sync(sys);
+            }
+            else *dpInterrupt = fullSync;
+            return 1;
+        }
         if (sys->asyncStart)
         {
             // On the worker: the CPU goes on; the task ends (or falls back
