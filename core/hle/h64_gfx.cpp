@@ -63,6 +63,8 @@ struct GfxUcode
     int noNear;  // ".NoN": no near-plane clipping
     int rare;    // RARE_*
     int cull40;  // F3DEX 0.95/0.96 (Mario Kart 64's): G_CULLDL vertex numbers * 40, as F3D
+    int flx;     // F3DFLX (F-Zero X's races): F3DEX2 with an "alpha light" in the second lookat's slot and
+                 // texture generation that gives vertex alpha from a table (GLideN64 F3DFLX2)
 };
 
 struct GfxVtx
@@ -167,6 +169,7 @@ struct H64Gfx
     float lightDir[10][3];
     int numLights;
     float lookat[2][3];
+    u32 dmaIo;                     // G_DMA_IO's address (F3DFLX: the alpha table is at +128)
     float vscale[4], vtrans[4];
     u32 vpGen;
     // Per-task profiling sums, added to sys->prof once a task (written per
@@ -468,6 +471,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->zex = 0;
     u->noNear = 0;
     u->cull40 = 0;
+    u->flx = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
@@ -522,8 +526,12 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
                 u->type = UC_F3DEX2;
                 u->zex = 1;
             }
-            else if (!strncmp(str + 14, "F3DTEX/A", 8) || !strncmp(str + 14, "F3DAM", 5) ||
-                     !strncmp(str + 14, "F3DFLX", 6) || !strncmp(str + 14, "F3DLP", 5))
+            else if (!strncmp(str + 14, "F3DFLX", 6))
+            {
+                u->type = UC_F3DEX2;   // F-Zero X's races (they ran on the LLE RSP: ~13 FPS on the console)
+                u->flx = 1;
+            }
+            else if (!strncmp(str + 14, "F3DTEX/A", 8) || !strncmp(str + 14, "F3DAM", 5) || !strncmp(str + 14, "F3DLP", 5))
                 u->type = UC_NONE;   // variants not handled yet
             else if (str[28] == '1' || !strncmp(str + 28, "0.95", 4) || !strncmp(str + 28, "0.96", 4))
             {
@@ -946,7 +954,14 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
             gg = gg > 255.0f ? 255.0f : gg;
             b = b > 255.0f ? 255.0f : b;
         }
-        if (lighting && (gm & GM_TEXGEN))
+        if (lighting && (gm & GM_TEXGEN) && g->uc->flx)
+        {
+            // F3DFLX: the normal against the alpha light picks the vertex
+            // alpha in a table (GLideN64 F3DFLX2; F-Zero X's machines).
+            float d = (look[0][0] * nx + look[0][1] * ny + look[0][2] * nz) * 128.0f;
+            al = (float)rd8(g, g->dmaIo + 128 + (s32)(s16)d);
+        }
+        else if (lighting && (gm & GM_TEXGEN))
         {
             float tx = look[0][0] * nx + look[0][1] * ny + look[0][2] * nz;
             float ty = look[1][0] * nx + look[1][1] * ny + look[1][2] * nz;
@@ -1379,6 +1394,21 @@ static void set_lookat(H64Gfx *g, u32 addr, int n)
     g->lookat[n][0] = x;
     g->lookat[n][1] = y;
     g->lookat[n][2] = z;
+}
+
+// F3DFLX's alpha light (GLideN64 F3DFLX2_LoadAlphaLight): a direction in
+// s7.8 halfwords at +8, kept as lookat 0 for the vertex alpha table.
+static void set_alpha_light(H64Gfx *g, u32 addr)
+{
+    u32 a = seg_to_phys(g, addr);
+    float x = (s16)h64_load_be16(g->sys->rdram + ((a + 8) & 0x7FFFFE)) / 256.0f;
+    float y = (s16)h64_load_be16(g->sys->rdram + ((a + 10) & 0x7FFFFE)) / 256.0f;
+    float z = (s16)h64_load_be16(g->sys->rdram + ((a + 12) & 0x7FFFFE)) / 256.0f;
+    float len = sqrtf(x * x + y * y + z * z);
+    if (len > 0) { x /= len; y /= len; z /= len; }
+    g->lookat[0][0] = x;
+    g->lookat[0][1] = y;
+    g->lookat[0][2] = z;
 }
 
 static void set_light_color(H64Gfx *g, int n, u32 col)
@@ -1902,7 +1932,8 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
         triangle(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F);
         break;
     case 0x08: break;   // G_LINE3D (not drawn)
-    case 0xD3: case 0xD4: case 0xD5: case 0xD6: break;   // G_SPECIAL_*, G_DMA_IO
+    case 0xD3: case 0xD4: case 0xD5: break;   // G_SPECIAL_*
+    case 0xD6: g->dmaIo = seg_to_phys(g, w1); break;   // G_DMA_IO: only its address is used (F3DFLX)
     case 0xD7: set_texture(g, w1, (w0 >> 11) & 7, (w0 >> 8) & 7, (w0 >> 1) & 0x7F); break;
     case 0xD8: pop_matrix(g, w1 >> 6); break;   // G_POPMTX
     case 0xD9: g->geomRaw = (g->geomRaw & (w0 & 0x00FFFFFF)) | w1; break;   // G_GEOMETRYMODE
@@ -1949,7 +1980,8 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
         else if (idx == 10)
         {
             u32 n = (((w0 >> 8) & 0xFF) * 8) / 24;
-            if (n < 2) set_lookat(g, w1, (int)n);
+            if (n == 1 && g->uc->flx) set_alpha_light(g, w1);
+            else if (n < 2) set_lookat(g, w1, (int)n);
             else set_light(g, w1, (int)n - 2);
         }
         break;
@@ -2500,6 +2532,7 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->ucodeCount = g->ucodeNext = 0;
     g->uc = 0;
     memset(g->segments, 0, sizeof(g->segments));
+    g->dmaIo = 0;
     for (i = 0; i < GFX_STACK_MAX; i++) mat_identity(g->mv[i]);
     mat_identity(g->proj);
     mat_identity(g->combined);

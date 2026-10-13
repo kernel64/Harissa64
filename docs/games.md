@@ -89,7 +89,7 @@ Tried a game that isn't tested yet? Tell us how it went.
 | Extreme-G 2 | Not tested yet | - | |
 | F-1 Pole Position 64 | Not tested yet | - | |
 | F-1 World Grand Prix | Not tested yet | - | |
-| F-Zero X | Problems | ~13 | Menus at full speed, but the races are very slow (about 13). |
+| F-Zero X | Problems | ~13 | Races should now run much faster: fixed but not yet tested on the console. |
 | FIFA 99 | Not tested yet | - | |
 | FIFA Soccer 64 | Not tested yet | - | |
 | FIFA: Road to World Cup 98 | Not tested yet | - | |
