@@ -1893,13 +1893,6 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
         break;
     default:
         if (cmd >= 0xC0) rdp_passthrough(g, w0, w1);
-        else if (cmd == 0x09 && g->uc->rare == RARE_NONE)
-        {
-            // G_SPRITE2D_BASE (WCW Nitro): sprites are not drawn here; left
-            // out, the game showed a black screen.
-            if (!(g->warned & 2)) { H64_INFO("[gfx] F3D G_SPRITE2D: task left to the LLE RSP"); g->warned |= 2; }
-            g->abort = 1;
-        }
         else if (!(g->warned & 2)) { H64_WARN("[gfx] F3D command %02X not handled", cmd); g->warned |= 2; }
         break;
     }
