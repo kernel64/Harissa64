@@ -27,7 +27,7 @@
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 
-enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT, UC_BOSS, UC_F5ROGUE };
+enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT, UC_BOSS, UC_F5ROGUE, UC_F5INDI };
 // Rare's modified microcodes, recognised by the CRC of their code (GLideN64's
 // table): F3D with other commands and vertex formats.
 enum { RARE_NONE = 0, RARE_GOLDEN, RARE_PD, RARE_DKR, RARE_JFG, RARE_CBFD };
@@ -248,6 +248,16 @@ struct H64Gfx
     // table, texture coordinate scales, the viewport's and projection's addresses.
     u32 f5dl[GFX_PC_MAX];
     u32 f5ColorBase, f5TexScale[2], f5VpAddr, f5PerspAddr;
+    // Indiana Jones / Naboo: the microcode's DMEM (GLideN64's layout), the
+    // vertex generator and texture coordinate matrices, the polygon walker's state.
+    u8 f5dm[4096];
+    float *f5Mtx;
+    float f5MtxGen[4][4];
+    s32 f5StAdj[16];
+    u16 nAA;
+    s16 nBB, nEE, nHH;
+    u8 nDD, nCC, nTT;
+    int f5Restore;   // the saved mode is due back before the next Naboo polygon
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -518,6 +528,8 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             { 0xBDE9D1FBu, UC_F3D, RARE_JFG, 0, "Jet Force Gemini, Mickey's Speedway" },
             { 0x1B4ACE88u, UC_F3DEX2, RARE_CBFD, 1, "Conker's Bad Fur Day" },   // F3DEXBG.NoN
             { 0xDA51CCDBu, UC_F5ROGUE, RARE_NONE, 0, "Star Wars: Rogue Squadron (Factor 5)" },
+            { 0x23FEF05Fu, UC_F5INDI, RARE_NONE, 0, "Star Wars Episode I: Battle for Naboo (Factor 5)" },
+            { 0x6859BF8Eu, UC_F5INDI, RARE_NONE, 0, "Indiana Jones and the Infernal Machine (Factor 5)" },
         };
         u8 code[4096];
         u32 crc, k;
@@ -694,6 +706,7 @@ static u32 geom(const H64Gfx *g)
         if (r & 0x1000) m |= GM_CULL_FRONT;
         if (r & 0x2000) m |= GM_CULL_BACK;
     }
+    if (g->uc->type == UC_F5INDI && (r & 0x4)) m |= GM_SMOOTH;   // its smooth shading is the shade bit
     if (g->uc->cullOne && (m & (GM_CULL_FRONT | GM_CULL_BACK)) == (GM_CULL_FRONT | GM_CULL_BACK)) m &= ~GM_CULL_FRONT;
     return m;
 }
@@ -3951,6 +3964,18 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
         g->f5TexScale[0] = g->f5TexScale[1] = 0;
         f5_enter(g);   // the task's list starts with its link word too
     }
+    if (u->type == UC_F5INDI)
+    {
+        // The task header, and the words the microcode clears when it starts
+        // (GLideN64 _ProcessDListFactor5).
+        static const u16 clr[7] = { 0x11C, 0x120, 0x124, 0x37C, 0x58C, 0x5B0, 0x5B4 };
+        u32 k;
+        for (k = 0xFC0; k < 0x1000; k++) g->f5dm[k ^ 3] = dmem[k];
+        for (k = 0; k < 7; k++) dmw_set(g, clr[k], 0);
+        g->f5Mtx = 0;
+        g->f5Restore = 0;
+        f5_enter(g);
+    }
     g->bossWait = 0;
     if (u->type == UC_BOSS)
     {
@@ -3979,6 +4004,7 @@ static int gfx_loop(H64System *sys, H64Gfx *g, int *fullSync)
         else if (g->uc->type == UC_ZSORT) run_zsort(g, w0, w1);
         else if (g->uc->type == UC_BOSS) run_boss(g, w0, w1);
         else if (g->uc->type == UC_F5ROGUE) run_f5rogue(g, w0, w1);
+        else if (g->uc->type == UC_F5INDI) run_f5indi(g, w0, w1);
         else run_f3d(g, w0, w1);
         if (g->dlCount > 0 && --g->dlCount == 0)
         {
