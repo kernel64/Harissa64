@@ -1001,7 +1001,11 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     int n = (int)roms.size(), i;
     char buf[160];
     UiBackdrop();
-    UiBrand(UI_SAFE_X, 72, 34);
+    {
+        // The version beside the name, small (the About page has it too).
+        float bw = UiBrand(UI_SAFE_X, 72, 34);
+        UiText(UI_REGULAR, 18, UI_SAFE_X + bw + 14, 74, UI_COL_TEXT2, "v" H64_VERSION_STRING, UI_LEFT);
+    }
     if (n)
     {
         sprintf(buf, "%d / %d", sel + 1, n);
