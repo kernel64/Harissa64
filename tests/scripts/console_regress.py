@@ -196,6 +196,7 @@ def save_folder(rom):
 def run_case(con, c, update, log):
     name = c['name']
     boot = c['state'] == '-'   # no state: the game starts from its boot, input frames are absolute
+    boot_mode = boot
     st = os.path.join(DATA, c['state'])
     if not boot and not os.path.isfile(st):
         log('%-24s SKIP (no state %s)' % (name, c['state']))
@@ -225,18 +226,16 @@ def run_case(con, c, update, log):
     con.xb('xbreboot.exe', con.cfg['xdir'] + '\\harissa64v2.xex')
     # Captures for ~90 s; the frozen frame is the longest run of near-identical
     # captures that does not look like the dashboard (taken before launch).
-    # Captures stop the title for ~300 ms each: they start only once the log
-    # says the frame is frozen (pauseat=), so the run before it is not slowed.
+    # Captures stop the title for ~300 ms each, so none is taken while it
+    # runs: the frame freezes (pauseat=) for 20 s after about BOOT s plus the
+    # VIs before it; captures start a little after that and last 18 s. (The
+    # log cannot tell: the FTP answers too slowly while a title runs.)
+    boot = 16.0 if not boot_mode else 8.0
+    wait = boot + c['pauseat'] / 60.0 * 1.15 + 2.0
+    time.sleep(wait)
     caps = []
     t0 = time.time()
-    while time.time() - t0 < 120:
-        lg = con.get('harissa64v2.log') or b''
-        if b'paused at VI' in lg:
-            break
-        time.sleep(2)
-    time.sleep(1)
-    t0 = time.time()
-    while time.time() - t0 < 15:
+    while time.time() - t0 < 18:
         p = os.path.join(tmp, '%03d.bmp' % len(caps))
         if con.capture(p):
             caps.append(small(p))
@@ -257,7 +256,11 @@ def run_case(con, c, update, log):
         if j - i > bestLen:
             best, bestLen = i, j - i
         i = j
-    logtxt = con.get('harissa64v2.log') or b''
+    try:
+        logtxt = con.get('harissa64v2.log') or b''
+    except Exception:
+        time.sleep(5)
+        logtxt = con.get('harissa64v2.log') or b''
     open(os.path.join(OUT, name + '.log'), 'wb').write(logtxt)
     if best < 0 or bestLen < 2 or b'paused at VI' not in logtxt:
         log('%-24s FAIL (no frozen frame captured)' % name)
