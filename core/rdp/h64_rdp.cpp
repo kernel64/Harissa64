@@ -264,7 +264,11 @@ u32 h64_dp_read(H64System *sys, u32 reg)
     case 1: return dp->end;
     case 2: return dp->current;
     case 3: return dp->status;
-    case 4: return dp->clock & 0xFFFFFF;
+    case 4:
+        // DPC_CLOCK counts RCP cycles (2 per 3 CPU cycles); dp->clock holds
+        // the count at its last reset. Stuck at 0, Acclaim's sports games
+        // divided by it with the FPU's invalid-operation trap on and stopped.
+        return ((u32)(sys->cpu.cycles * 2 / 3) - dp->clock) & 0xFFFFFF;
     case 5: return dp->bufBusy & 0xFFFFFF;
     case 6: return dp->pipeBusy & 0xFFFFFF;
     default: return dp->tmemCounter & 0xFFFFFF;
@@ -312,7 +316,7 @@ void h64_dp_write(H64System *sys, u32 reg, u32 v)
         if (v & 0x040) dp->tmemCounter = 0;
         if (v & 0x080) dp->pipeBusy = 0;
         if (v & 0x100) dp->bufBusy = 0;
-        if (v & 0x200) dp->clock = 0;
+        if (v & 0x200) dp->clock = (u32)(sys->cpu.cycles * 2 / 3);
         return;
     }
 }
