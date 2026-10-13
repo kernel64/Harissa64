@@ -1,0 +1,11 @@
+# Games being investigated (not validated yet): same fields as cases.txt
+cv_intro_60|Castlevania (U) (V1.2).zip|cv64_intro.h64s|1900||60|
+cv_intro_120|Castlevania (U) (V1.2).zip|cv64_intro.h64s|1900||120|
+cv_intro_200|Castlevania (U) (V1.2).zip|cv64_intro.h64s|1900||200|
+cv_forest_60|Castlevania (U) (V1.2).zip|cv64_forest.h64s|2380||60|
+v8_logo_60|Vigilante 8 (U).zip|v8_logo.h64s|700||60|
+v8_logo_200|Vigilante 8 (U).zip|v8_logo.h64s|700||200|
+v8_quest_60|Vigilante 8 (U).zip|v8_quest.h64s|1050||60|
+v8_race_60|Vigilante 8 (U).zip|v8_race.h64s|1700||60|
+amped_race_60|Mario Kart 64 (Amped Up v3.21).z64|amped_race.h64s|2700||60|
+cv_intro_200_nolens|Castlevania (U) (V1.2).zip|cv64_intro.h64s|1900||200|gameflags=0

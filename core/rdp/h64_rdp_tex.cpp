@@ -362,6 +362,11 @@ static void fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 
     o->c[2] = o->c[3] = (s32)luma;
 }
 
+void h64_rdp_fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, H64RdpTexel *out)
+{
+    fetch_yuv(st, tile, s, t, s & ~1u, out);
+}
+
 static s32 clamp_and_shift(int clampBit, s32 coord, s32 lo, s32 hi, int shift)
 {
     coord = h64_clamp(coord, -0x8000, 0x7FFF);

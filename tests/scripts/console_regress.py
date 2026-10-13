@@ -57,9 +57,9 @@ def load_settings():
     return cfg
 
 
-def load_cases():
+def load_cases(fname='cases.txt'):
     cases = []
-    for line in open(os.path.join(CDIR, 'cases.txt'), encoding='utf-8'):
+    for line in open(os.path.join(CDIR, fname), encoding='utf-8'):
         line = line.strip()
         if not line or line.startswith('#'):
             continue
@@ -195,20 +195,24 @@ def save_folder(rom):
 
 def run_case(con, c, update, log):
     name = c['name']
+    boot = c['state'] == '-'   # no state: the game starts from its boot, input frames are absolute
     st = os.path.join(DATA, c['state'])
-    if not os.path.isfile(st):
+    if not boot and not os.path.isfile(st):
         log('%-24s SKIP (no state %s)' % (name, c['state']))
         return None
-    folder = save_folder(c['rom'])
-    con.put(open(st, 'rb').read(), 'saves/%s/state%d.h64s' % (folder, SLOT))
+    if not boot:
+        folder = save_folder(c['rom'])
+        con.put(open(st, 'rb').read(), 'saves/%s/state%d.h64s' % (folder, SLOT))
     inp = c['input'].replace('{F}+', '').strip()
     events = []
     for ev in [e for e in inp.split(',') if e]:
         k, rng = ev.split('@')
         lo, _, hi = rng.partition('-')
         events.append('%s@%d%s' % (k, c['frame'] + int(lo), ('-%d' % (c['frame'] + int(hi))) if hi else ''))
-    ini = ['mode=play', 'cpu=dynarec', 'hle=1', 'rom=game:\\roms\\' + c['rom'], 'stateslot=%d' % SLOT, 'loadstate=1',
+    ini = ['mode=play', 'cpu=dynarec', 'hle=1', 'rom=game:\\roms\\' + c['rom'],
            'pauseat=%d' % c['pauseat'], 'exitafter=%d' % (c['pauseat'] + 10)]
+    if not boot:
+        ini += ['stateslot=%d' % SLOT, 'loadstate=1']
     if events:
         ini.append('input=' + ','.join(events))
     ini += c['extra']
@@ -269,6 +273,7 @@ def run():
     ap.add_argument('--update', action='store_true')
     ap.add_argument('--xex', help='upload this xex first (else the console keeps its own)')
     ap.add_argument('--list', action='store_true')
+    ap.add_argument('--cases', default='cases.txt', help='case list in tests/console (explore.txt: games not checked yet)')
     ap.add_argument('--accept', action='append', default=[], help='make out/NAME.png the reference of NAME (after checking it)')
     a = ap.parse_args()
     if a.accept:
@@ -276,7 +281,7 @@ def run():
             shutil.copyfile(os.path.join(OUT, n + '.png'), os.path.join(DATA, n + '.png'))
             print('reference accepted:', n)
         return 0
-    cases = load_cases()
+    cases = load_cases(a.cases)
     if a.only:
         cases = [c for c in cases if c['name'] in a.only]
     if a.list:
