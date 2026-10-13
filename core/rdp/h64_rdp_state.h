@@ -128,7 +128,7 @@ H64RdpState *h64_rdp_state(H64System *sys);
 s32 h64_rdp_sample_copy(H64RdpState *st, const H64RdpTile *tile, s32 s, s32 t, int sOffset, int tlut, int fbSize);
 void h64_rdp_texture_convert(const H64RdpTexel *in, const s32 *factors, H64RdpTexel *out);
 // A 16-bit YUV texel as the texture filter reads it (u - 128, v - 128, y, y),
-// chroma from the even texel of its pair.
+// chroma from its pair (s >> 1).
 void h64_rdp_fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, H64RdpTexel *out);
 void h64_rdp_compute_lod(u32 *tile0, u32 *tile1, s32 *lodFrac, u32 maxLevel, s32 minLod, const s32 *st, const s32 *stDx,
                          const s32 *stDy, int perspectiveOverflow, int texLod, int sharpen, int detail);
