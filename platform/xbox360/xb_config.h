@@ -57,8 +57,8 @@ struct Config
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
     u32 menuAt;         // menuat=N: open the in-game menu at VI N (remote checks; does not skip the ROM browser)
     u32 aboutAt;        // aboutat=N: the same, showing the About panel
-    int controlsTest;   // controlstest=N: the ROM list opens Settings > Controls on item N, waiting for an
-                        // input (remote checks of the controller drawing; -1: off)
+    int controlsTest;   // controlstest=N: the ROM list opens Settings > Controls on item N; 100+N: also
+                        // waiting for an input, again and again (remote checks of the drawing; -1: off)
     int autoStart;      // autostart=N: the ROM browser starts N games by itself, the last selection then the
                         // next ones in the list (remote checks of game changes)
     int autoIndex;      // games the browser started by itself so far

@@ -1052,14 +1052,15 @@ static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settings
     SettingsBuild(&m, c, 0);
     if (ctlTest >= 0)
     {
-        // controlstest=N: the Controls page on item N, waiting for an input.
+        // controlstest=N: the Controls page on item N; 100+N: also waiting
+        // for an input, again and again (captures of the blinking control).
         controls_open(&m, c);
-        m.sel = ctlTest % C_COUNT;
+        m.sel = (ctlTest % 100) % C_COUNT;
     }
     for (;;)
     {
         int r;
-        if (ctlTest >= 0 && !s_ctl.capturing && s_ctlOrder[m.sel] < H64_N64_COUNT)
+        if (ctlTest >= 100 && !s_ctl.capturing && s_ctlOrder[m.sel] < H64_N64_COUNT)
         {
             s_ctl.capturing = 1;
             s_ctl.capItem = s_ctlOrder[m.sel];
