@@ -494,6 +494,7 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             s->renderTicket = sys->asyncStart(sys->asyncUser, gfx_render_job, s);
             *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
             *busyCycles = sys->asyncGfxCycles ? sys->asyncGfxCycles : H64_HLE_GFX_CYCLES;
+            if (sys->options.gfxShortTask && *busyCycles > H64_HLE_GFX_CYCLES) *busyCycles = H64_HLE_GFX_CYCLES;
             return 1;
         }
         u64 t0 = h64_prof_now(sys);
