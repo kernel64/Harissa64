@@ -67,6 +67,7 @@ struct GfxUcode
                  // texture generation that gives vertex alpha from a table (GLideN64 F3DFLX2)
     u32 crc;     // CRC-32 of the first 4 KB of code (see detect_ucode)
     int s2v103;  // S2DEX 1.03: its own rounding table and placement of 2D objects
+    int am;      // F3DAM (Hey You, Pikachu!): F3DEX2 with texture coordinates through a 2x2 matrix
     int line;    // L3DEX / L3DEX2: triangles and G_LINE3D are drawn as lines
     int omInit;  // each task starts from the microcode's default other modes (F3DLP)
     int cullOne; // F3DLX.Rej: culling both faces culls the back faces only
@@ -176,6 +177,7 @@ struct H64Gfx
     int numLights;
     float lookat[2][3];
     u32 dmaIo;                     // G_DMA_IO's address (F3DFLX: the alpha table is at +128)
+    u32 amOrg, amScale0, amScale1; // F3DAM: G_TEXTURE's w1, G_MW_FOG offsets 0x0C and 0x10 (see load_vertices)
     float vscale[4], vtrans[4];
     u32 vpGen;
     // Per-task profiling sums, added to sys->prof once a task (written per
@@ -479,6 +481,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->cull40 = 0;
     u->flx = 0;
     u->s2v103 = 0;
+    u->am = 0;
     u->line = 0;
     u->omInit = 0;
     u->cullOne = 0;
@@ -552,7 +555,12 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
                 u->type = UC_F3DEX2;   // F-Zero X's races (they ran on the LLE RSP: ~13 FPS on the console)
                 u->flx = 1;
             }
-            else if (!strncmp(str + 14, "F3DTEX/A", 8) || !strncmp(str + 14, "F3DAM", 5))
+            else if (!strncmp(str + 14, "F3DAM", 5))
+            {
+                u->type = UC_F3DEX2;   // F3DAM (GLideN64 F3DAM): texture coordinates through a matrix
+                u->am = 1;
+            }
+            else if (!strncmp(str + 14, "F3DTEX/A", 8))
                 u->type = UC_NONE;   // variants not handled yet
             else if (str[28] == '1' || !strncmp(str + 28, "0.95", 4) || !strncmp(str + 28, "0.96", 4))
             {
@@ -604,7 +612,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             if (o != u && o->type != UC_NONE && o->crc == u->crc)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
-                u->cull40 = o->cull40; u->flx = o->flx; u->s2v103 = o->s2v103; u->line = o->line;
+                u->cull40 = o->cull40; u->flx = o->flx; u->s2v103 = o->s2v103; u->am = o->am; u->line = o->line;
                 u->omInit = o->omInit; u->cullOne = o->cullOne;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
@@ -933,6 +941,17 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
         {
             s = rdf16(g, a + 8);
             t = rdf16(g, a + 10);
+            if (g->uc->am)
+            {
+                // F3DAM: s' = (Ao * s + Bo * t) / 32768 + offset, t' with the
+                // second row (GLideN64 calcF3DAMTexCoords: 16-bit products,
+                // u32 arithmetic, then the high halves).
+                u32 s0 = (u32)(s32)rd16(g, a + 8), t0 = (u32)(s32)rd16(g, a + 10);
+                u32 acc0 = (((g->amOrg & 0xFFFF) * t0) << 1) + 0x8000, acc1 = (((g->amScale1 & 0xFFFF) * t0) << 1) + 0x8000;
+                u32 sres = (((g->amOrg >> 16) * s0) << 1) + acc0, tres = (((g->amScale1 >> 16) * s0) << 1) + acc1;
+                s = (float)(s16)((sres >> 16) + (g->amScale0 >> 16));
+                t = (float)(s16)((tres >> 16) + (g->amScale0 & 0xFFFF));
+            }
         }
         al = rdf8(g, c + 3);
         if (cbfd)
@@ -2176,7 +2195,15 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
     case 0x08: break;   // G_LINE3D (not drawn)
     case 0xD3: case 0xD4: case 0xD5: break;   // G_SPECIAL_*
     case 0xD6: g->dmaIo = seg_to_phys(g, w1); break;   // G_DMA_IO: only its address is used (F3DFLX)
-    case 0xD7: set_texture(g, w1, (w0 >> 11) & 7, (w0 >> 8) & 7, (w0 >> 1) & 0x7F); break;
+    case 0xD7:          // G_TEXTURE
+        set_texture(g, w1, (w0 >> 11) & 7, (w0 >> 8) & 7, (w0 >> 1) & 0x7F);
+        if (g->uc->am)
+        {
+            // F3DAM: the scale goes into the texture coordinate matrix (GLideN64 F3DAM_Texture).
+            g->amOrg = w1;
+            g->texScaleS = g->texScaleT = 1.0f;
+        }
+        break;
     case 0xD8: pop_matrix(g, w1 >> 6); break;   // G_POPMTX
     case 0xD9: g->geomRaw = (g->geomRaw & (w0 & 0x00FFFFFF)) | w1; break;   // G_GEOMETRYMODE
     case 0xDA:          // G_MTX
@@ -2202,6 +2229,9 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
             break;
         case 0x06: g->segments[(offset >> 2) & 0xF] = w1 & 0x00FFFFFF; break;
         case 0x08:
+            if (g->uc->am && (offset & 0xFF) == 0x0C) { g->amScale0 = w1; break; }   // F3DAM's matrix (GLideN64 F3DAM_MoveWord)
+            if (g->uc->am && (offset & 0xFF) == 0x10) { g->amScale1 = w1; break; }
+            if (g->uc->am && (offset & 0xFF) != 0) break;
             g->fogMul = (float)(s16)(w1 >> 16);
             g->fogOff = (float)(s16)w1;
             break;
