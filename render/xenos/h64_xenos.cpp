@@ -124,6 +124,7 @@ struct Xenos
     int texFilter;      // 0 the N64's 3-point filter, 1 bilinear, 2 nearest
     int sharpen, blur, screen;  // display: sharpening 0-2, blur 0-2, screen effect (H64XenosOptions)
     int aspect;                 // 0 4:3, 1 16:9 widescreen (wider 3D), 2 16:9 stretched
+    int wsMain;                 // 16:9 widescreen applies to the current colour image (select_framebuffer)
     std::map<int, IDirect3DPixelShader9 *> psDisplay;   // display pass variants, compiled on use
     IDirect3DTexture9 *dummy;
     IDirect3DTexture9 *cpuFb[2];
@@ -1269,10 +1270,28 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, floa
 // keeps their proportions and shows more of the scene at the sides (what the
 // game projects beyond the 4:3 screen, within the microcode's clip ratio; as
 // GLideN64's widescreen hack, objects the game itself culls stay missing).
-// Full-width fills, backgrounds and scissors stay full width.
+// As GLideN64 ("adjust" aspect ratio), only in the image the VI shows: other
+// images (shadows, reflections, small pictures drawn for later) keep their
+// geometry; and fills, rectangles, scissors and flat 2D triangles at least 90 %
+// as wide as the image (backgrounds, a picture's border) stay full width.
 static float ws_x(const Xenos *x, float px, float fbw)
 {
-    return x->aspect == 1 ? fbw * 0.5f + (px - fbw * 0.5f) * 0.75f : px;
+    return x->wsMain ? fbw * 0.5f + (px - fbw * 0.5f) * 0.75f : px;
+}
+
+// Wide enough to stay full width in 16:9 widescreen.
+static int ws_wide(float w, float fbw) { return w >= fbw * 0.9f; }
+
+static int vi_geometry(const u32 *v, ViGeom *g);
+
+// Whether 16:9 widescreen applies to the current colour image: one at least
+// 98 % as wide as the picture the VI scans.
+static int ws_on(const Xenos *x)
+{
+    ViGeom g;
+    if (x->aspect != 1) return 0;
+    if (!vi_geometry(x->sys->vi.regs, &g)) return 1;
+    return (float)x->st->colorWidth >= (g.sx1 - g.sx0) * 0.98f;
 }
 
 static void resolve_current(Xenos *x)
@@ -1336,6 +1355,7 @@ static void select_framebuffer(Xenos *x)
     u32 addr = x->st->colorAddr & 0xFFFFFF, i;
     int best = -1, ramFresh;
     FbSlot *s;
+    x->wsMain = ws_on(x);
     // Resident Evil 2 (profile gfxRdramCopy) copies its background into the
     // frame's memory through a wider image, then draws in the frame: the
     // frame starts from that memory, not from what the GPU last drew there.
@@ -1814,7 +1834,7 @@ static void set_scissor(Xenos *x, float sx, float sy)
     float xlo = (float)(x->st->scissorXlo >> 2), xhi = (float)(x->st->scissorXhi >> 2);
     float fbw = (float)(x->st->colorWidth ? x->st->colorWidth : 320);
     note_drawn(x, (x->st->scissorYhi + 3) >> 2);
-    if (!(xlo == 0 && xhi >= fbw) && !(x->sys->options.gfxWsBorder && xlo <= 16 && xhi >= fbw - 16))
+    if (!ws_wide(xhi - xlo, fbw) && !(x->sys->options.gfxWsBorder && xlo <= 16 && xhi >= fbw - 16))
     {
         xlo = ws_x(x, xlo, fbw);
         xhi = ws_x(x, xhi, fbw);
@@ -2062,14 +2082,16 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     }
     v[0] = a; v[1] = b; v[2] = c;
     wsFull = 1;
-    if (x->aspect == 1)
+    if (x->wsMain)
     {
         // 16:9 widescreen: a triangle from one screen edge exactly to the
         // other is a 2D background (MK64's sky gradient), stretched like the
-        // full-width rectangles instead of narrowed.
+        // full-width rectangles instead of narrowed; so is a flat one (w = 1,
+        // an orthographic projection) at least 90 % as wide.
         float fbw = (float)(st->colorWidth ? st->colorWidth : 320), lo = v[0]->x, hi = v[0]->x;
+        int flat = v[0]->invw == 1.0f && v[1]->invw == 1.0f && v[2]->invw == 1.0f;
         for (i = 1; i < 3; i++) { if (v[i]->x < lo) lo = v[i]->x; if (v[i]->x > hi) hi = v[i]->x; }
-        wsFull = lo > -0.6f && lo < 0.6f && hi > fbw - 0.6f && hi < fbw + 0.6f;
+        wsFull = (lo > -0.6f && lo < 0.6f && hi > fbw - 0.6f && hi < fbw + 0.6f) || (flat && ws_wide(hi - lo, fbw));
     }
     q = &x->batch[x->batchN];
     x->batchN += 3;
@@ -2107,7 +2129,7 @@ static void fill_rect(Xenos *x, const u32 *w)
     D3DRECT r;
     float fx1 = (float)(xl >> 2), fx2 = (float)((xh >> 2) + 1);
     // Full width, or (profile gfxWsBorder) touching an edge: in place.
-    if (!((xl >> 2) == 0 && fx2 >= fbw) && !(x->sys->options.gfxWsBorder && ((xl >> 2) == 0 || fx2 >= fbw)))
+    if (!ws_wide(fx2 - fx1, fbw) && !(x->sys->options.gfxWsBorder && ((xl >> 2) == 0 || fx2 >= fbw)))
     {
         fx1 = ws_x(x, fx1, fbw);
         fx2 = ws_x(x, fx2, fbw);
@@ -2424,7 +2446,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
                 x->dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
         }
     }
-    fullWidth = xl <= 0.5f && xh >= (float)(st->colorWidth ? st->colorWidth : 320) - 1.0f;
+    fullWidth = ws_wide(xh - xl, (float)(st->colorWidth ? st->colorWidth : 320));
     for (i = 0; i < 4; i++)
     {
         // Texture coordinates half a pixel back: the N64 samples a pixel at its
@@ -2892,7 +2914,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->rtH = RT_HEIGHT;
     x->uMax = x->vMax = 1.0f;
     x->texFilter = 1;
-    x->sharpen = x->blur = x->screen = x->aspect = 0;
+    x->sharpen = x->blur = x->screen = x->aspect = x->wsMain = 0;
     x->deferNotify = 0;
     x->pendingLo = x->pendingHi = 0;
     x->psFill = compile_ps(dev, s_psFillSource);
