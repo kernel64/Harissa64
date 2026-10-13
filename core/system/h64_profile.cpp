@@ -72,6 +72,10 @@ static const GameProfile s_profiles[] = {
     // stale intro frame back over them: ~400 copy backs a frame in the attract
     // race (0.5 VI/s in Xenia) and a black screen.
     { "NRR", "Roadsters Trophy", H64_GP_COPY_BACK_SAME_WIDTH },
+    // Keeps textures inside the guessed extent of a 640-wide image at
+    // 0x2D4000: ~600 copy backs a frame once in game (1 VI/s in Xenia, the
+    // first room's door and Mega Man black); without them 60 VI/s, textured.
+    { "NM6", "Mega Man 64", H64_GP_COPY_BACK_SAME_WIDTH },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
