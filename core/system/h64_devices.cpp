@@ -172,6 +172,18 @@ static void pi_dma(H64System *sys, int toRdram, u32 value)
         sys->pi.regs[1] = cart + len;
         if (!toRdram) sys->pi.regs[2] = ((value & 0x00FFFFFF) | 1) + 1;
     }
+    else if (toRdram && sys->options.piOddCart && sys->pi.cartOdd && sys->pi.regs[1] >= 0x10000000u &&
+             sys->pi.regs[1] < 0x1FC00000u)
+    {
+        // Profile piOddCart: from the odd byte, a plain copy (old PC emulators).
+        u32 dram = sys->pi.regs[0], rom = sys->pi.regs[1] - 0x10000000u + 1, i;
+        h64_jit_notify_write(sys, dram, len);
+        for (i = 0; i < len; i++)
+            if (dram + i < H64_RDRAM_SIZE) sys->rdram[dram + i] = rom + i < sys->rom.size ? sys->rom.data[rom + i] : 0;
+        sys->pi.regs[0] = (dram + len + 7) & 0x00FFFFF8;
+        sys->pi.regs[1] = (sys->pi.regs[1] + len + 1) & ~1u;
+        sys->pi.cartOdd = 0;
+    }
     else if (toRdram)
     {
         u8 mem[128];
@@ -472,7 +484,7 @@ void h64_mmio_write(H64System *sys, u32 paddr, u32 value, u32 mask)
         switch (reg)
         {
         case 0: sys->pi.regs[0] = value & 0x00FFFFFE; return;
-        case 1: sys->pi.regs[1] = value & ~1u; return;
+        case 1: sys->pi.regs[1] = value & ~1u; sys->pi.cartOdd = value & 1; return;
         case 2: sys->pi.regs[2] = value & 0x00FFFFFF; pi_dma(sys, 0, value); return;
         case 3: sys->pi.regs[3] = value & 0x00FFFFFF; pi_dma(sys, 1, value); return;
         case 4:

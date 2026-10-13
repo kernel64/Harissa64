@@ -34,7 +34,8 @@ struct H64Ai
     u32 dramAddr, len, control, status, dacrate, bitrate; u32 fifoLen[2]; u32 fifoCount; u64 bufferCycles;
     u64 statQueued, statReads, statReadSum; u32 statBuffers;   // statistics: bytes queued, AI_LEN reads
 };
-struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; };   // latch: last CPU write to the cartridge bus
+// latch: last CPU write to the cartridge bus; cartOdd: bit 0 of the last PI_CART_ADDR write (options.piOddCart)
+struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; u32 cartOdd; };
 // RI registers, and the registers of the four 2 MB RDRAM modules (8 MB), which
 // the 6105 IPL3 programs and probes to size the memory.
 #define H64_RDRAM_MODULES 4
@@ -111,6 +112,8 @@ struct H64Options
     int gfxFrameToRdram;    // GPU renderer (game profile): the picture the VI shows is copied back to RDRAM
     int gfxSmallToRdram;    // GPU renderer (game profile): small images the RDP leaves are copied back to RDRAM
     int gfxSlotByWidth;     // GPU renderer (game profile): one frame slot per address and width
+    int piOddCart;          // game profile: a ROM DMA from an odd cartridge address starts at that byte, as the
+                            // old PC emulators did (the PI ignores bit 0); SM64 ROM hacks rely on it
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts

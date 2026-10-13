@@ -52,6 +52,10 @@ void h64_debug_text(H64System *sys, const u8 *text, u32 len)
     }
 }
 
+// The ISViewer only where the ROM does not reach: 64 MB ROMs (SM64 hacks)
+// have data there.
+static int isv_on(const H64System *sys) { return sys->rom.size <= ISV_BASE - 0x10000000u; }
+
 static void isv_flush(H64System *sys, u32 len)
 {
     if (len > sizeof(sys->isvBuffer))
@@ -82,7 +86,7 @@ int h64_bus_read32(H64System *sys, u32 paddr, u32 *value)
     if (paddr < 0x1FC00000u)
     {
         u32 off = paddr - 0x10000000u;
-        if (paddr >= ISV_BASE && paddr < ISV_END)
+        if (paddr >= ISV_BASE && paddr < ISV_END && isv_on(sys))
         {
             if (paddr == ISV_BASE) *value = 0x49533634u;   // "IS64": lets software detect the ISViewer
             else if (paddr >= ISV_BASE + 0x20 && paddr < ISV_BASE + 0x20 + sizeof(sys->isvBuffer))
@@ -140,7 +144,7 @@ int h64_bus_write32(H64System *sys, u32 paddr, u32 value, u32 mask)
     }
     if (paddr < 0x1FC00000u)
     {
-        if (paddr >= ISV_BASE && paddr < ISV_END)
+        if (paddr >= ISV_BASE && paddr < ISV_END && isv_on(sys))
         {
             if (paddr == ISV_BASE + 0x14)
                 isv_flush(sys, value & mask);
