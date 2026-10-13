@@ -1814,7 +1814,11 @@ static void set_scissor(Xenos *x, float sx, float sy)
     float xlo = (float)(x->st->scissorXlo >> 2), xhi = (float)(x->st->scissorXhi >> 2);
     float fbw = (float)(x->st->colorWidth ? x->st->colorWidth : 320);
     note_drawn(x, (x->st->scissorYhi + 3) >> 2);
-    if (!(xlo == 0 && xhi >= fbw)) { xlo = ws_x(x, xlo, fbw); xhi = ws_x(x, xhi, fbw); }
+    if (!(xlo == 0 && xhi >= fbw) && !(x->sys->options.gfxWsBorder && xlo <= 16 && xhi >= fbw - 16))
+    {
+        xlo = ws_x(x, xlo, fbw);
+        xhi = ws_x(x, xhi, fbw);
+    }
     r.left = (LONG)(xlo * sx);
     r.top = (LONG)((x->st->scissorYlo >> 2) * sy);
     r.right = (LONG)(xhi * sx);
@@ -2102,7 +2106,12 @@ static void fill_rect(Xenos *x, const u32 *w)
     u32 xh = (w[0] >> 12) & 0xFFF, yh = w[0] & 0xFFF, xl = (w[1] >> 12) & 0xFFF, yl = w[1] & 0xFFF;
     D3DRECT r;
     float fx1 = (float)(xl >> 2), fx2 = (float)((xh >> 2) + 1);
-    if (!((xl >> 2) == 0 && fx2 >= fbw)) { fx1 = ws_x(x, fx1, fbw); fx2 = ws_x(x, fx2, fbw); }
+    // Full width, or (profile gfxWsBorder) touching an edge: in place.
+    if (!((xl >> 2) == 0 && fx2 >= fbw) && !(x->sys->options.gfxWsBorder && ((xl >> 2) == 0 || fx2 >= fbw)))
+    {
+        fx1 = ws_x(x, fx1, fbw);
+        fx2 = ws_x(x, fx2, fbw);
+    }
     r.x1 = (LONG)(fx1 * sx);
     r.y1 = (LONG)((yl >> 2) * sy);
     r.x2 = (LONG)(fx2 * sx);

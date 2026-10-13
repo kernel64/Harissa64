@@ -55,6 +55,10 @@ static const GameProfile s_profiles[] = {
     // Impact's MIO0 blocks: a black screen after the title). SM64 itself
     // never does.
     { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART },
+    // A 10-pixel border around the picture: scissor x 10-309, the border
+    // painted by fills from the edges. In 16:9 widescreen both moved towards
+    // the centre and the scene stayed boxed at 4:3 (GitHub issue #2).
+    { "NDO", "Donkey Kong 64", H64_GP_WS_BORDER },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
@@ -94,4 +98,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxSmallToRdram = (f & H64_GP_SMALL_TO_RDRAM) != 0;
     sys->options.gfxSlotByWidth = (f & H64_GP_SLOT_BY_WIDTH) != 0;
     sys->options.piOddCart = (f & H64_GP_PI_ODD_CART) != 0;
+    sys->options.gfxWsBorder = (f & H64_GP_WS_BORDER) != 0;
 }
