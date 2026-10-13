@@ -410,6 +410,26 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
     return 1;
 }
 
+int h64_hle_stream_poll(H64System *sys, u32 *busyCycles, int *dpInterrupt)
+{
+    struct hle_t *hle = sys->hle;
+    int fullSync = 0, r;
+    u64 t0;
+    if (!hle || !hle->gfx || !h64_gfx_stream_waiting(hle->gfx)) return 0;
+    t0 = h64_prof_now(sys);
+    r = h64_gfx_stream_resume(sys, hle->gfx, &fullSync);
+    sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+    hle->streamFullSync |= fullSync;
+    if (r < 0 || (r > 0 && h64_gfx_stream_waiting(hle->gfx)))
+    {
+        *busyCycles = H64_HLE_STREAM_POLL;
+        return 1;
+    }
+    *dpInterrupt = hle->streamFullSync;
+    hle->streamFullSync = 0;
+    return 0;
+}
+
 u32 h64_hle_gfx_cost(H64System *sys)
 {
     struct hle_t *hle = sys->hle;
@@ -498,7 +518,7 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             else *dpInterrupt = fullSync;
             return 1;
         }
-        if (sys->asyncStart)
+        if (sys->asyncStart && !sys->options.gfxStream)
         {
             // On the worker: the CPU goes on; the task ends (or falls back
             // to LLE) after asyncGfxCycles, where the CPU waits for it.
@@ -558,6 +578,13 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
         *busyCycles = H64_HLE_GFX_CYCLES;
         if (h64_hle_gfx_cost(sys) > *busyCycles) *busyCycles = h64_hle_gfx_cost(sys);
         *dpInterrupt = fullSync;
+        if (h64_gfx_stream_waiting(hle->gfx))
+        {
+            // Waits for the CPU to write more of the list (h64_hle_stream_poll).
+            hle->streamFullSync = fullSync;
+            *dpInterrupt = 0;
+            *busyCycles = H64_HLE_STREAM_POLL;
+        }
         return 1;
     }
     if (!(sys->options.hleAudio || sys->options.hleAudioCheck))

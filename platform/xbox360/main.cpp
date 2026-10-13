@@ -1115,7 +1115,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     H64_INFO("[main] running %s: cpu %s, RSP %s, %s renderer", rom, jit ? "recompiler" : "interpreter",
              c->hle ? "HLE" : "LLE", c->softRenderer ? "software" : "Xenos");
     if (c->hle && !c->trace)
-        WorkersStart(sys, dev, renderer, c->asyncGfx && !c->softRenderer, c->gfxCycles ? c->gfxCycles : 400000,
+        WorkersStart(sys, dev, renderer, c->asyncGfx && !c->softRenderer && !sys->options.gfxStream, c->gfxCycles ? c->gfxCycles : 400000,
                      c->asyncAudio, c->audioCycles ? c->audioCycles : 100000, c->parseWorker);
 
     if (c->trace)

@@ -651,6 +651,17 @@ void h64_rsp_slice_event(H64System *sys)
                 }
             }
         }
+        {
+            // A streamed display list still waiting for the CPU: look again later.
+            u32 busy = 0;
+            int dp = 0;
+            if (h64_hle_stream_poll(sys, &busy, &dp))
+            {
+                h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + busy);
+                return;
+            }
+            if (dp) rsp->hleDpInterrupt = 1;
+        }
         // End of an HLE task: halt with the bits the microcode would set.
         rsp->hleBusy = 0;
         rsp->hleExtended = 0;

@@ -33,6 +33,11 @@ int h64_gfx_run_task(H64System *sys, H64Gfx *gfx, int *fullSync);
 int h64_gfx_task_sync(H64System *sys, H64Gfx *gfx);
 int h64_gfx_waiting(const H64Gfx *gfx);
 int h64_gfx_resume(H64System *sys, H64Gfx *gfx, int *fullSync);
+// Streamed display lists (options.gfxStream): the task stopped at a branch to
+// itself (h64_gfx_stream_waiting); h64_gfx_stream_resume goes on once the CPU
+// rewrote that command: -1 not yet, 1 ran on (it may wait again), 0 ended.
+int h64_gfx_stream_waiting(const H64Gfx *gfx);
+int h64_gfx_stream_resume(H64System *sys, H64Gfx *gfx, int *fullSync);
 // Calibration (h64test --gfx-cost-log): parses the task in DMEM without
 // rendering it and returns what it would do.
 int h64_gfx_measure(H64System *sys, H64Gfx *gfx, u32 *verts, u32 *tris, u32 *commands);

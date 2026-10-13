@@ -120,6 +120,8 @@ struct H64Options
     int piOddCart;          // game profile: a ROM DMA from an odd cartridge address starts at that byte, as the
                             // old PC emulators did (the PI ignores bit 0); SM64 ROM hacks rely on it
     int gfxShortTask;       // graphics worker (game profile): a task keeps the RSP busy H64_HLE_GFX_CYCLES at most
+    int gfxStream;          // graphics HLE (game profile): a display list may branch to itself until the CPU
+                            // writes more of it; tasks run on the CPU thread (no graphics worker)
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts

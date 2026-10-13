@@ -109,6 +109,7 @@ struct hle_t
     unsigned int sp_status;   // status bits the task sets when it ends (rsp_break)
     int forwarded;            // the task was left to the LLE RSP
     u32 dirtyLo, dirtyHi;     // RDRAM range written by the task (for the recompiler)
+    int streamFullSync;       // a streamed graphics task had a full sync (h64_hle_stream_poll)
     u8 *checkRam;             // hleAudioCheck: RDRAM copy the HLE ran on
     u8 *checkMask;            // hleAudioCheck: 1 for each RDRAM byte the HLE wrote
     int checkPending;         // hleAudioCheck: compare when the LLE task ends

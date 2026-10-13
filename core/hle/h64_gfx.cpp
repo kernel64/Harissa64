@@ -260,6 +260,10 @@ struct H64Gfx
     s16 nBB, nEE, nHH;
     u8 nDD, nCC, nTT;
     int f5Restore;   // the saved mode is due back before the next Naboo polygon
+    // Streamed display list (options.gfxStream): the list branched to its own
+    // command, which the CPU rewrites once it has written more of the list.
+    int streamWait;
+    u32 streamAddr, streamW0, streamW1;
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -1509,7 +1513,20 @@ static void call_dl(H64Gfx *g, u32 addr, int push)
         else g->abort = 1;
     }
     else
+    {
+        if (g->sys->options.gfxStream && phys == ((g->pc[g->pci] - 8) & 0x7FFFFF))
+        {
+            // A branch to itself: the real microcode reads this command
+            // again until the CPU replaces it (Gauntlet Legends writes its
+            // list while the RSP runs it). The task waits here.
+            g->streamWait = 1;
+            g->streamAddr = phys;
+            g->streamW0 = rd32(g, phys);
+            g->streamW1 = rd32(g, phys + 4);
+            g->halt = 1;
+        }
         g->pc[g->pci] = phys;
+    }
 }
 
 static void do_matrix(H64Gfx *g, u32 addr, int projection, int load, int push)
@@ -3822,6 +3839,7 @@ int h64_gfx_task_known(H64System *sys, H64Gfx *g)
 }
 
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync);
+static int gfx_loop(H64System *sys, H64Gfx *g, int *fullSync);
 
 // How long the real microcode would keep the RSP busy, in CPU cycles: 130 RCP
 // cycles per vertex and 230 per triangle, fitted on the LLE RSP's timing
@@ -3851,6 +3869,27 @@ int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
     if (!parse_task(sys, g, fullSync)) return 0;
     if (g->bossWait) g->fullSync = 0;   // the caller raises it now
+    flush_output(g);
+    return 1;
+}
+
+int h64_gfx_stream_waiting(const H64Gfx *g)
+{
+    return g->streamWait;
+}
+
+int h64_gfx_stream_resume(H64System *sys, H64Gfx *g, int *fullSync)
+{
+    if (!g->streamWait) return 0;
+    if (rd32(g, g->streamAddr) == g->streamW0 && rd32(g, g->streamAddr + 4) == g->streamW1) return -1;
+    g->streamWait = 0;
+    g->halt = g->abort = 0;
+    g->fullSync = 0;
+    g->commands = 0;
+    g->words.clear();
+    g->tris.clear();
+    g->ops.clear();
+    if (!gfx_loop(sys, g, fullSync)) { g->streamWait = 0; return 0; }   // cannot go back to the LLE RSP now: ends
     flush_output(g);
     return 1;
 }
@@ -4002,6 +4041,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
         g->bossRdp[0] = g->bossRdp[1] = g->bossRdp[2] = 0;
         sys->rsp.status = (sys->rsp.status & ~0x300u) | 0x800u;   // clear SIG1/SIG2, set SIG4
     }
+    g->streamWait = 0;
     return gfx_loop(sys, g, fullSync);
 }
 
