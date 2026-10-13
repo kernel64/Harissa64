@@ -67,6 +67,8 @@ struct GfxUcode
                  // texture generation that gives vertex alpha from a table (GLideN64 F3DFLX2)
     u32 crc;     // CRC-32 of the first 4 KB of code (see detect_ucode)
     int line;    // L3DEX / L3DEX2: triangles and G_LINE3D are drawn as lines
+    int omInit;  // each task starts from the microcode's default other modes (F3DLP)
+    int cullOne; // F3DLX.Rej: culling both faces culls the back faces only
 };
 
 struct GfxVtx
@@ -476,6 +478,8 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->cull40 = 0;
     u->flx = 0;
     u->line = 0;
+    u->omInit = 0;
+    u->cullOne = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
@@ -526,6 +530,16 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
         else if (!strncmp(str + 4, "Gfx", 3) && j > 31 && !strncmp(str + 14, "F3D", 3))
         {
             u->noNear = strstr(str + 4, ".NoN") != 0 || strstr(str + 4, ".Rej") != 0;
+            // F3DLP.Rej (Quake II, Fighting Force, NFL Quarterback Club 98):
+            // F3DEX 1.x as far as the display lists go. Its tasks start from
+            // the default other modes 0x080CFF, as the real microcode sends
+            // them (Quake II never sets the texture filter: from 0 its
+            // palette textures were read as YUV, grey planets).
+            if (!strncmp(str + 14, "F3DLP", 5)) u->omInit = 1;
+            // F3DLX.Rej has no "cull both": with both bits set it culls the
+            // back faces (GLideN64's cullBoth = false). Mortal Kombat 4 sets
+            // both for its fighters and arenas: only the HUD was drawn.
+            if (!strncmp(str + 14, "F3DLX.Rej", 9)) u->cullOne = 1;
             if (!strncmp(str + 14, "F3DZEX", 6))
             {
                 u->type = UC_F3DEX2;
@@ -588,6 +602,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
                 u->cull40 = o->cull40; u->flx = o->flx; u->line = o->line;
+                u->omInit = o->omInit; u->cullOne = o->cullOne;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
             }
@@ -635,6 +650,7 @@ static u32 geom(const H64Gfx *g)
         if (r & 0x1000) m |= GM_CULL_FRONT;
         if (r & 0x2000) m |= GM_CULL_BACK;
     }
+    if (g->uc->cullOne && (m & (GM_CULL_FRONT | GM_CULL_BACK)) == (GM_CULL_FRONT | GM_CULL_BACK)) m &= ~GM_CULL_FRONT;
     return m;
 }
 
@@ -3013,7 +3029,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     // ... and with it the other modes' default (F3DEX2: perspective, texture
     // filter, dithers). Mario Golf never sets the texture conversion and
     // relies on it: from 0 its textures were read as YUV (grey courses).
-    if (g->sys->options.gfxOtherModeInit) { g->omH = 0x080CFF; g->omL = 0; }
+    if (g->sys->options.gfxOtherModeInit || u->omInit) { g->omH = 0x080CFF; g->omL = 0; }
     g->uc = u;
 
     // Per-task state, as the microcode starts each task (GLideN64 RSP_ProcessDList).
