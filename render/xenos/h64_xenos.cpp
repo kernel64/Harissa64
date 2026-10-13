@@ -713,16 +713,23 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         // wrapped or mirrored one is decoded through its mask over any range
         // (OoT's backgrounds: 1024x1024 mirrored tiles sampled by narrow strips)
         // and the window is then clamped.
+        // A clamped axis without a mask spans the whole tile here, also past
+        // what TMEM holds (tile_layout cuts the full decode there): its texels
+        // read TMEM again from the start, as the RDP does. Knife Edge's font
+        // (64x160 I4 tiles, 32-byte rows) showed glyphs below row 128 as bars
+        // of the last row.
         s32 lo = x->win.s0, hi = x->win.s1;
-        if (b->clampS) { if (lo < 0) lo = 0; if (hi > (s32)b->w - 1) hi = (s32)b->w - 1; }
-        if (lo <= hi && (u32)(hi - lo + 1) * 2 <= b->w)
+        s32 fullS = b->clampS && !t->maskS ? (s32)tile_extent(t->slo, t->shi) : (s32)b->w;
+        s32 fullT = b->clampT && !t->maskT ? (s32)tile_extent(t->tlo, t->thi) : (s32)b->h;
+        if (b->clampS) { if (lo < 0) lo = 0; if (hi > fullS - 1) hi = fullS - 1; }
+        if (lo <= hi && (u32)(hi - lo + 1) * 2 <= (u32)fullS)
         {
             b->ox = lo; b->w = (u32)(hi - lo + 1);
             b->clampS = 1; b->mirrorS = b->wrapS = 0;
         }
         lo = x->win.t0; hi = x->win.t1;
-        if (b->clampT) { if (lo < 0) lo = 0; if (hi > (s32)b->h - 1) hi = (s32)b->h - 1; }
-        if (lo <= hi && (u32)(hi - lo + 1) * 2 <= b->h)
+        if (b->clampT) { if (lo < 0) lo = 0; if (hi > fullT - 1) hi = fullT - 1; }
+        if (lo <= hi && (u32)(hi - lo + 1) * 2 <= (u32)fullT)
         {
             b->oy = lo; b->h = (u32)(hi - lo + 1);
             b->clampT = 1; b->mirrorT = b->wrapT = 0;
