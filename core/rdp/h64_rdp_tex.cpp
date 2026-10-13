@@ -364,7 +364,7 @@ static void fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 
 
 void h64_rdp_fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, H64RdpTexel *out)
 {
-    fetch_yuv(st, tile, s, t, s & ~1u, out);
+    fetch_yuv(st, tile, s, t, s >> 1, out);   // one chroma pair for two texels, as h64_rdp_sample
 }
 
 static s32 clamp_and_shift(int clampBit, s32 coord, s32 lo, s32 hi, int shift)
