@@ -118,6 +118,7 @@ struct H64Options
                             // counts as full width, and fills touching an edge stay there (a border around the picture)
     int piOddCart;          // game profile: a ROM DMA from an odd cartridge address starts at that byte, as the
                             // old PC emulators did (the PI ignores bit 0); SM64 ROM hacks rely on it
+    int gfxShortTask;       // graphics worker (game profile): a task keeps the RSP busy H64_HLE_GFX_CYCLES at most
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
