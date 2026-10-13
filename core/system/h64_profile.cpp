@@ -81,6 +81,10 @@ static const GameProfile s_profiles[] = {
     { "NBX", "BattleTanx", H64_GP_BOOT_TIME },
     // 6106: with the HLE boot only its sound ran, never a graphics task.
     { "NCW", "Cruis'n World", H64_GP_IPL3_BOOT },
+    // S2DEX2 2D objects (rectangles, sprites, texture loads) in the graphics
+    // HLE with the S2DEX 1.x code; those tasks ran on the LLE RSP.
+    { "NBV", "Bomberman 64: The Second Attack!", H64_GP_S2DEX1 },
+    { "NDE", "Destruction Derby 64", H64_GP_S2DEX1 },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
