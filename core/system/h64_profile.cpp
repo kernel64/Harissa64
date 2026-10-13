@@ -93,6 +93,15 @@ static const GameProfile s_profiles[] = {
     // HLE with the S2DEX 1.x code; those tasks ran on the LLE RSP.
     { "NBV", "Bomberman 64: The Second Attack!", H64_GP_S2DEX1 },
     { "NDE", "Destruction Derby 64", H64_GP_S2DEX1 },
+    // Never sets the texture filter and relies on the microcode's default
+    // other modes at each task: from 0 its textures were read as YUV (dark,
+    // black ground and trees).
+    { "NSV", "Space Station Silicon Valley", H64_GP_OTHERMODE_INIT },
+    // Same: grey textures in the levels (its HUD thermometer, banners).
+    { "NTT", "Tonic Trouble", H64_GP_OTHERMODE_INIT },
+    // S2DEX 1.07 for its pictures and pieces (LLE before: garbled on the
+    // console's renderer), tasks from the default other modes.
+    { "NMT", "Magical Tetris Challenge", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
