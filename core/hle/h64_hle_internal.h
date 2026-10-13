@@ -183,6 +183,10 @@ void alist_process_nead_mats(struct hle_t *hle);
 void alist_process_nead_efz(struct hle_t *hle);
 void mp3_task(struct hle_t *hle, unsigned int index, uint32_t address);
 void musyx_v1_task(struct hle_t *hle);
+// ---- jpeg.c (h64_hle_jpeg.cpp) ----
+void jpeg_decode_PS0(struct hle_t *hle);
+void jpeg_decode_PS(struct hle_t *hle);
+void jpeg_decode_OB(struct hle_t *hle);
 void musyx_v2_task(struct hle_t *hle);
 
 // ---- memory.h ----
