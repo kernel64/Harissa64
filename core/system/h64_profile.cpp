@@ -67,6 +67,11 @@ static const GameProfile s_profiles[] = {
     // painted by fills from the edges. In 16:9 widescreen both moved towards
     // the centre and the scene stayed boxed at 4:3 (GitHub issue #2).
     { "NDO", "Donkey Kong 64", H64_GP_WS_BORDER },
+    // Its intro draws 560-wide 32-bit frames at 0x234A00 and 0x31A500; the
+    // game then keeps textures there. Loads of them (1 texel wide) copied the
+    // stale intro frame back over them: ~400 copy backs a frame in the attract
+    // race (0.5 VI/s in Xenia) and a black screen.
+    { "NRR", "Roadsters Trophy", H64_GP_COPY_BACK_SAME_WIDTH },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
