@@ -866,7 +866,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     {
         // Linear textures: rows 256-byte aligned, data 4 KB aligned.
         u32 pitch = (b->w * 4 + 255) & ~255u, offset;
-        if (arena_alloc(x, pitch * b->h, &offset))
+        if (!(x->sys->options.gfxBigTexPool && pitch * b->h > ARENA_CHUNK / 2) && arena_alloc(x, pitch * b->h, &offset))
         {
             u64 c0 = h64_prof_now(x->sys);
             IDirect3DTexture9 *t9 = new D3DTexture;

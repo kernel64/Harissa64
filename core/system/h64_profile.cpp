@@ -44,6 +44,13 @@ static const GameProfile s_profiles[] = {
     // Loads its textures from memory where the intro's 640x480 frames were:
     // copying those old frames back over them drew the snow canyons black.
     { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH },
+    // Never sets the texture conversion (F3DEX2 2.08): its textures were
+    // read as YUV, a grey picture.
+    { "NXO", "Cruis'n Exotica", H64_GP_OTHERMODE_INIT },
+    // Its rink and crowd are 32-texel textures repeated over 512x512 masks:
+    // ~35 textures of 1 MB a frame, more than the 24 MB texture arena holds,
+    // so every frame decoded them again (~750 ms a frame in Xenia, 1 VI/s).
+    { "NHO", "NHL Blades of Steel '99", H64_GP_BIG_TEX_POOL },
     // Copies its background into the frame's memory through 512-pixel
     // images with copy-mode rectangles, then draws in a 328-pixel frame at
     // the same address (one slot for both showed horizontal streaks).
@@ -175,4 +182,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxWsBorder = (f & H64_GP_WS_BORDER) != 0;
     sys->options.gfxCopyBackSameWidth = (f & H64_GP_COPY_BACK_SAME_WIDTH) != 0;
     sys->options.gfxShortTask = (f & H64_GP_SHORT_GFX_TASK) != 0;
+    sys->options.gfxBigTexPool = (f & H64_GP_BIG_TEX_POOL) != 0;
 }
