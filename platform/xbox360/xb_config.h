@@ -38,7 +38,6 @@ struct Config
     int sharpen;        // sharpen=0|1|2: contrast-adaptive sharpening (off, low, high)
     int blur;           // blur=0|1|2: blur (off, soft, strong)
     int screen;         // screen=0..4: none, scanlines, CRT, curved CRT, LCD grid (crt=1: curved CRT)
-    int aspect;         // aspect=0|1|2: 4:3, 16:9 widescreen (wider 3D), 16:9 stretched
     int showFps;        // showfps=1: frames shown per second in a corner
     int logCpu;         // logcpu=N: hardware thread of the log writer (5)
     int gameFlags;      // gameflags=HEX: the game's profile flags instead of the table's (checks; -1: the table)
