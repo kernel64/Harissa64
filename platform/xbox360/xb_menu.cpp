@@ -110,6 +110,8 @@ static float draw_value(float right, float cy, const char *value, int selected)
     return right - UiText(UI_REGULAR, 21, right, cy, text, value, UI_RIGHT);
 }
 
+static void controls_draw(const UiMenu *m);
+
 void UiMenuDraw(const UiMenu *m)
 {
     static UiAnim sel;
@@ -118,6 +120,7 @@ void UiMenuDraw(const UiMenu *m)
     const float w = 660, rowH = 48, head = 100, foot = 78;
     float h = head + m->count * rowH + 18 + foot, x = (UI_WIDTH - w) * 0.5f, y = (UI_HEIGHT - h) * 0.5f, sy;
     int i, restart = strcmp(lastTitle, m->title) != 0 || lastCount != m->count;
+    if (m->page == UI_PAGE_CONTROLS) { controls_draw(m); lastTitle[0] = 0; return; }
     strncpy(lastTitle, m->title, sizeof(lastTitle) - 1);
     lastCount = m->count;
     UiDim();
@@ -145,10 +148,10 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 }
 
 // ---- Settings ----
-// Main page: CPU, RSP, audio, FPS, the Graphics page, save, back. The Graphics
+// Main page: CPU, RSP, audio, FPS, the Graphics and Controls pages, save, back. The Graphics
 // page (resolution, aspect, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
-enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS };
+enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
 enum { G_PRESET = 0, G_RES, G_ASPECT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
@@ -204,6 +207,11 @@ static void settings_values(UiMenu *m, const Config *c)
     sprintf(m->value[S_HLE], "< %s >", c->hle ? "HLE" : "LLE");
     sprintf(m->value[S_AUDIO], "< %d ms >", c->audioMs);
     sprintf(m->value[S_FPS], "< %s >", onoff(c->showFps));
+    {
+        int i, custom = 0;
+        for (i = 0; i < 4; i++) custom |= !h64_padmap_is_default(&c->padMap[i]);
+        strcpy(m->value[S_CONTROLS], custom ? "Custom" : "Default");
+    }
 }
 
 static void settings_main(UiMenu *m, const Config *c)
@@ -215,6 +223,7 @@ static void settings_main(UiMenu *m, const Config *c)
     UiMenuAdd(m, "Audio margin", "");
     UiMenuAdd(m, "Show FPS", "");
     UiMenuAdd(m, "Graphics", "");
+    UiMenuAdd(m, "Controls", "");
     UiMenuAdd(m, "Save for all games", "");
     if (s_perGame) UiMenuAdd(m, "Save for this game only", "");
     UiMenuAdd(m, "Back", "");
@@ -237,9 +246,381 @@ static void settings_graphics(UiMenu *m, const Config *c)
     settings_values(m, c);
 }
 
+// ---- Controls page ----
+// Which Xbox 360 input drives each N64 control, per player (LB/RB), and the
+// analog stick's source, dead zone and sensitivity. A on a button waits for
+// an input to set it (Y adds one more, X clears); BACK or 5 s cancel.
+// Inputs are read from controller 1, whichever player is being edited.
+enum { C_STICK = H64_N64_COUNT, C_DEAD, C_RANGE, C_RESET, C_BACK, C_COUNT };
+#define CAPTURE_MS 5000
+
+struct ControlsState
+{
+    Config *c;
+    int player;          // 0..3
+    int capturing;       // waiting for an input for item `capItem`
+    int capItem, capAdd, capReleased;
+    DWORD capStart;
+    char msg[64];        // a short note under the panel ("D-pad up set")
+    DWORD msgAt;
+};
+static ControlsState s_ctl;
+
+// The items in the order up/down walks them, and where each one is shown.
+static const int s_ctlOrder[C_COUNT] = {
+    H64_N64_A, H64_N64_B, H64_N64_Z, H64_N64_START, H64_N64_L, H64_N64_R,
+    H64_N64_DUP, H64_N64_DDOWN, H64_N64_DLEFT, H64_N64_DRIGHT, H64_N64_CUP, H64_N64_CDOWN, H64_N64_CLEFT, H64_N64_CRIGHT,
+    C_STICK, C_DEAD, C_RANGE, C_RESET, C_BACK,
+};
+
+#define CTL_X 70.0f
+#define CTL_Y 55.0f
+#define CTL_W 1140.0f
+#define CTL_H 610.0f
+#define CTL_ROW 40.0f
+#define CTL_TOP 150.0f       // first row's top, from the panel's
+#define CTL_COLW 352.0f
+#define CTL_GAP 20.0f
+
+// Column and row slot (0-based, in rows of CTL_ROW; headings take half a row) of an item.
+static void ctl_place(int item, int *col, float *row)
+{
+    switch (item)
+    {
+    case H64_N64_A: *col = 0; *row = 0; return;
+    case H64_N64_B: *col = 0; *row = 1; return;
+    case H64_N64_Z: *col = 0; *row = 2; return;
+    case H64_N64_START: *col = 0; *row = 3; return;
+    case H64_N64_L: *col = 0; *row = 4; return;
+    case H64_N64_R: *col = 0; *row = 5; return;
+    case H64_N64_DUP: *col = 1; *row = 0; return;
+    case H64_N64_DDOWN: *col = 1; *row = 1; return;
+    case H64_N64_DLEFT: *col = 1; *row = 2; return;
+    case H64_N64_DRIGHT: *col = 1; *row = 3; return;
+    case H64_N64_CUP: *col = 1; *row = 5; return;
+    case H64_N64_CDOWN: *col = 1; *row = 6; return;
+    case H64_N64_CLEFT: *col = 1; *row = 7; return;
+    case H64_N64_CRIGHT: *col = 1; *row = 8; return;
+    case C_STICK: *col = 2; *row = 0; return;
+    case C_DEAD: *col = 2; *row = 1; return;
+    case C_RANGE: *col = 2; *row = 2; return;
+    case C_RESET: *col = 2; *row = 4; return;
+    default: *col = 2; *row = 5; return;
+    }
+}
+
+static float ctl_col_x(int col) { return CTL_X + 24 + col * (CTL_COLW + CTL_GAP); }
+static float ctl_row_y(float row) { return CTL_Y + CTL_TOP + row * CTL_ROW; }
+
+static void controls_open(UiMenu *m, Config *c)
+{
+    UiMenuClear(m, "Controls", "");
+    m->page = UI_PAGE_CONTROLS;
+    m->count = C_COUNT;
+    m->sel = 0;
+    s_ctl.c = c;
+    s_ctl.capturing = 0;
+    s_ctl.msg[0] = 0;
+    if (s_ctl.player < 0 || s_ctl.player > 3) s_ctl.player = 0;
+}
+
+static void ctl_note(const char *text)
+{
+    strncpy(s_ctl.msg, text, sizeof(s_ctl.msg) - 1);
+    s_ctl.msg[sizeof(s_ctl.msg) - 1] = 0;
+    s_ctl.msgAt = GetTickCount();
+}
+
+// Controller 1's state as the mapping's input.
+static int ctl_read(H64PadInput *in)
+{
+    XINPUT_STATE st;
+    if (XInputGetState(0, &st) != ERROR_SUCCESS) return 0;
+    in->buttons = st.Gamepad.wButtons;
+    in->lt = st.Gamepad.bLeftTrigger;
+    in->rt = st.Gamepad.bRightTrigger;
+    in->lx = st.Gamepad.sThumbLX;
+    in->ly = st.Gamepad.sThumbLY;
+    in->rx = st.Gamepad.sThumbRX;
+    in->ry = st.Gamepad.sThumbRY;
+    return 1;
+}
+
+// While waiting for an input: everything released first (the A that started
+// it), then the first input pressed. BACK cancels, as does the time out.
+static int controls_capture(void)
+{
+    H64PadInput in;
+    u32 src = 0;
+    H64PadMap *map = &s_ctl.c->padMap[s_ctl.player];
+    int i;
+    char note[64];
+    if (ctl_read(&in))
+    {
+        if (in.buttons & XINPUT_GAMEPAD_BACK)
+        {
+            s_ctl.capturing = 0;
+            ctl_note("Cancelled");
+            return SET_NONE;
+        }
+        src = h64_padmap_sources(&in);
+    }
+    if (!s_ctl.capReleased)
+    {
+        if (!src) { s_ctl.capReleased = 1; s_ctl.capStart = GetTickCount(); }
+        return SET_NONE;
+    }
+    if (GetTickCount() - s_ctl.capStart >= CAPTURE_MS)
+    {
+        s_ctl.capturing = 0;
+        ctl_note("No input: unchanged");
+        return SET_NONE;
+    }
+    if (!src) return SET_NONE;
+    for (i = 0; i < H64_SRC_COUNT; i++)
+        if (src & (1u << i)) break;
+    if (s_ctl.capAdd) map->src[s_ctl.capItem] |= 1u << i;
+    else map->src[s_ctl.capItem] = 1u << i;
+    s_ctl.capturing = 0;
+    _snprintf(note, sizeof(note) - 1, "%s: %s %s", h64_padmap_n64_label(s_ctl.capItem), h64_padmap_source_label(i),
+              s_ctl.capAdd ? "added" : "set");
+    note[sizeof(note) - 1] = 0;
+    ctl_note(note);
+    return SET_CHANGED;
+}
+
+static int controls_input(UiMenu *m, Config *c, WORD down)
+{
+    H64PadMap *map;
+    int item, dir, col, i;
+    float row;
+    s_ctl.c = c;
+    map = &c->padMap[s_ctl.player];
+    if (s_ctl.capturing) return controls_capture();
+    item = s_ctlOrder[m->sel];
+    dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
+    UiMenuNavigate(m, down);
+    if ((down & XINPUT_GAMEPAD_B) || (item == C_BACK && (down & XINPUT_GAMEPAD_A)))
+    {
+        settings_main(m, c);
+        m->sel = S_CONTROLS;
+        return SET_NONE;
+    }
+    if (down & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER))
+    {
+        s_ctl.player = (s_ctl.player + ((down & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? 1 : 3)) % 4;
+        return SET_NONE;
+    }
+    if (item < H64_N64_COUNT)
+    {
+        if (down & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_Y))
+        {
+            s_ctl.capturing = 1;
+            s_ctl.capItem = item;
+            s_ctl.capAdd = (down & XINPUT_GAMEPAD_A) ? 0 : 1;
+            s_ctl.capReleased = 0;
+            s_ctl.capStart = GetTickCount();
+            return SET_NONE;
+        }
+        if (down & XINPUT_GAMEPAD_X)
+        {
+            map->src[item] = 0;
+            return SET_CHANGED;
+        }
+    }
+    if (item == C_RESET && (down & XINPUT_GAMEPAD_A))
+    {
+        h64_padmap_default(map);
+        ctl_note("Default controls");
+        return SET_CHANGED;
+    }
+    if (item >= C_STICK && item <= C_RANGE && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        if (!dir) dir = 1;
+        if (item == C_STICK) map->stick = (map->stick + dir + H64_STICK_COUNT) % H64_STICK_COUNT;
+        else if (item == C_DEAD)
+        {
+            map->deadzone += dir * 1000;
+            if (map->deadzone < 0) map->deadzone = 0;
+            if (map->deadzone > 16000) map->deadzone = 16000;
+        }
+        else
+        {
+            map->range += dir * 10;
+            if (map->range < 50) map->range = 50;
+            if (map->range > 150) map->range = 150;
+        }
+        return SET_CHANGED;
+    }
+    if (dir && (item < C_STICK || item >= C_RESET))
+    {
+        // Left/right on a button row: the next column, on the row nearest the same height.
+        int best = m->sel;
+        float bestD = 1e9f;
+        ctl_place(item, &col, &row);
+        col = (col + dir + 3) % 3;
+        for (i = 0; i < C_COUNT; i++)
+        {
+            int c2;
+            float r2, d;
+            ctl_place(s_ctlOrder[i], &c2, &r2);
+            d = r2 > row ? r2 - row : row - r2;
+            if (c2 == col && d < bestD) { bestD = d; best = i; }
+        }
+        m->sel = best;
+    }
+    return SET_NONE;
+}
+
+// The inputs of a mask as button prompts ("X/Y/LT/RT|DPAD:Up"), or "" when none.
+static void ctl_hints(u32 mask, char *out, size_t size)
+{
+    static const char *glyph[H64_SRC_COUNT] = {
+        "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "START", "DPAD:Up", "DPAD:Down", "DPAD:Left", "DPAD:Right",
+        "LS:Click", "RS:Click", "LS:Up", "LS:Down", "LS:Left", "LS:Right", "RS:Up", "RS:Down", "RS:Left", "RS:Right",
+    };
+    int pass, i;
+    out[0] = 0;
+    // Plain glyphs first, sharing one prompt ("X/Y/LT"), then the labelled ones.
+    for (pass = 0; pass < 2; pass++)
+        for (i = 0; i < H64_SRC_COUNT; i++)
+        {
+            size_t len = strlen(out);
+            int labelled = strchr(glyph[i], ':') != NULL;
+            if (!(mask & (1u << i)) || labelled != pass) continue;
+            if (len + strlen(glyph[i]) + 2 > size) return;
+            if (len) strcat(out, pass ? "|" : "/");
+            strcat(out, glyph[i]);
+        }
+}
+
+static void ctl_value_text(int item, const H64PadMap *map, char *out)
+{
+    static const char *sticks[H64_STICK_COUNT] = { "Left stick", "Right stick", "Off" };
+    if (item == C_STICK) sprintf(out, "< %s >", sticks[map->stick >= 0 && map->stick < H64_STICK_COUNT ? map->stick : 0]);
+    else if (item == C_DEAD) sprintf(out, "< %d%% >", (map->deadzone * 100 + 16383) / 32767);
+    else if (item == C_RANGE) sprintf(out, "< %d%% >", map->range);
+    else out[0] = 0;
+}
+
+static void controls_draw(const UiMenu *m)
+{
+    static UiAnim selX, selY;
+    static int lastCol = -1;
+    const H64PadMap *map;
+    H64PadMap def;
+    int i, col, selItem = s_ctlOrder[m->sel < 0 || m->sel >= C_COUNT ? 0 : m->sel];
+    float row, x = CTL_X, y = CTL_Y, sx, sy;
+    char buf[320];
+    if (s_ctl.c) map = &s_ctl.c->padMap[s_ctl.player];
+    else { h64_padmap_default(&def); map = &def; }
+
+    UiDim();
+    UiPanel(x, y, CTL_W, CTL_H, 22);
+    UiText(UI_BOLD, 30, x + 40, y + 50, UI_COL_TEXT, "Controls", UI_LEFT);
+    UiRoundRect(x + 40, y + 74, 30, 4, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    {
+        // Player selector: "LB  Player 1  RB" at the top right.
+        float r = x + CTL_W - 40, w;
+        sprintf(buf, "Player %d", s_ctl.player + 1);
+        r -= UiFooterWidth("RB");
+        UiFooter(r, y + 50, "RB");
+        w = UiTextWidth(UI_BOLD, 22, buf);
+        UiText(UI_BOLD, 22, r - 16, y + 50, UI_COL_TEXT, buf, UI_RIGHT);
+        r -= 16 + w + 16 + UiFooterWidth("LB");
+        UiFooter(r, y + 50, "LB");
+        if (s_ctl.player)
+        {
+            sprintf(buf, "Used when controller %d is connected", s_ctl.player + 1);
+            UiText(UI_REGULAR, 16, x + CTL_W - 40, y + 82, UI_COL_TEXT3, buf, UI_RIGHT);
+        }
+    }
+
+    heading(ctl_col_x(0) + 20, y + CTL_TOP - 22, "BUTTONS");
+    heading(ctl_col_x(1) + 20, y + CTL_TOP - 22, "D-PAD");
+    heading(ctl_col_x(1) + 20, ctl_row_y(5) - 16, "C BUTTONS");
+    heading(ctl_col_x(2) + 20, y + CTL_TOP - 22, "ANALOG STICK");
+
+    ctl_place(selItem, &col, &row);
+    sx = anim_step(&selX, ctl_col_x(col), col != lastCol);
+    sy = anim_step(&selY, ctl_row_y(row), col != lastCol);
+    lastCol = col;
+    selection_bar(sx, sy + 3, CTL_COLW, CTL_ROW - 6);
+
+    for (i = 0; i < C_COUNT; i++)
+    {
+        int item = s_ctlOrder[i], s = i == m->sel;
+        float cx, cy;
+        ctl_place(item, &col, &row);
+        cx = ctl_col_x(col);
+        cy = ctl_row_y(row) + CTL_ROW * 0.5f;
+        if (item < H64_N64_COUNT)
+        {
+            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, h64_padmap_n64_label(item), UI_LEFT);
+            if (s_ctl.capturing && item == s_ctl.capItem)
+                UiText(UI_BOLD, 18, cx + CTL_COLW - 18, cy, UI_COL_ACCENT_HI, "Press an input...", UI_RIGHT);
+            else
+            {
+                ctl_hints(map->src[item], buf, sizeof(buf));
+                if (!buf[0]) UiText(UI_REGULAR, 18, cx + CTL_COLW - 18, cy, UI_COL_TEXT3, "None", UI_RIGHT);
+                else
+                {
+                    float w = UiFooterWidth(buf), maxW = CTL_COLW - 130;
+                    if (w <= maxW) UiFooter(cx + CTL_COLW - 18 - w, cy, buf);
+                    else
+                    {
+                        char n[24];
+                        int k, cnt = 0;
+                        for (k = 0; k < H64_SRC_COUNT; k++) cnt += (map->src[item] >> k) & 1;
+                        sprintf(n, "%d inputs", cnt);
+                        UiText(UI_REGULAR, 18, cx + CTL_COLW - 18, cy, UI_COL_TEXT2, n, UI_RIGHT);
+                    }
+                }
+            }
+        }
+        else
+        {
+            static const char *labels[] = { "Analog stick", "Dead zone", "Sensitivity", "Reset to default", "Back" };
+            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, labels[item - C_STICK], UI_LEFT);
+            ctl_value_text(item, map, buf);
+            if (buf[0]) draw_value(cx + CTL_COLW - 18, cy, buf, s);
+        }
+    }
+
+    // A word of help under the stick settings, or the last change.
+    {
+        float hx = ctl_col_x(2) + 20, hy = ctl_row_y(6) + 18;
+        DWORD age = GetTickCount() - s_ctl.msgAt;
+        if (s_ctl.msg[0] && age < 3000) UiText(UI_BOLD, 18, hx, hy, UI_COL_ACCENT_HI, s_ctl.msg, UI_LEFT);
+        else
+            paragraph(UI_REGULAR, 16, hx, hy - 10, CTL_COLW - 40, 4, UI_COL_TEXT3,
+                      "Several inputs can press the same N64 button. BACK stays reserved for the emulator's menu.");
+    }
+
+    UiRect(x + 24, y + CTL_H - 78, CTL_W - 48, 1, UI_COL_LINE);
+    if (s_ctl.capturing)
+    {
+        DWORD age = s_ctl.capReleased ? GetTickCount() - s_ctl.capStart : 0;
+        float left = age >= CAPTURE_MS ? 0.0f : (CAPTURE_MS - age) / (float)CAPTURE_MS, bw = 220;
+        sprintf(buf, "Press the input for %s", h64_padmap_n64_label(s_ctl.capItem));
+        UiText(UI_BOLD, 20, x + 40, y + CTL_H - 39, UI_COL_TEXT, buf, UI_LEFT);
+        UiFooter(x + CTL_W - 40 - UiFooterWidth("BACK:Cancel"), y + CTL_H - 39, "BACK:Cancel");
+        {
+            float bx = x + CTL_W - 80 - UiFooterWidth("BACK:Cancel") - bw;
+            UiRoundRect(bx, y + CTL_H - 42, bw, 6, 3, D3DCOLOR_ARGB(30, 255, 255, 255), D3DCOLOR_ARGB(30, 255, 255, 255));
+            if (left > 0) UiRoundRect(bx, y + CTL_H - 42, bw * left, 6, 3, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+        }
+    }
+    else if (selItem < H64_N64_COUNT)
+        UiFooter(x + 40, y + CTL_H - 39, "A:Set|Y:Add|X:Clear|LB/RB:Player|B:Back");
+    else
+        UiFooter(x + 40, y + CTL_H - 39, "A:Select|DPAD:Change|LB/RB:Player|B:Back");
+}
+
 void SettingsBuild(UiMenu *m, const Config *c, int perGame)
 {
     s_perGame = perGame;
+    s_ctl.capturing = 0;
     settings_main(m, c);
 }
 
@@ -290,12 +671,18 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
     int dir, changed = 0;
     s_perGame = perGame;
     if (s_graphicsPage) return graphics_input(m, c, down);
+    if (m->page == UI_PAGE_CONTROLS) return controls_input(m, c, down);
     dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
     UiMenuNavigate(m, down);
     if (down & XINPUT_GAMEPAD_B) return SET_BACK;
     if (m->sel == S_GRAPHICS && (down & XINPUT_GAMEPAD_A))
     {
         settings_graphics(m, c);
+        return SET_NONE;
+    }
+    if (m->sel == S_CONTROLS && (down & XINPUT_GAMEPAD_A))
+    {
+        controls_open(m, c);
         return SET_NONE;
     }
     if (m->sel <= S_FPS && (dir || (down & XINPUT_GAMEPAD_A)))
@@ -320,8 +707,8 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
     {
         int last = m->count - 1;
         if (m->sel == last) return SET_BACK;
-        if (m->sel == S_GRAPHICS + 1) return SET_SAVE_ALL;
-        if (perGame && m->sel == S_GRAPHICS + 2) return SET_SAVE_GAME;
+        if (m->sel == S_CONTROLS + 1) return SET_SAVE_ALL;
+        if (perGame && m->sel == S_CONTROLS + 2) return SET_SAVE_GAME;
     }
     return SET_NONE;
 }

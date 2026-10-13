@@ -8,6 +8,7 @@
 
 #include "../../core/common/h64_types.h"
 #include "../../core/pif/h64_input_script.h"
+#include "../../core/pif/h64_padmap.h"
 
 struct Config
 {
@@ -61,13 +62,14 @@ struct Config
     int autoIndex;      // games the browser started by itself so far
     u32 browserAt;      // browserat=N: back to the ROM list at VI N (as the menu's "Back to the ROM list")
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)
+    H64PadMap padMap[4];    // controls of N64 ports 1-4 (map_a=xa,... ; p2_map_a=... for port 2; core/pif/h64_padmap.h)
 };
 
 void ConfigDefaults(Config *c);
 // Applies the key=value lines of a file over *c. Returns 0 when the file is missing.
 int ConfigParseFile(Config *c, const char *path);
 // Writes the keys the menu edits (cpu, hle, audioms, showfps, the graphics
-// keys, and lastrom when `withLastRom`). Returns 0 on failure.
+// keys, the controls, and lastrom when `withLastRom`). Returns 0 on failure.
 int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom);
 
 #endif
