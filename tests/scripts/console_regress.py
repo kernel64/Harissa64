@@ -225,9 +225,18 @@ def run_case(con, c, update, log):
     con.xb('xbreboot.exe', con.cfg['xdir'] + '\\harissa64v2.xex')
     # Captures for ~90 s; the frozen frame is the longest run of near-identical
     # captures that does not look like the dashboard (taken before launch).
+    # Captures stop the title for ~300 ms each: they start only once the log
+    # says the frame is frozen (pauseat=), so the run before it is not slowed.
     caps = []
     t0 = time.time()
-    while time.time() - t0 < 95:
+    while time.time() - t0 < 120:
+        lg = con.get('harissa64v2.log') or b''
+        if b'paused at VI' in lg:
+            break
+        time.sleep(2)
+    time.sleep(1)
+    t0 = time.time()
+    while time.time() - t0 < 15:
         p = os.path.join(tmp, '%03d.bmp' % len(caps))
         if con.capture(p):
             caps.append(small(p))
