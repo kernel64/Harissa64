@@ -33,6 +33,9 @@ static const GameProfile s_profiles[] = {
     { "NMF", "Mario Golf", H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_FULL },
     // Missing players and net with copy backs; right without.
     { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK },
+    // Never sets the texture conversion either (F3DLX 1.23): its legal
+    // screens' 32-bit letters were read as YUV, almost invisible.
+    { "N22", "Ready 2 Rumble Boxing: Round 2", H64_GP_OTHERMODE_INIT },
     // Copies its background into the frame's memory through 512-pixel
     // images with copy-mode rectangles, then draws in a 328-pixel frame at
     // the same address (one slot for both showed horizontal streaks).
