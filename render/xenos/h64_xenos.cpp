@@ -27,11 +27,17 @@
 // buffer uses tiles 0..719, the 960x720 N64 colour target 720..1259 and its
 // depth 1260..1799 (2048 in all). 960x720 is the 4:3 picture of the 720p
 // output, so frames are shown 1:1.
-#define RT_WIDTH 960
+// The N64 target is 1280x720 at most (resolution 4, 16:9); the lower
+// resolutions use its top-left part (rtW x rtH). EDRAM holds 2048 tiles of
+// 5120 bytes: the back buffer (720), the N64 colour target (720) and its depth
+// (720) do not all fit, so the N64 colour target shares the back buffer's
+// tiles: each present resolves it into its frame texture first, and the next
+// draw restores it from there (select_framebuffer).
+#define RT_WIDTH 1280
 #define RT_HEIGHT 720
-#define EDRAM_N64_COLOR 720
-#define EDRAM_N64_DEPTH 1260
-#define EDRAM_READBACK 1800   // 640x480 colour (240 tiles): frames shrunk to the N64 size for copy-backs
+#define EDRAM_N64_COLOR 0
+#define EDRAM_N64_DEPTH 720
+#define EDRAM_READBACK 1440   // 640x480 colour (240 tiles): frames shrunk to the N64 size for copy-backs
 #define RB_WIDTH 640
 #define RB_HEIGHT 480
 #define FB_SLOTS 8
@@ -1399,7 +1405,7 @@ static void select_framebuffer(Xenos *x)
         // The EDRAM target holds another image: restore this one's colour
         // (the depth is the depth image's: kept, see edramDepthAddr).
         s = &x->fb[best];
-        draw_fullscreen(x, s->tex, 1.0f, 1.0f);
+        draw_fullscreen(x, s->tex, x->uMax, x->vMax);   // its rtW x rtH part onto the viewport
     }
     else
         s = &x->fb[best];   // still in EDRAM (presenting draws to the back buffer elsewhere in EDRAM)
@@ -1431,8 +1437,7 @@ static void select_framebuffer(Xenos *x)
         u32 wdt = x->st->colorWidth;
         IDirect3DTexture9 *t = upload_mem(x, x->ramShadow, addr, wdt, x->st->colorFmt == FB_RGBA8888);
         if (t)
-            draw_textured(x, t, (float)wdt / RT_WIDTH, (float)fb_height(wdt) / RT_HEIGHT, 0.0f, 0.0f, (float)x->rtW,
-                          (float)x->rtH, (float)RT_WIDTH, (float)RT_HEIGHT);
+            draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(wdt) / RT_HEIGHT);
         x->ramCopyLo = x->ramCopyHi = 0;
         x->stateDirty = 1;
     }
@@ -2745,6 +2750,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     x->dev->SetDepthStencilSurface(NULL);
     x->targetBound = 0;
     x->dev->Clear(0, NULL, D3DCLEAR_TARGET, 0xFF000000, 1.0f, 0);
+    x->edramOwner = -1;   // the back buffer shares the N64 target's EDRAM tiles (EDRAM_N64_COLOR)
     if (type < 2)
         ;
     else if (found >= 0)
@@ -2910,9 +2916,10 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->psSmooth = compile_ps(dev, s_psSmoothSource);
     x->smooth = 1;
     x->scale = 3;
-    x->rtW = RT_WIDTH;
-    x->rtH = RT_HEIGHT;
-    x->uMax = x->vMax = 1.0f;
+    x->rtW = 960;
+    x->rtH = 720;
+    x->uMax = (float)x->rtW / RT_WIDTH;
+    x->vMax = (float)x->rtH / RT_HEIGHT;
     x->texFilter = 1;
     x->sharpen = x->blur = x->screen = x->aspect = x->wsMain = 0;
     x->deferNotify = 0;
@@ -3035,6 +3042,7 @@ int h64_xenos_save_frame(H64Renderer *r, const char *path)
         if (x->shotTex)
         {
             x->dev->SetRenderTarget(0, x->n64Color);
+            x->edramOwner = -1;
             x->dev->SetDepthStencilSurface(NULL);
             x->targetBound = 0;
             x->stateDirty = 1;
@@ -3118,7 +3126,7 @@ void h64_xenos_set_smooth(H64Renderer *r, int on)
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
 {
     Xenos *x = X(r);
-    int scale = o->scale < 1 ? 1 : o->scale > 3 ? 3 : o->scale;
+    int scale = o->scale < 1 ? 1 : o->scale > 4 ? 4 : o->scale;
     x->smooth = o->smooth;
     x->sharpen = o->sharpen < 0 || o->sharpen > 2 ? 0 : o->sharpen;
     x->blur = o->blur < 0 || o->blur > 2 ? 0 : o->blur;
@@ -3133,8 +3141,9 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     if (scale != x->scale)
     {
         x->scale = scale;
-        x->rtW = RT_WIDTH * (u32)scale / 3;
-        x->rtH = RT_HEIGHT * (u32)scale / 3;
+        // 1-3: 320x240 times scale; 4: 1280x720, square pixels in 16:9 widescreen.
+        x->rtW = scale == 4 ? 1280 : 320 * (u32)scale;
+        x->rtH = scale == 4 ? 720 : 240 * (u32)scale;
         x->uMax = (float)x->rtW / RT_WIDTH;
         x->vMax = (float)x->rtH / RT_HEIGHT;
         x->targetBound = 0;   // the viewport is set when the N64 target is bound again

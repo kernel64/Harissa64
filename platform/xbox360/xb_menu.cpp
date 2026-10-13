@@ -186,7 +186,7 @@ static void settings_values(UiMenu *m, const Config *c)
 {
     if (s_graphicsPage)
     {
-        static const char *res[3] = { "Native 320x240", "x2 640x480", "x3 960x720" };
+        static const char *res[4] = { "Native 320x240", "x2 640x480", "x3 960x720", "HD 1280x720 (16:9)" };
         static const char *asp[3] = { "4:3", "16:9 Widescreen", "16:9 Stretched" };
         static const char *filt[3] = { "N64 3-point", "Bilinear", "Nearest" };
         static const char *lvl[3] = { "Off", "Low", "High" };
@@ -194,7 +194,7 @@ static void settings_values(UiMenu *m, const Config *c)
         static const char *scr[6] = { "None", "Scanlines", "CRT", "CRT curved", "LCD grid", "Light scanlines" };
         int pr = current_preset(c);
         sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? "Custom" : s_presets[pr].name);
-        sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 3 ? 3 : c->resScale) - 1]);
+        sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 4 ? 4 : c->resScale) - 1]);
         sprintf(m->value[G_ASPECT], "< %s >", asp[c->aspect < 0 || c->aspect > 2 ? 0 : c->aspect]);
         sprintf(m->value[G_FILTER], "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]);
         sprintf(m->value[G_SMOOTH], "< %s >", onoff(c->smooth));
@@ -737,7 +737,7 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
             c->screen = p->screen;
             break;
         }
-        case G_RES: c->resScale = (c->resScale - 1 + dir + 3) % 3 + 1; break;
+        case G_RES: c->resScale = (c->resScale - 1 + dir + 4) % 4 + 1; break;
         case G_ASPECT: c->aspect = (c->aspect + dir + 3) % 3; break;
         case G_FILTER: c->texFilter = (c->texFilter + dir + 3) % 3; break;
         case G_SMOOTH: c->smooth = !c->smooth; break;

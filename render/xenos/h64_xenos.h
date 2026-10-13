@@ -79,7 +79,7 @@ void h64_xenos_set_smooth(H64Renderer *r, int on);
 // Graphics settings (the menu's Graphics page).
 struct H64XenosOptions
 {
-    int scale;       // internal resolution: 1 native (320x240), 2 (640x480), 3 (960x720, default)
+    int scale;       // internal resolution: 1 native (320x240), 2 (640x480), 3 (960x720, default), 4 (1280x720, for 16:9)
     int texFilter;   // 0 the N64's 3-point filter, 1 bilinear (default), 2 nearest
     int smooth;      // edge smoothing (FXAA) at display
     int sharpen;     // contrast-adaptive sharpening at display: 0 off, 1 low, 2 high
