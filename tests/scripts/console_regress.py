@@ -310,7 +310,15 @@ def run():
     con.xb('xbreboot.exe')
     if not con.wait_ftp():
         sys.exit('console not answering')
+    # The user's ini: a test ini left by an interrupted run (pauseat=,
+    # exitafter=) is never taken for it; the last clean copy is kept locally.
     user_ini = con.get('harissa64v2.ini')
+    keep = os.path.join(DATA, 'user_ini.txt')
+    if user_ini is not None and (b'pauseat=' in user_ini or b'exitafter=' in user_ini or b'loadstate=' in user_ini):
+        log('the console has a test ini: the saved copy of the user ini will be put back')
+        user_ini = open(keep, 'rb').read() if os.path.isfile(keep) else None
+    elif user_ini is not None:
+        open(keep, 'wb').write(user_ini)
     backup = os.path.join(DATA, 'saves_backup')
     for attempt in range(3):   # the console's FTP sometimes times out
         try:
@@ -335,7 +343,15 @@ def run():
         con.xb('xbreboot.exe')
         con.wait_ftp()
         if user_ini is not None:
-            con.put(user_ini, 'harissa64v2.ini')
+            for attempt in range(3):
+                try:
+                    con.put(user_ini, 'harissa64v2.ini')
+                    if con.get('harissa64v2.ini') == user_ini:
+                        break
+                except Exception:
+                    pass
+                time.sleep(5)
+            log('user ini restored: %s' % ('yes' if con.get('harissa64v2.ini') == user_ini else 'NO, put it back by hand'))
         same = con.restore_saves(backup)
         log('saves restored: %s' % ('identical' if same else 'MISMATCH, check ' + backup))
     failed = [c['name'] for c, r in zip(cases, results) if r is False]
