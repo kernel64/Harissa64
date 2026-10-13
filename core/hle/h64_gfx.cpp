@@ -2643,7 +2643,9 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync,
     g->ops.swap(out->ops);
     // A task that reads a colour image as a texture renders from the snapshot
     // too: the renderer copies the image back into both (h64_gfx_render).
-    *mustSync = 0;
+    // Profile gfxFrameToRdram: the renderer writes the frame into RDRAM at the
+    // full sync; the task ends only once that is done.
+    *mustSync = sys->options.gfxFrameToRdram != 0;
     out->cpuRanges.clear();
     if (!out->snapshot) out->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
     if (!out->snapshot) { *mustSync = 1; return 1; }

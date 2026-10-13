@@ -1307,6 +1307,28 @@ static void small_image_to_rdram(Xenos *x, int slot)
     s->cleanLo = s->cleanHi = 0;
 }
 
+// Profile gfxFrameToRdram: at a full sync, the image just drawn goes back to
+// RDRAM. Castlevania copies its frame with the CPU into another image the VI
+// shows (the book's page turns); the parse makes the CPU wait for this
+// task's rendering (h64_gfx_parse_task), so the copy is there before the
+// game reads it. Done at the present, it came too late on the console: noise.
+static void frame_to_rdram(Xenos *x, int slot)
+{
+    const u8 *keep = x->st->loadRam;
+    FbSlot *s = &x->fb[slot];
+    if (slot < 0 || !s->gpuDirty || !s->drawnH || s->bytes < 2) return;
+    u64 t0 = h64_prof_now(x->sys);
+    x->st->loadRam = 0;   // copy_back_rows writes RDRAM when there is no snapshot
+    copy_back_rows(x, slot, 0, 0xFFFFFFFFu);
+    x->st->loadRam = keep;
+    if (keep)
+    {
+        s->gpuDirty = 1;  // the snapshot still lacks it: later loads of this task copy it there too
+        s->cleanLo = s->cleanHi = 0;
+    }
+    x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
+}
+
 // Makes the N64 target hold the colour image the RDP draws to now.
 static void select_framebuffer(Xenos *x)
 {
@@ -2548,6 +2570,9 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
             r[0] = w[0]; r[1] = w[1]; r[2] = 0; r[3] = 0;
             tex_rect(x, r, 0);
         }
+        break;
+    case 0x29:
+        if (x->sys->options.gfxFrameToRdram && x->curSlot >= 0) frame_to_rdram(x, x->curSlot);
         break;
     default:
         if (op >= 0x08 && op <= 0x0F) raw_triangle(x, w, op);
