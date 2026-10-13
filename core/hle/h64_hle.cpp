@@ -459,6 +459,20 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
     if (sys->rsp.pc != 0)
         return 0;
 
+    if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) == 1 && sys->options.hleGfx)
+    {
+        // Resident Evil 2's picture and movie tasks (graphics type, no
+        // display list): run here, as mupen64plus-rsp-hle does.
+        hle->dirtyLo = hle->dirtyHi = 0;
+        if (h64_hle_re2_task(hle, *dmem_u32(hle, TASK_UCODE), *dmem_u32(hle, TASK_UCODE_DATA)))
+        {
+            if (hle->dirtyHi > hle->dirtyLo)
+                h64_jit_notify_write(sys, hle->dirtyLo, hle->dirtyHi - hle->dirtyLo);
+            *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
+            *busyCycles = H64_HLE_GFX_CYCLES;
+            return 1;
+        }
+    }
     if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) == 1)
     {
         int fullSync = 0;

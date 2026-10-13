@@ -215,6 +215,8 @@ static inline unsigned int align(unsigned int x, unsigned amount)
 // big-endian halfword, like upstream's native pointer on a big-endian host.
 // RDRAM writes widen the task's dirty range (`h` is NULL for DMEM).
 void hle_dram_dirty(struct hle_t *hle, u32 address, size_t count);
+// Resident Evil 2's own tasks (h64_hle_re2.cpp): 1 when the microcode is one of them (and it ran).
+int h64_hle_re2_task(struct hle_t *hle, u32 ucode, u32 ucodeData);
 
 struct HleRef16
 {
