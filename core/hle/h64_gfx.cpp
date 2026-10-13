@@ -27,7 +27,7 @@
 #include "../system/h64_system.h"
 #include "../../render/api.h"
 
-enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1 };
+enum { UC_NONE = 0, UC_F3D, UC_F3DEX, UC_F3DEX2, UC_S2DEX2, UC_S2DEX1, UC_ZSORT };
 // Rare's modified microcodes, recognised by the CRC of their code (GLideN64's
 // table): F3D with other commands and vertex formats.
 enum { RARE_NONE = 0, RARE_GOLDEN, RARE_PD, RARE_DKR, RARE_JFG, RARE_CBFD };
@@ -227,6 +227,14 @@ struct H64Gfx
     u32 objRender;
     u32 objStatus[4];
     u32 selAddr, selSid, selFlag;
+
+    // ZSort: the microcode's DMEM (vertices are transformed there and saved
+    // to RDRAM for the CPU to sort), its screen scale/offset (10.2), fog,
+    // lights.
+    u8 zdmem[4096];
+    float zsScale[2], zsTrans[2], zsFogM, zsFogO;
+    float zsLightCol[9][3], zsLightDir[8][3], zsLookat[2][3];
+    int zsNumLights, zsLookatOn;
 };
 
 // A parsed task waiting for (or being) rendered.
@@ -581,6 +589,8 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             else if (str[t] == '2') u->type = UC_F3DEX2;
             u->line = u->type != UC_NONE;
         }
+        else if (!strncmp(str + 4, "Gfx", 3) && j > 19 && !strncmp(str + 14, "ZSort", 5))
+            u->type = UC_ZSORT;   // ZSortp (Mia Hamm Soccer 64)
         else if (!strncmp(str + 4, "Gfx", 3) && j > 19 && !strncmp(str + 14, "S2DEX", 5))
         {
             // S2DEX2 (the F3DEX2-era 2D microcode, OoT's backgrounds): version 2.xx.
@@ -598,7 +608,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
         }
         H64_INFO("[gfx] microcode \"%s\" at %06X: %s", str, u->start,
                  u->type == UC_F3D ? "F3D" : u->type == UC_F3DEX ? "F3DEX" :
-                 u->type == UC_F3DEX2 ? (u->zex ? "F3DZEX" : "F3DEX2") : u->type == UC_S2DEX2 ? "S2DEX2" : u->type == UC_S2DEX1 ? "S2DEX 1.x" : "not handled (LLE)");
+                 u->type == UC_F3DEX2 ? (u->zex ? "F3DZEX" : "F3DEX2") : u->type == UC_S2DEX2 ? "S2DEX2" : u->type == UC_S2DEX1 ? "S2DEX 1.x" : u->type == UC_ZSORT ? "ZSort" : "not handled (LLE)");
         return;
     }
     {
@@ -2880,6 +2890,328 @@ static void run_s2dex2(H64Gfx *g, u32 w0, u32 w1)
     }
 }
 
+// ---- ZSort (ZSortp 0.33: Mia Hamm Soccer 64). Studied in GLideN64
+// (uCodes/ZSort.cpp, GPL v2) and rewritten. The microcode does not draw
+// vertices: G_ZS_MULT_MPMTX transforms model vertices in its DMEM into screen
+// vertices (zSortVDest), G_ZS_MOVEMEM saves them to RDRAM, the CPU sorts the
+// polygons by depth into linked object lists (zHeader: next pointer, type in
+// the low bits, then the RDP command lists the object needs and its screen
+// vertices) and G_ZS_ZOBJ draws them. DMEM addresses in the vertex and
+// lighting commands carry a 0x400 bias.
+static u8 *zs_dmem(H64Gfx *g, u32 off, u32 len)
+{
+    if (off >= sizeof(g->zdmem) || len > sizeof(g->zdmem) - off) return 0;
+    return g->zdmem + off;
+}
+
+static float (*zs_mtx(H64Gfx *g, u32 id))[4]
+{
+    if (id == 4) return g->mv[0];        // GZM_MMTX
+    if (id == 6) return g->proj;         // GZM_PMTX
+    if (id == 8) return g->combined;     // GZM_MPMTX
+    return 0;
+}
+
+// G_ZS_RDPCMD: a list of RDP commands in RDRAM up to 0xDF (and ZSort's own
+// SETOTHERMODE_L/H, 0xE2/0xE3, F3D's encoding); a TEXRECT takes three 64-bit
+// slots (its two halves in the low words of the next two).
+static void zs_rdpcmd(H64Gfx *g, u32 addr)
+{
+    u32 a = seg_to_phys(g, addr), n;
+    if (!a) return;
+    for (n = 0; n < 65536; n++)
+    {
+        u32 w0 = rd32(g, a), w1 = rd32(g, a + 4), cmd = w0 >> 24, save;
+        if (cmd == 0xDF) break;
+        save = g->pc[g->pci];
+        g->pc[g->pci] = a + 8;
+        if (cmd == 0xE2 || cmd == 0xE3) set_othermode(g, cmd == 0xE3, (w0 >> 8) & 0xFF, w0 & 0xFF, w1);   // F3D's SETOTHERMODE (ZSort's numbers)
+        else if (cmd >= 0xC0) rdp_passthrough(g, w0, w1);
+        a = g->pc[g->pci];
+        g->pc[g->pci] = save;
+    }
+}
+
+// One object: its RDP commands (each list sent only when it differs from the
+// previous object's), then its triangle or quad of screen vertices (8 bytes
+// each: x, y in 10.2, RGBA; textured ones 16: then s, t and the vertex's
+// 1/w as zSortVDest holds it).
+static u32 zs_object(H64Gfx *g, u32 zh, u32 rdp[3])
+{
+    u32 type = zh & 7, a = zh & 0x7FFFF8, nlists = (type == 1 || type == 3) ? 1 : 3, k;
+    u32 vnum = (type == 1 || type == 2) ? 3 : (type == 3 || type == 4) ? 4 : 0, vsize = (type == 1 || type == 3) ? 8 : 16;
+    int textured = type == 2 || type == 4, persp = (g->omH & 0x80000) != 0;
+    H64RenderVertex v[4];
+    if (type > 4) return 0;
+    for (k = 0; k < nlists; k++)
+    {
+        u32 w1 = rd32(g, a + 4 + k * 4);
+        if (w1 != rdp[k]) { rdp[k] = w1; zs_rdpcmd(g, w1); }
+    }
+    if (vnum)
+    {
+        u32 p = a + nlists * 4 + 4, flags = H64_TRI_SHADE | (textured ? H64_TRI_TEXTURE : 0);
+        if (nlists == 3) p = a + 16; else p = a + 8;
+        for (k = 0; k < vnum; k++, p += vsize)
+        {
+            H64RenderVertex *o = &v[k];
+            o->x = rd16(g, p) / 4.0f;
+            o->y = rd16(g, p + 2) / 4.0f;
+            o->z = 0;
+            o->r = rdf8(g, p + 4); o->g = rdf8(g, p + 5); o->b = rdf8(g, p + 6); o->a = rdf8(g, p + 7);
+            o->invw = 1.0f;
+            o->s = o->t = 0;
+            if (textured)
+            {
+                s32 iw = (s32)rd32(g, p + 12);
+                o->s = (float)rd16(g, p + 8);
+                o->t = (float)rd16(g, p + 10);
+                if (!persp) { o->s *= 0.5f; o->t *= 0.5f; }
+                // 1/w from the 0x7FFFFFFF / (31 w) the vertex carries.
+                if (iw > 0) o->invw = 31.0f * (float)iw / 2147483647.0f;
+            }
+        }
+        g->texTile = 0;
+        g->texLevel = 0;
+        out_tri(g, &v[0], &v[1], &v[2], flags);
+        if (vnum == 4) out_tri(g, &v[1], &v[2], &v[3], flags);
+        g->pTri += vnum - 2;
+    }
+    return seg_to_phys(g, rd32(g, a)) & 0x7FFFFF;
+}
+
+static void zs_obj(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 rdp[3] = { 0, 0, 0 }, list[2], i, n;
+    list[0] = w0;
+    list[1] = w1;
+    for (i = 0; i < 2; i++)
+    {
+        u32 zh = seg_to_phys(g, list[i]) & 0x7FFFFF;
+        for (n = 0; zh && n < 200000; n++) zh = zs_object(g, zh, rdp);
+        if (zh) { g->abort = 1; return; }
+    }
+}
+
+// G_ZS_MULT_MPMTX: model vertices (s16 x, y, z) through the combined matrix
+// into zSortVDest records (16 bytes: sx, sy in 10.2; 0x7FFFFFFF / (31 w);
+// x, y as integers; cc, fog; w).
+static void zs_mult_mpmtx(H64Gfx *g, u32 w1)
+{
+    u32 num = 1 + (w1 >> 24), i;
+    s32 src = (s32)((w1 >> 12) & 0xFFF) - 1024, dst = (s32)(w1 & 0xFFF) - 1024;
+    const float (*m)[4] = g->combined;
+    u8 *s, *d;
+    if (src < 0 || dst < 0) return;
+    s = zs_dmem(g, (u32)src, num * 6);
+    d = zs_dmem(g, (u32)dst, num * 16);
+    if (!s || !d) return;
+    for (i = 0; i < num; i++, s += 6, d += 16)
+    {
+        float sx = (float)(s16)h64_load_be16(s), sy = (float)(s16)h64_load_be16(s + 2), sz = (float)(s16)h64_load_be16(s + 4);
+        float x = sx * m[0][0] + sy * m[1][0] + sz * m[2][0] + m[3][0];
+        float y = sx * m[0][1] + sy * m[1][1] + sz * m[2][1] + m[3][1];
+        float z = sx * m[0][2] + sy * m[1][2] + sz * m[2][2] + m[3][2];
+        float w = sx * m[0][3] + sy * m[1][3] + sz * m[2][3] + m[3][3];
+        s32 iw = (s32)(w * 31.0f), fog;
+        u32 cc = 0;
+        float px = 0, py = 0;
+        if (w != 0) { px = g->zsTrans[0] + x / w * g->zsScale[0]; py = g->zsTrans[1] + y / w * g->zsScale[1]; }
+        if (px > 32767.0f) px = 32767.0f; else if (px < -32768.0f) px = -32768.0f;
+        if (py > 32767.0f) py = 32767.0f; else if (py < -32768.0f) py = -32768.0f;
+        h64_store_be16(d, (u16)(s16)px);
+        h64_store_be16(d + 2, (u16)(s16)py);
+        h64_store_be32(d + 4, (u32)(iw == 0 ? 0x7FFFFFFF : 0x7FFFFFFF / iw));
+        h64_store_be16(d + 8, (u16)(s16)x);
+        h64_store_be16(d + 10, (u16)(s16)y);
+        if (w < 0.0f || w == 0) fog = 0;
+        else
+        {
+            fog = (s32)(z / w * g->zsFogM + g->zsFogO);
+            if (fog > 255) fog = 255;
+            if (fog < 0) fog = 0;
+        }
+        if (x < -w) cc |= 0x10;
+        if (x > w) cc |= 0x01;
+        if (y < -w) cc |= 0x20;
+        if (y > w) cc |= 0x02;
+        if (w < 0.1f) cc |= 0x04;
+        d[12] = (u8)cc;
+        d[13] = (u8)fog;
+        h64_store_be16(d + 14, (u16)(s16)w);
+    }
+}
+
+// G_ZS_MOVEMEM: DMEM <-> RDRAM copies, matrices and the viewport.
+static void zs_movemem(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 idx = w0 & 0x0E, ofs = ((w0 >> 6) & 0x1FF) << 3, len = 1 + (((w0 >> 15) & 0x1FF) << 3);
+    u32 addr = seg_to_phys(g, w1) & 0x7FFFFF, k;
+    switch (idx)
+    {
+    case 0:   // GZF_LOAD / GZF_SAVE
+    {
+        u8 *d = zs_dmem(g, ofs, len);
+        if (!d || addr + len > H64_RDRAM_SIZE) return;
+        if (w0 & 1)
+            for (k = 0; k < len; k++) g->sys->rdram[addr + k] = d[k];   // the CPU reads the vertices once the task ends
+        else
+            for (k = 0; k < len; k++) d[k] = rd8(g, addr + k);
+        break;
+    }
+    case 4: load_matrix(g, addr, g->mv[0]); break;
+    case 6: load_matrix(g, addr, g->proj); break;
+    case 8: load_matrix(g, addr, g->combined); break;
+    case 12:  // GZM_VIEWPORT: scale and offset in 10.2, fog factors
+        g->zsScale[0] = (float)rd16(g, addr);
+        g->zsScale[1] = (float)rd16(g, addr + 2);
+        g->zsFogM = (float)rd16(g, addr + 6);
+        g->zsTrans[0] = (float)rd16(g, addr + 8);
+        g->zsTrans[1] = (float)rd16(g, addr + 10);
+        g->zsFogO = (float)rd16(g, addr + 14);
+        set_viewport(g, w1);
+        g->texTile = 0; g->texLevel = 0; g->texOn = 1;
+        break;
+    default: break;   // GZM_OTHERMODE, user areas: nothing to draw
+    }
+}
+
+// G_ZS_XFMLIGHT: the lights in DMEM (ambient colour, then 24 bytes per light,
+// then the two lookat directions).
+static void zs_xfmlight(H64Gfx *g, u32 w1)
+{
+    s32 a = (s32)(w1 & 0xFFF) - 1024;
+    int n = 1 + (int)((w1 >> 12) & 0xFF), i;
+    const u8 *d;
+    if (n > 8) n = 8;
+    if (a < 0 || !(d = zs_dmem(g, (u32)a, 8 + (n + 2) * 24 + 16))) return;
+    g->zsNumLights = n;
+    for (i = 0; i < 3; i++) g->zsLightCol[n][i] = d[i];
+    d += 8;
+    for (i = 0; i < n; i++, d += 24)
+    {
+        float x = (float)(s8)d[8], y = (float)(s8)d[9], z = (float)(s8)d[10], l = sqrtf(x * x + y * y + z * z);
+        g->zsLightCol[i][0] = d[0]; g->zsLightCol[i][1] = d[1]; g->zsLightCol[i][2] = d[2];
+        if (l > 0) { x /= l; y /= l; z /= l; }
+        g->zsLightDir[i][0] = x; g->zsLightDir[i][1] = y; g->zsLightDir[i][2] = z;
+    }
+    for (i = 0; i < 2; i++, d += 24)
+    {
+        float x = (float)(s8)d[8], y = (float)(s8)d[9], z = (float)(s8)d[10], l = sqrtf(x * x + y * y + z * z);
+        if (l > 0) { x /= l; y /= l; z /= l; }
+        g->zsLookat[i][0] = x; g->zsLookat[i][1] = y; g->zsLookat[i][2] = z;
+        if (i == 1) g->zsLookatOn = d[8] != 0 && d[9] != 0;
+    }
+}
+
+static void zs_normal(const float m[4][4], float v[3])
+{
+    float x = m[0][0] * v[0] + m[1][0] * v[1] + m[2][0] * v[2];
+    float y = m[0][1] * v[0] + m[1][1] * v[1] + m[2][1] * v[2];
+    float z = m[0][2] * v[0] + m[1][2] * v[1] + m[2][2] * v[2];
+    float l = sqrtf(x * x + y * y + z * z);
+    if (l > 0) { x /= l; y /= l; z /= l; }
+    v[0] = x; v[1] = y; v[2] = z;
+}
+
+// G_ZS_LIGHTING: per vertex, colour from the normal and the lights (times a
+// material colour unless its address is 0xFF0), and s, t for reflections from
+// the lookat directions; both written back to DMEM.
+static void zs_lighting(H64Gfx *g, u32 w0, u32 w1)
+{
+    s32 csrs = (s32)((w0 >> 12) & 0xFFF) - 1024, nsrs = (s32)(w0 & 0xFFF) - 1024;
+    s32 cdest = (s32)((w1 >> 12) & 0xFFF) - 1024, tdest = (s32)(w1 & 0xFFF) - 1024;
+    u32 num = 1 + (w1 >> 24), i;
+    int material = csrs != 0x0FF0, l;
+    u8 *n, *c = 0, *cd, *td;
+    if (nsrs < 0 || cdest < 0 || tdest < 0 || (material && csrs < 0)) return;
+    n = zs_dmem(g, (u32)nsrs, num * 3);
+    cd = zs_dmem(g, (u32)cdest, num * 4);
+    td = zs_dmem(g, (u32)tdest, num * 4);
+    if (material) c = zs_dmem(g, (u32)csrs, num * 4);
+    if (!n || !cd || !td || (material && !c)) return;
+    for (i = 0; i < num; i++)
+    {
+        float v[3], col[3], a = 255.0f, x, y;
+        v[0] = (float)(s8)n[i * 3]; v[1] = (float)(s8)n[i * 3 + 1]; v[2] = (float)(s8)n[i * 3 + 2];
+        zs_normal(g->mv[0], v);
+        for (l = 0; l < 3; l++) col[l] = g->zsLightCol[g->zsNumLights][l];
+        for (l = 0; l < g->zsNumLights; l++)
+        {
+            float d = v[0] * g->zsLightDir[l][0] + v[1] * g->zsLightDir[l][1] + v[2] * g->zsLightDir[l][2];
+            if (d > 0) { col[0] += g->zsLightCol[l][0] * d; col[1] += g->zsLightCol[l][1] * d; col[2] += g->zsLightCol[l][2] * d; }
+        }
+        for (l = 0; l < 3; l++) if (col[l] > 255.0f) col[l] = 255.0f;
+        zs_normal(g->proj, v);
+        if (g->zsLookatOn)
+        {
+            x = v[0] * g->zsLookat[0][0] + v[1] * g->zsLookat[0][1] + v[2] * g->zsLookat[0][2];
+            y = v[0] * g->zsLookat[1][0] + v[1] * g->zsLookat[1][1] + v[2] * g->zsLookat[1][2];
+        }
+        else { x = v[0]; y = v[1]; }
+        if (material)
+        {
+            for (l = 0; l < 3; l++) col[l] = col[l] * c[i * 4 + l] / 255.0f;
+            a = c[i * 4 + 3];
+        }
+        cd[i * 4] = (u8)col[0]; cd[i * 4 + 1] = (u8)col[1]; cd[i * 4 + 2] = (u8)col[2]; cd[i * 4 + 3] = (u8)a;
+        h64_store_be16(td + i * 4, (u16)(s16)((x + 1.0f) * 512.0f * 32.0f));
+        h64_store_be16(td + i * 4 + 2, (u16)(s16)((y + 1.0f) * 512.0f * 32.0f));
+    }
+}
+
+static void run_zsort(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 cmd = w0 >> 24;
+    switch (cmd)
+    {
+    case 0x00: break;                                              // G_SPNOOP
+    case 0x80: zs_obj(g, w0, w1); break;                           // G_ZS_ZOBJ
+    case 0x81: zs_rdpcmd(g, w1); break;                            // G_ZS_RDPCMD
+    case 0xBB: set_texture(g, w1, (w0 >> 11) & 7, (w0 >> 8) & 7, w0 & 0xFF); break;   // G_TEXTURE
+    case 0xB6: g->geomRaw &= ~w1; break;                           // G_CLEARGEOMETRYMODE
+    case 0xB7: g->geomRaw |= w1; break;                            // G_SETGEOMETRYMODE
+    case 0xB4: g->half1 = w1; break;                               // G_RDPHALF_1
+    case 0xB2: case 0xB3: case 0xBE: break;                        // RDPHALF_CONT/2, G_CULLDL (no vertices)
+    case 0xD0: case 0xD3: case 0xD4: case 0xD7: case 0xD8: case 0xD9: case 0xDA: break;   // ignored, as GLideN64
+    case 0xD1: zs_xfmlight(g, w1); break;                          // G_ZS_XFMLIGHT
+    case 0xD2: zs_lighting(g, w0, w1); break;                      // G_ZS_LIGHTING
+    case 0xD5:          // G_ZS_MTXCAT: D = S x T
+    {
+        float (*s)[4] = zs_mtx(g, w0 & 0xF), (*t)[4] = zs_mtx(g, (w1 >> 16) & 0xF), (*d)[4] = zs_mtx(g, w1 & 0xF);
+        if (s && t && d) mat_mul(d, s, t);
+        break;
+    }
+    case 0xD6: zs_mult_mpmtx(g, w1); break;                        // G_ZS_MULT_MPMTX
+    case 0xDB: f3d_moveword(g, w0, w1); break;                     // G_ZS_MOVEWORD (F3D's)
+    case 0xDC: zs_movemem(g, w0, w1); break;                       // G_ZS_MOVEMEM
+    case 0xDE: call_dl(g, w1, ((w0 >> 16) & 0xFF) == 0); break;    // G_ZS_DL
+    case 0xDF: end_dl(g); break;                                   // G_ZS_ENDDL
+    case 0xE2: set_othermode(g, 0, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;   // F3D's SETOTHERMODE_L
+    case 0xE3: set_othermode(g, 1, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;   // and _H
+    case 0xED:          // G_SETSCISSOR: also the screen the vertices map to (GLideN64 SZort_SetScissor)
+    {
+        float wdt = (float)(((w1 >> 12) & 0xFFF) - ((w0 >> 12) & 0xFFF)) / 4.0f;
+        float hgt = (float)((w1 & 0xFFF) - (w0 & 0xFFF)) / 4.0f;
+        rdp_passthrough(g, w0, w1);
+        if (wdt > g->zsScale[0] - g->zsTrans[0])
+        {
+            g->zsScale[0] = g->zsTrans[0] = wdt / 2.0f * 4.0f;
+            g->zsScale[1] = g->zsTrans[1] = hgt / 2.0f * 4.0f;
+        }
+        break;
+    }
+    default:
+        if (cmd >= 0xC0) rdp_passthrough(g, w0, w1);
+        else
+        {
+            if (!(g->warned & 8)) { H64_INFO("[gfx] ZSort command %02X not handled: task left to the LLE RSP", cmd); g->warned |= 8; }
+            g->abort = 1;
+        }
+        break;
+    }
+}
+
 // ---------------------------------------------------------------- task
 H64Gfx *h64_gfx_create(H64System *sys)
 {
@@ -2928,6 +3260,14 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->texFromCimg = 0;
     for (i = 0; i < 8; i++) g->cimgSig[i].rows = g->cimgSig[i].use = 0;
     g->cimgUse = 0;
+    memset(g->zdmem, 0, sizeof(g->zdmem));
+    g->zsScale[0] = g->zsScale[1] = g->zsTrans[0] = g->zsTrans[1] = 0;
+    g->zsFogM = g->zsFogO = 0;
+    memset(g->zsLightCol, 0, sizeof(g->zsLightCol));
+    memset(g->zsLightDir, 0, sizeof(g->zsLightDir));
+    memset(g->zsLookat, 0, sizeof(g->zsLookat));
+    g->zsNumLights = 0;
+    g->zsLookatOn = 0;
     return g;
 }
 
@@ -3108,6 +3448,12 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
     // relies on it: from 0 its textures were read as YUV (grey courses).
     if (g->sys->options.gfxOtherModeInit || u->omInit) { g->omH = 0x080CFF; g->omL = 0; }
     g->uc = u;
+    if (u->type == UC_ZSORT)   // the task loads the microcode's data into DMEM
+    {
+        u32 k, n = ucDataSize < sizeof(g->zdmem) ? ucDataSize : (u32)sizeof(g->zdmem);
+        for (k = 0; k < n; k++) g->zdmem[k] = rd8(g, (ucData & 0x7FFFFF) + k);
+        g->texTile = 0; g->texLevel = 0; g->texOn = 1;
+    }
 
     // Per-task state, as the microcode starts each task (GLideN64 RSP_ProcessDList).
     g->pc[0] = h64_load_be32(dmem + 0xFF0) & 0x7FFFFF;
@@ -3145,6 +3491,7 @@ static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
         if (g->uc->type == UC_F3DEX2) run_f3dex2(g, w0, w1);
         else if (g->uc->type == UC_S2DEX2) run_s2dex2(g, w0, w1);
         else if (g->uc->type == UC_S2DEX1) run_s2dex1(g, w0, w1);
+        else if (g->uc->type == UC_ZSORT) run_zsort(g, w0, w1);
         else run_f3d(g, w0, w1);
         if (g->dlCount > 0 && --g->dlCount == 0)
         {
