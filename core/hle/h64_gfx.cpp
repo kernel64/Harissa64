@@ -65,6 +65,7 @@ struct GfxUcode
     int cull40;  // F3DEX 0.95/0.96 (Mario Kart 64's): G_CULLDL vertex numbers * 40, as F3D
     int flx;     // F3DFLX (F-Zero X's races): F3DEX2 with an "alpha light" in the second lookat's slot and
                  // texture generation that gives vertex alpha from a table (GLideN64 F3DFLX2)
+    u32 crc;     // CRC-32 of the first 4 KB of code (see detect_ucode)
 };
 
 struct GfxVtx
@@ -495,6 +496,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             code[k + 3] = (u8)(w >> 24);
         }
         crc = h64_crc32(0, code, sizeof(code));
+        u->crc = crc;
         for (k = 0; k < sizeof(known) / sizeof(known[0]); k++)
             if (known[k].crc == crc)
             {
@@ -531,7 +533,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
                 u->type = UC_F3DEX2;   // F-Zero X's races (they ran on the LLE RSP: ~13 FPS on the console)
                 u->flx = 1;
             }
-            else if (!strncmp(str + 14, "F3DTEX/A", 8) || !strncmp(str + 14, "F3DAM", 5) || !strncmp(str + 14, "F3DLP", 5))
+            else if (!strncmp(str + 14, "F3DTEX/A", 8) || !strncmp(str + 14, "F3DAM", 5))
                 u->type = UC_NONE;   // variants not handled yet
             else if (str[28] == '1' || !strncmp(str + 28, "0.95", 4) || !strncmp(str + 28, "0.96", 4))
             {
@@ -559,6 +561,23 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
                  u->type == UC_F3D ? "F3D" : u->type == UC_F3DEX ? "F3DEX" :
                  u->type == UC_F3DEX2 ? (u->zex ? "F3DZEX" : "F3DEX2") : u->type == UC_S2DEX2 ? "S2DEX2" : u->type == UC_S2DEX1 ? "S2DEX 1.x" : "not handled (LLE)");
         return;
+    }
+    {
+        // No name in this data segment (Kirby 64 and NASCAR 2000 load a
+        // microcode again with another one): the same code as a microcode
+        // already identified is that microcode.
+        int k;
+        for (k = 0; k < g->ucodeCount; k++)
+        {
+            const GfxUcode *o = &g->ucodes[k];
+            if (o != u && o->type != UC_NONE && o->crc == u->crc)
+            {
+                u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
+                u->cull40 = o->cull40; u->flx = o->flx;
+                H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
+                return;
+            }
+        }
     }
     H64_INFO("[gfx] microcode at %06X: no name string, not handled (LLE)", u->start);
 }
