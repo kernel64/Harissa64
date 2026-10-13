@@ -16,7 +16,9 @@ struct UiMenu
     char value[UI_MENU_MAX][32];   // shown right-aligned ("< 250 ms >"), empty for actions
     int count, sel;
     char footer[96];
+    int page;                      // UI_PAGE_*: how UiMenuDraw shows it
 };
+enum { UI_PAGE_LIST = 0, UI_PAGE_CONTROLS };
 
 void UiMenuClear(UiMenu *m, const char *title, const char *footer);
 int UiMenuAdd(UiMenu *m, const char *label, const char *value);   // returns the item's index
@@ -25,7 +27,7 @@ void UiMenuDraw(const UiMenu *m);   // between UiBegin and UiEnd
 // Up/down move the selection (wrapping).
 void UiMenuNavigate(UiMenu *m, WORD down);
 
-// ---- Settings (cpu, hle, audio margin, smoothing, FPS display) ----
+// ---- Settings (cpu, hle, audio margin, FPS display, the Graphics and Controls pages) ----
 enum { SET_NONE = 0, SET_CHANGED, SET_BACK, SET_SAVE_ALL, SET_SAVE_GAME };
 // Fills the menu from *c; `perGame` adds "Save for this game".
 void SettingsBuild(UiMenu *m, const Config *c, int perGame);

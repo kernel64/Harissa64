@@ -63,6 +63,10 @@ void ConfigDefaults(Config *c)
     c->stateSlot = 1;
     c->loadState = 0;
     c->saveStateAt = 0;
+    {
+        int i;
+        for (i = 0; i < 4; i++) h64_padmap_default(&c->padMap[i]);
+    }
 }
 
 int ConfigParseFile(Config *c, const char *path)
@@ -124,6 +128,9 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
         else if (!strcmp(line, "tracestep")) c->traceStep = (u32)strtoul(eq + 1, NULL, 10);
+        else if (!strncmp(line, "map", 3)) h64_padmap_parse_key(&c->padMap[0], line, eq + 1);
+        else if (line[0] == 'p' && line[1] >= '2' && line[1] <= '4' && line[2] == '_' && !strncmp(line + 3, "map", 3))
+            h64_padmap_parse_key(&c->padMap[line[1] - '1'], line + 3, eq + 1);
         else if (!strcmp(line, "shots"))
         {
             char *p = eq + 1;
@@ -141,11 +148,33 @@ int ConfigParseFile(Config *c, const char *path)
 int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
 {
     FILE *f = fopen(path, "w");
+    int i;
     if (!f) return 0;
     fprintf(f, "# Written by the Harissa64 V2 menu\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\naspect=%d\n", c->resScale, c->texFilter, c->sharpen,
             c->blur, c->screen, c->aspect);
+    // Controls: "map=default" first (a game's profile then undoes custom
+    // controls of settings.ini), then every key of a changed mapping.
+    for (i = 0; i < 4; i++)
+    {
+        const H64PadMap *m = &c->padMap[i];
+        char pre[8];
+        int k;
+        pre[0] = 0;
+        if (i) sprintf(pre, "p%d_", i + 1);
+        fprintf(f, "%smap=default\n", pre);
+        if (h64_padmap_is_default(m)) continue;
+        for (k = 0; k < H64_N64_COUNT; k++)
+        {
+            char src[256];
+            h64_padmap_format_sources(m->src[k], src, sizeof(src));
+            fprintf(f, "%smap_%s=%s\n", pre, h64_padmap_n64_name(k), src);
+        }
+        fprintf(f, "%smap_stick=%s\n%smap_deadzone=%d\n%smap_range=%d\n", pre,
+                m->stick == H64_STICK_RIGHT ? "right" : m->stick == H64_STICK_NONE ? "none" : "left", pre, m->deadzone, pre,
+                m->range);
+    }
     if (withLastRom && c->lastRom[0]) fprintf(f, "lastrom=%s\n", c->lastRom);
     fclose(f);
     return 1;

@@ -700,36 +700,33 @@ static XINPUT_STATE s_padsMore[3];          // controllers 2-4: N64 ports 2-4
 static int s_padsMoreValid[3];
 static const H64InputScript *s_script;   // scripted input (input=), NULL: the controller
 
-static s8 StickAxis(SHORT v)
-{
-    int x = v;
-    const int dead = 7000;
-    if (x > -dead && x < dead) return 0;
-    x = x > 0 ? (x - dead) * 80 / (32767 - dead) : (x + dead) * 80 / (32768 - dead);
-    return (s8)(x > 80 ? 80 : x < -80 ? -80 : x);
-}
+static const H64PadMap *s_padMaps;      // the controls of ports 1-4 (Config.padMap; edited live by the menu)
 
-// An Xbox 360 controller as an N64 one (mapping as V1).
-static void PadFromXInput(const XINPUT_GAMEPAD *g, H64Pad *pad)
+// The pad mapping's button bits are XInput's.
+static_assert(H64_XB_A == XINPUT_GAMEPAD_A && H64_XB_B == XINPUT_GAMEPAD_B && H64_XB_X == XINPUT_GAMEPAD_X &&
+              H64_XB_Y == XINPUT_GAMEPAD_Y && H64_XB_START == XINPUT_GAMEPAD_START && H64_XB_BACK == XINPUT_GAMEPAD_BACK &&
+              H64_XB_DPAD_UP == XINPUT_GAMEPAD_DPAD_UP && H64_XB_DPAD_DOWN == XINPUT_GAMEPAD_DPAD_DOWN &&
+              H64_XB_DPAD_LEFT == XINPUT_GAMEPAD_DPAD_LEFT && H64_XB_DPAD_RIGHT == XINPUT_GAMEPAD_DPAD_RIGHT &&
+              H64_XB_LEFT_THUMB == XINPUT_GAMEPAD_LEFT_THUMB && H64_XB_RIGHT_THUMB == XINPUT_GAMEPAD_RIGHT_THUMB &&
+              H64_XB_LEFT_SHOULDER == XINPUT_GAMEPAD_LEFT_SHOULDER && H64_XB_RIGHT_SHOULDER == XINPUT_GAMEPAD_RIGHT_SHOULDER,
+              "H64_XB_* must be XInput's button bits");
+
+// An Xbox 360 controller as an N64 one, through port `port`'s mapping (the
+// default one is V1's: core/pif/h64_padmap.cpp).
+static void PadFromXInput(const XINPUT_GAMEPAD *g, int port, H64Pad *pad)
 {
-    u16 b = 0;
-    if (g->wButtons & XINPUT_GAMEPAD_A) b |= 0x8000;
-    if (g->wButtons & XINPUT_GAMEPAD_B) b |= 0x4000;
-    if ((g->wButtons & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y)) || g->bLeftTrigger > 64 || g->bRightTrigger > 64) b |= 0x2000;
-    if (g->wButtons & XINPUT_GAMEPAD_START) b |= 0x1000;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_UP) b |= 0x0800;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_DOWN) b |= 0x0400;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_LEFT) b |= 0x0200;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) b |= 0x0100;
-    if (g->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) b |= 0x0020;
-    if (g->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) b |= 0x0010;
-    if (g->sThumbRY > 16000) b |= 0x0008;
-    if (g->sThumbRY < -16000) b |= 0x0004;
-    if (g->sThumbRX < -16000) b |= 0x0002;
-    if (g->sThumbRX > 16000) b |= 0x0001;
-    pad->buttons = b;
-    pad->x = StickAxis(g->sThumbLX);
-    pad->y = StickAxis(g->sThumbLY);
+    H64PadInput in;
+    H64PadMap def;
+    const H64PadMap *m = s_padMaps ? &s_padMaps[port] : NULL;
+    in.buttons = g->wButtons;
+    in.lt = g->bLeftTrigger;
+    in.rt = g->bRightTrigger;
+    in.lx = g->sThumbLX;
+    in.ly = g->sThumbLY;
+    in.rx = g->sThumbRX;
+    in.ry = g->sThumbRY;
+    if (!m) { h64_padmap_default(&def); m = &def; }
+    h64_padmap_apply(m, &in, pad);
 }
 
 // Called by the PIF just before the game reads the controllers. Controller n
@@ -742,13 +739,13 @@ static void PadHook(H64System *sys)
     sys->padMask = 1;
     // BACK held: the buttons are front-end shortcuts, not the game's.
     if (!s_padValid || (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK)) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; }
-    else PadFromXInput(&s_pad.Gamepad, &sys->pad[0]);
+    else PadFromXInput(&s_pad.Gamepad, 0, &sys->pad[0]);
     for (i = 0; i < 3; i++)
     {
         if (s_padsMoreValid[i])
         {
             sys->padMask |= 2u << i;
-            PadFromXInput(&s_padsMore[i].Gamepad, &sys->pad[i + 1]);
+            PadFromXInput(&s_padsMore[i].Gamepad, i + 1, &sys->pad[i + 1]);
         }
         else
         {
@@ -1097,6 +1094,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
+    s_padMaps = c->padMap;
     sys->profClock = ProfClock;
     s_script = c->input.count ? &c->input : NULL;
     xb_audio_set_target_ms(c->audioMs);
