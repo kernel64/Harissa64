@@ -66,6 +66,7 @@ struct GfxUcode
     int flx;     // F3DFLX (F-Zero X's races): F3DEX2 with an "alpha light" in the second lookat's slot and
                  // texture generation that gives vertex alpha from a table (GLideN64 F3DFLX2)
     u32 crc;     // CRC-32 of the first 4 KB of code (see detect_ucode)
+    int line;    // L3DEX / L3DEX2: triangles and G_LINE3D are drawn as lines
 };
 
 struct GfxVtx
@@ -473,6 +474,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->noNear = 0;
     u->cull40 = 0;
     u->flx = 0;
+    u->line = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
@@ -543,6 +545,17 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             else if (j > 31 && str[31] == '2')
                 u->type = UC_F3DEX2;
         }
+        else if (!strncmp(str + 4, "Gfx", 3) && j > 22 && !strncmp(str + 14, "L3DEX", 5))
+        {
+            // L3DEX (1.2x, F3DEX's commands) and L3DEX2 (2.0x): every triangle
+            // drawn as its three edges, G_LINE3D a line (GLideN64 L3DEX.cpp,
+            // L3DEX2.cpp). Madden NFL 2001's field lines, Spider-Man.
+            u32 t = 22;
+            while (t < j && (str[t] < '0' || str[t] > '9')) t++;
+            if (str[t] == '1') u->type = UC_F3DEX;
+            else if (str[t] == '2') u->type = UC_F3DEX2;
+            u->line = u->type != UC_NONE;
+        }
         else if (!strncmp(str + 4, "Gfx", 3) && j > 19 && !strncmp(str + 14, "S2DEX", 5))
         {
             // S2DEX2 (the F3DEX2-era 2D microcode, OoT's backgrounds): version 2.xx.
@@ -573,7 +586,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             if (o != u && o->type != UC_NONE && o->crc == u->crc)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
-                u->cull40 = o->cull40; u->flx = o->flx;
+                u->cull40 = o->cull40; u->flx = o->flx; u->line = o->line;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
             }
@@ -1308,6 +1321,59 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         out_tri(g, &sv[0], &sv[k], &sv[k + 1], flags);
 }
 
+// L3DEX / L3DEX2: a line from vertex i0 to i1, (3 + wd) / 2 pixels wide
+// (GLideN64 gSPLine3D), as a screen-space quad of two triangles. Colour from
+// each end, or from vertex `flat` without smooth shading. A line with an end
+// behind the eye is dropped.
+static void line3d(H64Gfx *g, u32 i0, u32 i1, s32 wd, u32 flat)
+{
+    H64RenderVertex e[2], q[4];
+    u32 gm = geom(g), flags = 0, idx[2], k;
+    float dx, dy, len, half = (1.5f + wd * 0.5f) * 0.5f;
+    if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || flat >= GFX_VTX_MAX || half <= 0) return;
+    idx[0] = i0;
+    idx[1] = i1;
+    for (k = 0; k < 2; k++)
+    {
+        const GfxVtx *v = &g->vtx[idx[k]];
+        const GfxVtx *cv = (gm & GM_SMOOTH) ? v : &g->vtx[flat];
+        ClipVtx c;
+        if (v->w < 0.0001f && !v->xyOverride) return;
+        c.x = v->x; c.y = v->y; c.z = v->z; c.w = v->w > 0.0001f ? v->w : 1.0f;
+        c.r = cv->r; c.g = cv->g; c.b = cv->b; c.a = cv->a;
+        c.s = v->s; c.t = v->t;
+        project(g, &c, &e[k]);
+        if (v->xyOverride) { e[k].x = v->sx; e[k].y = v->sy; }
+        if (v->zOverride) e[k].z = v->sz;
+    }
+    dx = e[1].x - e[0].x;
+    dy = e[1].y - e[0].y;
+    len = sqrtf(dx * dx + dy * dy);
+    if (len < 0.0001f) return;
+    dx = dx / len * half;
+    dy = dy / len * half;
+    for (k = 0; k < 4; k++)
+    {
+        float side = (k & 1) ? -1.0f : 1.0f;
+        copy_rv(&q[k], &e[k >> 1]);
+        q[k].x = e[k >> 1].x - dy * side;
+        q[k].y = e[k >> 1].y + dx * side;
+    }
+    if (gm & GM_ZBUFFER) flags |= H64_TRI_ZBUFFER;
+    if (gm & GM_SHADE) flags |= H64_TRI_SHADE;
+    if (g->texOn) flags |= H64_TRI_TEXTURE;
+    out_tri(g, &q[0], &q[2], &q[1], flags);
+    out_tri(g, &q[2], &q[3], &q[1], flags);
+}
+
+// A triangle under L3DEX: its edges, skipping repeated vertices.
+static void line_tri(H64Gfx *g, u32 a, u32 b, u32 c, s32 wd)
+{
+    if (a != b) line3d(g, a, b, wd, a);
+    if (b != c) line3d(g, b, c, wd, a);
+    if (c != a) line3d(g, c, a, wd, a);
+}
+
 // Culls the display list when every vertex in [v0, vn] is outside the same plane.
 static int cull_vertices(H64Gfx *g, u32 v0, u32 vn)
 {
@@ -1733,12 +1799,123 @@ static void rdp_half_triangle(H64Gfx *g, u32 first)
     out_rdp(g, w, n);
 }
 
+// ---- G_SPRITE2D (F3D and F3DEX, libultra's sprite2d): 0x09 points at a
+// uSprite (image, palette, stride, sub-image width/height, format, size,
+// sub-image s/t); the commands that follow are 0xBE (G_SPRITE2D_SCALEFLIP:
+// 5.10 scales in w1, flips in w0) and 0xBD (G_SPRITE2D_DRAW: screen x/y in
+// 10.2), as GLideN64 reads them (gSP.cpp gSPSprite2DBase, GPL v2: studied
+// and rewritten). The sprite goes to the RDP as bands of lines loaded into
+// TMEM through tile 7, each drawn by a TEXRECT with tile 0. Glover, Flying
+// Dragon and Midway's Greatest Arcade Hits draw their screens this way:
+// without it 0xBE was taken for G_CULLDL, the list ended there and the
+// games waited for a frame that never came (black screen).
+static void sprite2d_draw(H64Gfx *g, u32 sp, u32 scaleX, u32 scaleY, u32 flipX, u32 flipY, s32 frameX, s32 frameY)
+{
+    u32 ptr = seg_to_phys(g, rd32(g, sp)), tlut = rd32(g, sp + 4);
+    s32 stride = rd16(g, sp + 8), imageW = rd16(g, sp + 10), imageH = rd16(g, sp + 12);
+    u32 fmt = rd8(g, sp + 14) & 7, siz = rd8(g, sp + 15) & 3;
+    s32 imageX = rd16(g, sp + 16), imageY = rd16(g, sp + 18);
+    u32 cycle = (g->omH >> 20) & 3, loadSiz = siz ? siz : 1;
+    u32 tmemBytes = (tlut || siz == 3) ? 2048 : 4096, lineBytes, line, band;
+    s32 sx0, texW, r;
+    if (stride <= 0 || imageW <= 0 || imageH <= 0 || imageX < 0 || imageY < 0 || cycle == 3) return;
+    if (scaleX == 0) scaleX = 1 << 10;
+    if (scaleY == 0) scaleY = 1 << 10;
+    if (cycle == 2) { scaleX = scaleY = 1 << 10; flipX = flipY = 0; }   // copy mode: 1:1 only
+    // 4-bit texels are loaded as 8-bit pairs, from an even column.
+    sx0 = siz == 0 ? (imageX & ~1) : imageX;
+    texW = imageX + imageW - sx0;
+    lineBytes = siz == 3 ? (u32)texW * 2 : ((u32)texW << siz) / 2;
+    lineBytes = (lineBytes + 7) & ~7u;
+    if (!lineBytes || lineBytes > tmemBytes) return;
+    line = lineBytes / 8;
+    band = tmemBytes / lineBytes;
+    for (r = 0; r < imageH; r += (s32)band)
+    {
+        s32 n = imageH - r < (s32)band ? imageH - r : (s32)band, ty = imageY + r;
+        s32 pr = flipY ? imageH - r - n : r;   // the band's first pixel row from the top
+        s32 xh = frameX, yh = frameY + (s32)(((s64)pr << 12) / scaleY);
+        s32 xl = frameX + (s32)(((s64)imageW << 12) / scaleX), yl = frameY + (s32)(((s64)(pr + n) << 12) / scaleY);
+        s32 s = imageX << 5, t = ty << 5, dsdx = (s32)scaleX, dtdy = (s32)scaleY;
+        u32 lx0 = siz == 0 ? (u32)sx0 / 2 : (u32)sx0, lx1 = siz == 0 ? (u32)(sx0 + texW - 1) / 2 : (u32)(sx0 + texW - 1);
+        u64 w[2];
+        if (flipX) { s = ((imageX + imageW) << 5) - 1; dsdx = -dsdx; }
+        if (flipY) { t = ((ty + n) << 5) - 1; dtdy = -dtdy; }
+        if (yl <= yh) continue;
+        out_rdp1(g, 0xFD000000u | (fmt << 21) | (loadSiz << 19) | (u32)((siz == 0 ? stride / 2 : stride) - 1), ptr);   // SETTIMG
+        out_rdp1(g, 0xF5000000u | (fmt << 21) | (loadSiz << 19) | (line << 9), 0x07000000u);                         // SETTILE 7
+        out_rdp1(g, 0xE6000000u, 0);                                                                                 // LOADSYNC
+        out_rdp1(g, 0xF4000000u | (lx0 << 14) | ((u32)ty << 2), 0x07000000u | (lx1 << 14) | ((u32)(ty + n - 1) << 2)); // LOADTILE
+        out_rdp1(g, 0xE7000000u, 0);                                                                                 // PIPESYNC
+        out_rdp1(g, 0xF5000000u | (fmt << 21) | (siz << 19) | (line << 9), (2u << 18) | (2u << 8));                  // SETTILE 0, clamped
+        out_rdp1(g, 0xF2000000u | ((u32)sx0 << 14) | ((u32)ty << 2), ((u32)(sx0 + texW - 1) << 14) | ((u32)(ty + n - 1) << 2));
+        if (cycle == 2)   // copy mode: inclusive lower-right corner, four pixels a step
+        {
+            xl -= 4;
+            yl -= 4;
+            dsdx = 4 << 10;
+        }
+        if (xl < 0 || yl < 0) continue;
+        if (xh < 0) { s += (s32)(((s64)(-xh) * dsdx) >> 7); xh = 0; }
+        if (yh < 0) { t += (s32)(((s64)(-yh) * dtdy) >> 7); yh = 0; }
+        w[0] = ((u64)(0xE4000000u | (((u32)xl & 0xFFF) << 12) | ((u32)yl & 0xFFF)) << 32) | ((((u32)xh & 0xFFF) << 12) | ((u32)yh & 0xFFF));
+        w[1] = ((u64)((((u32)s & 0xFFFF) << 16) | ((u32)t & 0xFFFF)) << 32) | ((((u32)dsdx & 0xFFFF) << 16) | ((u32)dtdy & 0xFFFF));
+        out_rdp(g, w, 2);
+    }
+}
+
+static void sprite2d(H64Gfx *g, u32 w1)
+{
+    u32 sp = seg_to_phys(g, w1), tlut = rd32(g, sp + 4), fmt = rd8(g, sp + 14) & 7;
+    u32 scaleX = 1 << 10, scaleY = 1 << 10, flipX = 0, flipY = 0;
+    if (tlut)
+    {
+        // The palette (256 RGBA16 entries) into the upper half of TMEM.
+        out_rdp1(g, 0xFD000000u | (2u << 19), seg_to_phys(g, tlut));   // SETTIMG RGBA16, width 1
+        out_rdp1(g, 0xF5000000u | 0x100, 0x07000000u);                 // SETTILE 7 at TMEM 0x800
+        out_rdp1(g, 0xE6000000u, 0);
+        out_rdp1(g, 0xF0000000u, 0x07000000u | (1020u << 12));         // LOADTLUT, 256 entries
+        // The microcode sets the palette mode itself (Flying Dragon's name
+        // screen drew garbage without).
+        set_othermode(g, 1, 14, 2, fmt != 0 ? 2u << 14 : 0);           // G_TT_RGBA16 for colour-indexed images
+    }
+    else
+        set_othermode(g, 1, 14, 2, 0);
+    for (;;)
+    {
+        u32 a = g->pc[g->pci], c0 = rd32(g, a), c1 = rd32(g, a + 4), cmd = c0 >> 24;
+        if (cmd == 0xBE)        // G_SPRITE2D_SCALEFLIP
+        {
+            scaleX = c1 >> 16;
+            scaleY = c1 & 0xFFFF;
+            flipX = (c0 >> 8) & 0xFF;
+            flipY = c0 & 0xFF;
+        }
+        else if (cmd == 0xBD)   // G_SPRITE2D_DRAW
+            sprite2d_draw(g, sp, scaleX, scaleY, flipX, flipY, (s16)(c1 >> 16), (s16)c1);
+        else
+            break;
+        g->pc[g->pci] = a + 8;
+    }
+}
+
 // ---- F3D / F3DEX (the 0xB0..0xBF immediate commands share most encodings)
 static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
 {
     u32 cmd = w0 >> 24;
     int ex = g->uc->type == UC_F3DEX;
     if (g->uc->rare && run_rare(g, w0, w1)) return;
+    if (g->uc->line)   // L3DEX: G_TRI1, G_TRI2 as edges, 0xB5 G_LINE3D
+    {
+        if (cmd == 0xBF) { line_tri(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F, 0); return; }
+        if (cmd == 0xB1)
+        {
+            line_tri(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F, 0);
+            line_tri(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F, 0);
+            return;
+        }
+        if (cmd == 0xB5) { line3d(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (s8)w1, (w1 >> 17) & 0x7F); return; }
+    }
     switch (cmd)
     {
     case 0x00: break;   // G_SPNOOP
@@ -1764,6 +1941,9 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
         break;
     case 0x06:          // G_DL
         call_dl(g, w1, ((w0 >> 16) & 0xFF) == 0);
+        break;
+    case 0x09:          // G_SPRITE2D_BASE
+        sprite2d(g, w1);
         break;
     case 0xAF:          // G_LOAD_UCODE (F3DEX)
         if (!ex || !load_ucode(g, w1, g->half1, (w0 & 0xFFFF) + 1)) g->abort = 1;
@@ -1915,6 +2095,17 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
 {
     u32 cmd = w0 >> 24;
     if (g->uc->rare == RARE_CBFD && run_cbfd(g, w0, w1)) return;
+    if (g->uc->line)   // L3DEX2: G_TRI1, G_TRI2 as edges (width in w1's top byte), 0x08 G_LINE3D
+    {
+        if (cmd == 0x05) { line_tri(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F, (s8)(w1 >> 24)); return; }
+        if (cmd == 0x06)
+        {
+            line_tri(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F, (s8)(w1 >> 24));
+            line_tri(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F, (s8)(w1 >> 24));
+            return;
+        }
+        if (cmd == 0x08) { line3d(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (s8)w0, (w0 >> 17) & 0x7F); return; }
+    }
     switch (cmd)
     {
     case 0x00: break;   // G_NOOP
