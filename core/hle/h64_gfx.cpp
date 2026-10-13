@@ -66,6 +66,7 @@ struct GfxUcode
     int flx;     // F3DFLX (F-Zero X's races): F3DEX2 with an "alpha light" in the second lookat's slot and
                  // texture generation that gives vertex alpha from a table (GLideN64 F3DFLX2)
     u32 crc;     // CRC-32 of the first 4 KB of code (see detect_ucode)
+    int lines;   // L3DEX2: triangles drawn as their outlines, G_LINE3D lines
 };
 
 struct GfxVtx
@@ -473,6 +474,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->noNear = 0;
     u->cull40 = 0;
     u->flx = 0;
+    u->lines = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
@@ -543,6 +545,13 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             else if (j > 31 && str[31] == '2')
                 u->type = UC_F3DEX2;
         }
+        else if (!strncmp(str + 4, "Gfx", 3) && j > 31 && !strncmp(str + 14, "L3DEX", 5) && str[31] == '2')
+        {
+            // L3DEX2: F3DEX2 that draws lines (NASCAR 2000, WinBack, Hey You,
+            // Pikachu!; GLideN64 L3DEX2).
+            u->type = UC_F3DEX2;
+            u->lines = 1;
+        }
         else if (!strncmp(str + 4, "Gfx", 3) && j > 19 && !strncmp(str + 14, "S2DEX", 5))
         {
             // S2DEX2 (the F3DEX2-era 2D microcode, OoT's backgrounds): version 2.xx.
@@ -573,7 +582,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             if (o != u && o->type != UC_NONE && o->crc == u->crc)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
-                u->cull40 = o->cull40; u->flx = o->flx;
+                u->cull40 = o->cull40; u->flx = o->flx; u->lines = o->lines;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
             }
@@ -1142,6 +1151,59 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
 }
 
 static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2);
+
+// L3DEX2's lines (G_LINE3D, and triangle edges): a quad 1.5 + wd / 2 pixels
+// wide, flat-shaded from vertex `flat` unless smooth shading is on (as
+// GLideN64 gSPLine3D draws them). Only lines whose vertices need no clipping.
+static void line3d(H64Gfx *g, u32 i0, u32 i1, s32 wd, u32 flat)
+{
+    const GfxVtx *a, *b, *f, *v[4];
+    u32 gm = geom(g), flags = 0, k, q;
+    float dx, dy, len, hw, ox, oy, sx[4], sy[4];
+    if (i0 >= GFX_VTX_MAX || i1 >= GFX_VTX_MAX || flat >= GFX_VTX_MAX || i0 == i1) return;
+    a = &g->vtx[i0];
+    b = &g->vtx[i1];
+    f = &g->vtx[flat];
+    if (a->projGen != g->vpGen || b->projGen != g->vpGen) return;
+    dx = b->px - a->px;
+    dy = b->py - a->py;
+    len = sqrtf(dx * dx + dy * dy);
+    if (len <= 0.0f) return;
+    hw = (1.5f + (float)wd * 0.5f) * 0.5f;
+    if (hw <= 0.0f) return;
+    ox = -dy / len * hw;
+    oy = dx / len * hw;
+    if (gm & GM_ZBUFFER) flags |= H64_TRI_ZBUFFER;
+    if (gm & GM_SHADE) flags |= H64_TRI_SHADE;
+    if (g->texOn) flags |= H64_TRI_TEXTURE;
+    v[0] = a; v[1] = a; v[2] = b; v[3] = b;
+    sx[0] = a->px + ox; sy[0] = a->py + oy;
+    sx[1] = a->px - ox; sy[1] = a->py - oy;
+    sx[2] = b->px + ox; sy[2] = b->py + oy;
+    sx[3] = b->px - ox; sy[3] = b->py - oy;
+    for (q = 0; q < 2; q++)
+    {
+        static const u32 idx[2][3] = { { 0, 1, 2 }, { 1, 3, 2 } };
+        GfxTri *t = new_tri(g, flags);
+        for (k = 0; k < 3; k++)
+        {
+            u32 n = idx[q][k];
+            H64RenderVertex *o = &t->v[k];
+            const GfxVtx *s = v[n], *cv = (gm & GM_SMOOTH) ? s : f;
+            o->x = sx[n]; o->y = sy[n]; o->z = s->pz; o->invw = s->iw;
+            o->r = cv->r; o->g = cv->g; o->b = cv->b; o->a = cv->a;
+            o->s = s->s; o->t = s->t;
+        }
+    }
+}
+
+static void line_tri(H64Gfx *g, u32 i0, u32 i1, u32 i2, s32 wd)
+{
+    if (i0 != i1) line3d(g, i0, i1, wd, i0);
+    if (i1 != i2) line3d(g, i1, i2, wd, i0);
+    if (i2 != i0) line3d(g, i2, i0, wd, i0);
+}
+
 static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
 {
     triangle_body(g, i0, i1, i2);
@@ -1945,12 +2007,23 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
         }
         break;
     }
-    case 0x05: triangle(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F); break;   // G_TRI1
+    case 0x05:          // G_TRI1
+        if (g->uc->lines) line_tri(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F, (s8)(w1 >> 24));
+        else triangle(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F);
+        break;
     case 0x06: case 0x07:   // G_TRI2, G_QUAD
+        if (g->uc->lines)
+        {
+            line_tri(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F, (s8)(w1 >> 24));
+            line_tri(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F, (s8)(w1 >> 24));
+            break;
+        }
         triangle(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (w0 >> 1) & 0x7F);
         triangle(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F);
         break;
-    case 0x08: break;   // G_LINE3D (not drawn)
+    case 0x08:          // G_LINE3D: drawn by L3DEX2 only
+        if (g->uc->lines) line3d(g, (w0 >> 17) & 0x7F, (w0 >> 9) & 0x7F, (s8)w0, (w0 >> 17) & 0x7F);
+        break;
     case 0xD3: case 0xD4: case 0xD5: break;   // G_SPECIAL_*
     case 0xD6: g->dmaIo = seg_to_phys(g, w1); break;   // G_DMA_IO: only its address is used (F3DFLX)
     case 0xD7: set_texture(g, w1, (w0 >> 11) & 7, (w0 >> 8) & 7, (w0 >> 1) & 0x7F); break;
