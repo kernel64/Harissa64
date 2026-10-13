@@ -2613,6 +2613,31 @@ static void obj_sprite(H64Gfx *g, u32 addr)
     g->texLevel = oldLevel;
 }
 
+// G_OBJ_MOVEMEM (S2DEX 1.x and 2.x): the 2D matrix, its sub-matrix or the viewport.
+static void obj_movemem(H64Gfx *g, u32 w0, u32 w1)
+{
+    u32 a = seg_to_phys(g, w1), idx = w0 & 0xFFFF;
+    if (idx == 0)   // uObjMtx
+    {
+        g->objA = (s32)rd32(g, a);
+        g->objB = (s32)rd32(g, a + 4);
+        g->objC = (s32)rd32(g, a + 8);
+        g->objD = (s32)rd32(g, a + 12);
+        g->objX = rd16(g, a + 16);
+        g->objY = rd16(g, a + 18);
+        g->objScaleX = (u16)rd16(g, a + 20);
+        g->objScaleY = (u16)rd16(g, a + 22);
+    }
+    else if (idx == 2)   // uObjSubMtx
+    {
+        g->objX = rd16(g, a);
+        g->objY = rd16(g, a + 2);
+        g->objScaleX = (u16)rd16(g, a + 4);
+        g->objScaleY = (u16)rd16(g, a + 6);
+    }
+    else if (idx == 8) set_viewport(g, w1);
+}
+
 static void run_s2dex1(H64Gfx *g, u32 w0, u32 w1)
 {
     u32 cmd = w0 >> 24;
@@ -2623,30 +2648,7 @@ static void run_s2dex1(H64Gfx *g, u32 w0, u32 w1)
     case 0x02: bg_copy(g, w1); break;                              // G_BG_COPY
     case 0x03: obj_rect(g, w1, 0); break;                          // G_OBJ_RECTANGLE
     case 0x04: obj_sprite(g, w1); break;                           // G_OBJ_SPRITE
-    case 0x05:          // G_OBJ_MOVEMEM
-    {
-        u32 a = seg_to_phys(g, w1), idx = w0 & 0xFFFF;
-        if (idx == 0)   // uObjMtx
-        {
-            g->objA = (s32)rd32(g, a);
-            g->objB = (s32)rd32(g, a + 4);
-            g->objC = (s32)rd32(g, a + 8);
-            g->objD = (s32)rd32(g, a + 12);
-            g->objX = rd16(g, a + 16);
-            g->objY = rd16(g, a + 18);
-            g->objScaleX = (u16)rd16(g, a + 20);
-            g->objScaleY = (u16)rd16(g, a + 22);
-        }
-        else if (idx == 2)   // uObjSubMtx
-        {
-            g->objX = rd16(g, a);
-            g->objY = rd16(g, a + 2);
-            g->objScaleX = (u16)rd16(g, a + 4);
-            g->objScaleY = (u16)rd16(g, a + 6);
-        }
-        else if (idx == 8) set_viewport(g, w1);
-        break;
-    }
+    case 0x05: obj_movemem(g, w0, w1); break;                     // G_OBJ_MOVEMEM
     case 0x06: call_dl(g, w1, ((w0 >> 16) & 0xFF) == 0); break;   // G_DL
     case 0xAF:          // G_LOAD_UCODE (Yoshi switches to F3DEX for its 3D and back)
         if (!load_ucode(g, w1, g->half1, (w0 & 0xFFFF) + 1)) g->abort = 1;
@@ -2702,9 +2704,49 @@ static void run_s2dex2(H64Gfx *g, u32 w0, u32 w1)
     case 0x00: case 0xE0: break;                                   // G_NOOP, G_SPNOOP
     case 0x09: bg_1cyc(g, w1); break;                              // G_BG_1CYC
     case 0x0A: bg_copy(g, w1); break;                              // G_BG_COPY
-    case 0x0B: break;                                              // G_OBJ_RENDERMODE (copy mode ignores it)
+    case 0x0B: g->objRender = w1; break;                           // G_OBJ_RENDERMODE (copy mode ignores it)
     case 0xDB:          // G_MOVEWORD
         if (((w0 >> 16) & 0xFF) == 0x06) g->segments[((w0 & 0xFFFF) >> 2) & 0xF] = w1 & 0x00FFFFFF;
+        else if (((w0 >> 16) & 0xFF) == 0x08 && (w0 & 0xFFFF) < 16) g->objStatus[(w0 & 0xFFFF) >> 2] = w1;   // G_MW_GENSTAT
+        break;
+    // 2D objects, with the S2DEX 1.x code (same structures; GLideN64 S2DEX2.cpp
+    // maps the same handlers), only for the games whose profile asks for it.
+    case 0x01: case 0x02: case 0x04: case 0x05: case 0x06: case 0x07: case 0x08: case 0xDA: case 0xDC: case 0xE4:
+        if (!g->sys->options.gfxS2dex1)
+        {
+            if (cmd == 0xE4) { rdp_passthrough(g, w0, w1); break; }
+            if (!(g->warned & 8)) { H64_INFO("[gfx] S2DEX2 command %02X not handled: task left to the LLE RSP", cmd); g->warned |= 8; }
+            g->abort = 1;
+            break;
+        }
+        switch (cmd)
+        {
+        case 0x01: obj_rect(g, w1, 0); break;                          // G_OBJ_RECTANGLE
+        case 0x02: obj_sprite(g, w1); break;                           // G_OBJ_SPRITE
+        case 0x04:          // G_SELECT_DL (after G_RDPHALF_0)
+        {
+            u32 sid = g->selSid, mask = w1, addr = g->selAddr | ((w0 & 0xFFFF) << 16);
+            if (sid >= 4 || (g->objStatus[sid] & mask) == g->selFlag) break;
+            g->objStatus[sid] = (g->objStatus[sid] & ~mask) | (g->selFlag & mask);
+            call_dl(g, addr, ((w0 >> 16) & 0xFF) == 0);
+            break;
+        }
+        case 0x05: obj_load(g, w1); break;                             // G_OBJ_LOADTXTR
+        case 0x06: obj_load(g, w1); obj_sprite(g, w1 + 24); break;     // G_OBJ_LDTX_SPRITE
+        case 0x07: obj_load(g, w1); obj_rect(g, w1 + 24, 0); break;    // G_OBJ_LDTX_RECT
+        case 0x08: obj_load(g, w1); obj_rect(g, w1 + 24, 1); break;    // G_OBJ_LDTX_RECT_R
+        case 0xDA: obj_rect(g, w1, 1); break;                          // G_OBJ_RECTANGLE_R
+        case 0xDC: obj_movemem(g, w0, w1); break;                      // G_OBJ_MOVEMEM
+        case 0xE4:          // G_RDPHALF_0: G_SELECT_DL's first half, else a TEXRECT
+            if ((rd32(g, g->pc[g->pci]) >> 24) == 0x04)
+            {
+                g->selAddr = w0 & 0xFFFF;
+                g->selSid = (w0 >> 18) & 0xFF;
+                g->selFlag = w1;
+            }
+            else rdp_passthrough(g, w0, w1);
+            break;
+        }
         break;
     case 0xDD:          // G_LOAD_UCODE
         if (!load_ucode(g, w1, g->half1, (w0 & 0xFFFF) + 1)) g->abort = 1;
