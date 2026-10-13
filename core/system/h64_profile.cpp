@@ -107,6 +107,7 @@ static const GameProfile s_profiles[] = {
     { "NC2", "Clay Fighter: Sculptor's Cut", H64_GP_OTHERMODE_INIT },
     { "NDM", "Doom 64", H64_GP_OTHERMODE_INIT },
     { "NEL", "Elmo's Letter Adventure", H64_GP_OTHERMODE_INIT },
+    { "NSP", "Superman", H64_GP_OTHERMODE_INIT },   // its title pictures came out grey
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
