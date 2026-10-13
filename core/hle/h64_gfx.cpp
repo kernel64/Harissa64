@@ -80,6 +80,7 @@ struct GfxVtx
     float sx, sy;
     int zOverride;           // G_MWO_POINT_ZSCREEN
     float sz;
+    int stOverride;          // G_MWO_POINT_ST: s, t given (kept whole with texture perspective off)
     // Screen position, made once when loaded (triangles share vertices):
     // valid while projGen == H64Gfx.vpGen (0: needs clipping or an override).
     float px, py, pz, iw;
@@ -1036,7 +1037,7 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
         v->t = t * texT;
         v->nx = nx; v->ny = ny; v->nz = nz;
         v->clip = clip;
-        v->xyOverride = v->zOverride = 0;
+        v->xyOverride = v->zOverride = v->stOverride = 0;
         v->projGen = 0;
         if (w >= 0.0001f && (noNear || z >= -w))
         {
@@ -1073,6 +1074,7 @@ static void modify_vertex(H64Gfx *g, u32 n, u32 where, u32 val)
     case 0x14:   // G_MWO_POINT_ST
         v->s = (float)(s16)(val >> 16);
         v->t = (float)(s16)val;
+        v->stOverride = 1;
         break;
     case 0x18:   // G_MWO_POINT_XYSCREEN (1/4 pixel)
         v->xyOverride = 1;
@@ -1154,6 +1156,17 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
     project_iw(g, c, 1.0f / c->w, o);
 }
 
+// With texture perspective off (other modes' G_TP_NONE) the RDP reads S and T
+// without dividing by W, and the microcodes send them scaled by their W of
+// half the range for w = 1: the texture coordinates come out halved
+// (GLideN64's shaders: texCoord *= 0.5 unless the vertex's s, t were set by
+// G_MODIFYVTX). Ready 2 Rumble Round 2 draws its text so: its letters
+// sampled twice too far showed other letters' pieces.
+static H64_INLINE float st_scale(const H64Gfx *g, const GfxVtx *v)
+{
+    return (g->omH & 0x80000) || v->stOverride ? 1.0f : 0.5f;
+}
+
 static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2);
 static void triangle(H64Gfx *g, u32 i0, u32 i1, u32 i2)
 {
@@ -1207,7 +1220,7 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
             cv = (gm & GM_SMOOTH) ? s : v[0];
             o->x = s->px; o->y = s->py; o->z = s->pz; o->invw = s->iw;
             o->r = cv->r; o->g = cv->g; o->b = cv->b; o->a = cv->a;
-            o->s = s->s; o->t = s->t;
+            o->s = s->s * st_scale(g, s); o->t = s->t * st_scale(g, s);
         }
         return;
     }
@@ -1222,8 +1235,8 @@ static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2)
         c->g = v[k]->g;
         c->b = v[k]->b;
         c->a = v[k]->a;
-        c->s = v[k]->s;
-        c->t = v[k]->t;
+        c->s = v[k]->s * st_scale(g, v[k]);
+        c->t = v[k]->t * st_scale(g, v[k]);
         if (v[k]->xyOverride || v[k]->zOverride)
         {
             if (c->w <= 0) c->w = 1.0f;
@@ -1341,7 +1354,7 @@ static void line3d(H64Gfx *g, u32 i0, u32 i1, s32 wd, u32 flat)
         if (v->w < 0.0001f && !v->xyOverride) return;
         c.x = v->x; c.y = v->y; c.z = v->z; c.w = v->w > 0.0001f ? v->w : 1.0f;
         c.r = cv->r; c.g = cv->g; c.b = cv->b; c.a = cv->a;
-        c.s = v->s; c.t = v->t;
+        c.s = v->s * st_scale(g, v); c.t = v->t * st_scale(g, v);
         project(g, &c, &e[k]);
         if (v->xyOverride) { e[k].x = v->sx; e[k].y = v->sy; }
         if (v->zOverride) e[k].z = v->sz;
