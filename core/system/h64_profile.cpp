@@ -43,6 +43,8 @@ static const GameProfile s_profiles[] = {
     // The magnifying glass on the character select enlarges what is on
     // screen: it reads the frame shown with the CPU (empty without).
     { "ND3", "Castlevania", H64_GP_FRAME_TO_RDRAM },
+    // Its intro fades compose the frame with the CPU in another image.
+    { "ND4", "Castlevania: Legacy of Darkness", H64_GP_FRAME_TO_RDRAM },
     // Draws Link into a 64-pixel image at the start of its 320-pixel frame on
     // the pause screens and copies his pixels with the CPU (noise without;
     // one slot for both widths showed the pause screens small in a corner).

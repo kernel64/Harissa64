@@ -2662,14 +2662,24 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
                 H64_INFO("[xenos]   slot %u: addr %06X %ux%u bytes %u valid %d drawnH %u lastUse %u", i, x->fb[i].addr, x->fb[i].width,
                          x->fb[i].height, x->fb[i].bytes, x->fb[i].valid, x->fb[i].drawnH, x->fb[i].lastUse);
     }
-    if (found >= 0 && x->fb[found].gpuDirty && x->sys->options.gfxFrameToRdram && !x->st->loadRam)
+    if (x->sys->options.gfxFrameToRdram && !x->st->loadRam)
     {
+        // The picture shown, or else the last one drawn: Castlevania copies
+        // its frame with the CPU into another image the VI then shows (the
+        // book's page turns: noise without).
+        int src = found;
+        if (src < 0)
+            for (i = 0; i < FB_SLOTS; i++)
+                if (x->fb[i].valid && x->fb[i].tex && x->fb[i].gpuDirty && (src < 0 || x->fb[i].lastUse > x->fb[src].lastUse)) src = (int)i;
+        if (src >= 0 && x->fb[src].gpuDirty)
+        {
         // Profile: the picture shown goes back to RDRAM, where the CPU reads it
         // (Castlevania's magnifying glass on the character select enlarges
         // what is on screen; it showed an empty frame).
-        u64 t0 = h64_prof_now(x->sys);
-        copy_back(x, found);
-        x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
+            u64 t0 = h64_prof_now(x->sys);
+            copy_back(x, src);
+            x->stats.tCopyBack += h64_prof_now(x->sys) - t0;
+        }
     }
     x->dev->SetRenderTarget(0, x->backBuffer);
     x->dev->SetDepthStencilSurface(NULL);
