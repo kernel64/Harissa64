@@ -50,6 +50,11 @@ static const GameProfile s_profiles[] = {
     // one slot for both widths showed the pause screens small in a corner).
     { "CZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM | H64_GP_SLOT_BY_WIDTH },
     { "NZL", "The Legend of Zelda: Ocarina of Time", H64_GP_SMALL_TO_RDRAM | H64_GP_SLOT_BY_WIDTH },
+    // ROM hacks keep the game code. Some made on the old PC emulators DMA
+    // from odd ROM addresses and expect the data from that byte (SM64 Last
+    // Impact's MIO0 blocks: a black screen after the title). SM64 itself
+    // never does.
+    { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)
@@ -88,4 +93,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxFrameToRdram = (f & H64_GP_FRAME_TO_RDRAM) != 0;
     sys->options.gfxSmallToRdram = (f & H64_GP_SMALL_TO_RDRAM) != 0;
     sys->options.gfxSlotByWidth = (f & H64_GP_SLOT_BY_WIDTH) != 0;
+    sys->options.piOddCart = (f & H64_GP_PI_ODD_CART) != 0;
 }
