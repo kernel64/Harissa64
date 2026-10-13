@@ -574,7 +574,7 @@ static u32 tile_extent(u32 lo, u32 hi)
 }
 
 // Decoded texture size and addressing for one tile.
-static void tile_layout(const H64RdpTile *t, TexBinding *b)
+static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy)
 {
     u32 tw = tile_extent(t->slo, t->shi), th = tile_extent(t->tlo, t->thi);
     u32 ms = t->maskS ? 1u << (t->maskS > 10 ? 10 : t->maskS) : 0, mt = t->maskT ? 1u << (t->maskT > 10 ? 10 : t->maskT) : 0;
@@ -608,6 +608,12 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b)
         // were cut at 32).
         if (b->clampS && !ms && b->w > rowTexels) b->w = rowTexels;
         if (b->clampT && !mt && b->h > rows) b->h = rows;
+        // Copy mode does not clamp (ParaLLEl-RDP's copy sampling, the
+        // software RDP): without a mask the texels run on past the tile's
+        // size, over the TMEM rows. Tonic Trouble's menu draws 64x32 copy
+        // rectangles with a 16x8 tile: blocks of the first texels.
+        if (copy && !ms && b->w < rowTexels) b->w = rowTexels;
+        if (copy && !mt && b->h < rows) b->h = rows;
         // Wrapped in T over more lines than TMEM holds: line y reads the same
         // TMEM words as line y mod (TMEM bytes / stride), so one such period is
         // the whole texture (a power of two dividing the mask; at least 2 for
@@ -705,7 +711,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     std::map<u64, TexEntry>::iterator it;
     TexEntry e;
     D3DLOCKED_RECT lr;
-    tile_layout(t, b);
+    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0);
     if (x->win.active && x->win.tile == (tileIndex & 7))
     {
         // Per axis, decode only the texels sampled, when that is at most half
