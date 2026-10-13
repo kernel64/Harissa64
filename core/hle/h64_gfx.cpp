@@ -71,6 +71,7 @@ struct GfxUcode
     int line;    // L3DEX / L3DEX2: triangles and G_LINE3D are drawn as lines
     int omInit;  // each task starts from the microcode's default other modes (F3DLP)
     int cullOne; // F3DLX.Rej: culling both faces culls the back faces only
+    int combineH;// F3DEX2 2.0xH (Pokemon Snap...): G_SPECIAL_1 combines the matrices, not a counted list
 };
 
 struct GfxVtx
@@ -516,6 +517,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->line = 0;
     u->omInit = 0;
     u->cullOne = 0;
+    u->combineH = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
@@ -611,7 +613,10 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
                 u->cull40 = str[28] == '0';
             }
             else if (j > 31 && str[31] == '2')
+            {
                 u->type = UC_F3DEX2;
+                u->combineH = j > 35 && str[35] == 'H';
+            }
         }
         else if (!strncmp(str + 4, "Gfx", 3) && j > 22 && !strncmp(str + 14, "L3DEX", 5))
         {
@@ -658,6 +663,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
                 u->cull40 = o->cull40; u->flx = o->flx; u->s2v103 = o->s2v103; u->am = o->am; u->line = o->line;
+                u->combineH = o->combineH;
                 u->omInit = o->omInit; u->cullOne = o->cullOne;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
@@ -2239,7 +2245,14 @@ static void run_f3dex2(H64Gfx *g, u32 w0, u32 w1)
         triangle(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F);
         break;
     case 0x08: break;   // G_LINE3D (not drawn)
-    case 0xD3: case 0xD4: case 0xD5: break;   // G_SPECIAL_*
+    case 0xD3: case 0xD4: break;   // G_SPECIAL_3, G_SPECIAL_2
+    case 0xD5:          // G_SPECIAL_1: the next (w0 & 0xFF) commands of another list (GLideN64 gSPDlistCount)
+        if (!g->uc->combineH && !g->uc->zex && g->pci < GFX_PC_MAX - 1 && seg_to_phys(g, w1))
+        {
+            g->pc[++g->pci] = seg_to_phys(g, w1);
+            g->dlCount = (int)(w0 & 0xFF) + 1;
+        }
+        break;
     case 0xD6: g->dmaIo = seg_to_phys(g, w1); break;   // G_DMA_IO: only its address is used (F3DFLX)
     case 0xD7:          // G_TEXTURE
         set_texture(g, w1, (w0 >> 11) & 7, (w0 >> 8) & 7, (w0 >> 1) & 0x7F);
