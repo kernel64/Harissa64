@@ -898,6 +898,7 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
             gg = rdf8(g, c + 1);
             b = rdf8(g, c + 2);
         }
+        const float xc = g->sys->options.gfxKeepOffscreen ? 0.75f : 1.0f;   // 16:9 widescreen: see the clip tests
         // From here on, no memory read can alias what is computed.
         x = px * m[0][0] + py * m[1][0] + pz * m[2][0] + m[3][0];
         y = px * m[0][1] + py * m[1][1] + pz * m[2][1] + m[3][1];
@@ -973,8 +974,11 @@ static void load_vertices_body(H64Gfx *g, u32 phys, u32 n, u32 v0, int fmt)
             float f = z / w * fogMul + fogOff;
             al = f < 0 ? 0.0f : f > 255.0f ? 255.0f : f;
         }
-        if (x > w) clip |= CL_POSX;
-        if (x < -w) clip |= CL_NEGX;
+        // 16:9 widescreen draws 4/3 as wide: x is tested against that width
+        // (G_CULLDL dropped objects in the extra width; GLideN64 does the same).
+        const float xw = x * xc;
+        if (xw > w) clip |= CL_POSX;
+        if (xw < -w) clip |= CL_NEGX;
         if (y > w) clip |= CL_POSY;
         if (y < -w) clip |= CL_NEGY;
         if (w < 0.01f) clip |= CL_W;
