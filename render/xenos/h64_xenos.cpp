@@ -586,8 +586,12 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b)
     // read the same words again. Decode at most what the tile can address.
     {
         u32 stride = t->stride ? t->stride : 8;
-        u32 rowTexels = t->size == 0 ? stride * 2 : t->size == 1 ? stride : stride / 2;   // 32-bit: split halves
-        u32 rows = (t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 / stride : 4096 / stride;
+        // 32-bit: split halves (2 bytes a texel in each); YUV: one luma byte a
+        // texel in the upper half (cut at half its width, Vigilante 8's
+        // pictures repeated their middle column).
+        int yuv = t->fmt == 1 && t->size == 2;
+        u32 rowTexels = yuv ? stride : t->size == 0 ? stride * 2 : t->size == 1 ? stride : stride / 2;
+        u32 rows = (yuv || t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 / stride : 4096 / stride;
         if (rowTexels < 1) rowTexels = 1;
         if (rows < 1) rows = 1;
         // Not with a mask: the decode then wraps or mirrors inside it, and a
@@ -726,6 +730,10 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         k[2] = (u32)t->fmt | (u32)t->size << 8 | (u32)t->palette << 16;
         k[3] = (u32)t->maskS | (u32)t->maskT << 8 | (u32)t->flags << 16;
         k[4] = 0;
+        if (t->fmt == 1 && t->size == 2)
+            k[4] = 0x80000000u | (st->rasterFlags & RS_BILERP0 ? 1u : 0u) |
+                   ((u32)(st->convert[0] & 0x3FF) << 1) ^ ((u32)(st->convert[1] & 0x3FF) << 11) ^ ((u32)(st->convert[2] & 0x3FF) << 21) ^
+                   ((u32)(st->convert[3] & 0x3FF) << 7);
         key = fnv64(key, (const u8 *)k, sizeof(k));
     }
     key = fnv64(key, (const u8 *)&b->w, sizeof(b->w));
@@ -804,6 +812,24 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         {
             s32 ty = mask_coord(t->maskT, (t->flags & TILE_MIRROR_T) != 0, (s32)y + b->oy);
             if (h64_rdp_fetch_row_argb(st, t, (u32)b->ox, (u32)ty, b->w, tlut, &x->decodeBuf[y * b->w])) continue;
+            if (t->fmt == 1 && t->size == 2 && !tlut)
+            {
+                // YUV: converted to RGB as the texture filter does without
+                // bilinear filtering (SETCONVERT K0..K3; the combiner applies
+                // K4/K5). Raw u/v/y showed Vigilante 8's menu green and pink.
+                // With the filter on, the RDP blends first: same conversion.
+                for (xx = 0; xx < b->w; xx++)
+                {
+                    H64RdpTexel yuv, rgb;
+                    s32 sx = mask_coord(t->maskS, (t->flags & TILE_MIRROR_S) != 0, (s32)xx + b->ox), c[3], i;
+                    h64_rdp_fetch_yuv(st, t, (u32)sx, (u32)ty, &yuv);
+                    yuv.c[0] &= 0x1FF; yuv.c[1] &= 0x1FF;   // 9-bit as the filter passes them
+                    h64_rdp_texture_convert(&yuv, st->convert, &rgb);
+                    for (i = 0; i < 3; i++) c[i] = rgb.c[i] < 0 ? 0 : rgb.c[i] > 255 ? 255 : rgb.c[i];
+                    x->decodeBuf[y * b->w + xx] = 0xFF000000u | ((u32)c[0] << 16) | ((u32)c[1] << 8) | (u32)c[2];
+                }
+                continue;
+            }
             for (xx = 0; xx < b->w; xx++)
             {
                 H64RdpTexel tx;
@@ -896,8 +922,10 @@ static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
     else
         tex = get_texture(x, tile, b);
     x->stats.tTexture += h64_prof_now(x->sys) - t0;
-    DWORD filter = (x->st->rasterFlags & (RS_SAMPLE_QUAD)) && !(x->st->rasterFlags & RS_COPY) && x->texFilter == 1 ? D3DTEXF_LINEAR
-                                                                                                             : D3DTEXF_POINT;
+    // YUV pictures are tiled in small blocks: filtered across their edges
+    // they showed a green grid (Vigilante 8's menus); point sampled.
+    DWORD filter = (x->st->rasterFlags & (RS_SAMPLE_QUAD)) && !(x->st->rasterFlags & RS_COPY) && x->texFilter == 1 &&
+                   x->st->tiles[tile & 7].fmt != 1 ? D3DTEXF_LINEAR : D3DTEXF_POINT;
     float sz[4];
     sz[0] = (float)(b->w ? b->w : 1);
     sz[1] = (float)(b->h ? b->h : 1);
@@ -2449,7 +2477,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         flush_batch(x);
         x->stateDirty = 1;
         // TMEM, tiles or the TLUT mode change: the tile memos are stale.
-        if (op == 0x30 || op == 0x32 || op == 0x33 || op == 0x34 || op == 0x35 || op == 0x2F) x->tmemGen++;
+        if (op == 0x30 || op == 0x32 || op == 0x33 || op == 0x34 || op == 0x35 || op == 0x2F || op == 0x2C) x->tmemGen++;
     }
     if (op == 0x3C) x->combineRaw = words[0];
     // Loads from a colour image the GPU drew: copied back first (palettes
