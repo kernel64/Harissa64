@@ -255,6 +255,7 @@ static void visit_rsp(StateIO *io, H64Rsp *r)
     io_u64(io, &r->instructions);
     io_u32(io, &r->tasks);
     io_int(io, &r->hleBusy);
+    if (io->mode == IO_LOAD) r->hleWait = 0;   // states are taken with no HLE task in progress
     io_u32(io, &r->hleStatus);
     io_int(io, &r->hleDpInterrupt);
     io_u32(io, &r->hleTasks);

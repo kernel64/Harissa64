@@ -27,6 +27,12 @@ void h64_gfx_free(H64Gfx *gfx);
 // whether the display list ended with an RDP full sync), 0 to leave the
 // task to the LLE RSP.
 int h64_gfx_run_task(H64System *sys, H64Gfx *gfx, int *fullSync);
+// Boss's ZSort microcode waits for the CPU inside a task: such tasks run on
+// the CPU thread (h64_gfx_task_sync), stop when the microcode waits
+// (h64_gfx_waiting) and go on with h64_gfx_resume when SP_STATUS changes.
+int h64_gfx_task_sync(H64System *sys, H64Gfx *gfx);
+int h64_gfx_waiting(const H64Gfx *gfx);
+int h64_gfx_resume(H64System *sys, H64Gfx *gfx, int *fullSync);
 // Calibration (h64test --gfx-cost-log): parses the task in DMEM without
 // rendering it and returns what it would do.
 int h64_gfx_measure(H64System *sys, H64Gfx *gfx, u32 *verts, u32 *tris, u32 *commands);

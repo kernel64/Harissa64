@@ -31,6 +31,9 @@ void h64_hle_free(struct hle_t *hle);
 // and raise the DP interrupt then if `*dpInterrupt` (graphics tasks that end
 // with an RDP full sync). Returns 0 to let the LLE RSP run the task.
 int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpInterrupt);
+// A graphics task waiting for the CPU (sys->rsp.hleWait) goes on; 1 when it
+// has ended (*dpInterrupt: raise the DP interrupt then), 0 if it waits again.
+int h64_hle_resume(H64System *sys, int *dpInterrupt);
 int h64_hle_gfx_measure(H64System *sys, u32 *verts, u32 *tris, u32 *commands);
 u32 h64_hle_gfx_cost(H64System *sys);   // the last graphics task's estimated RSP time (0: timing off)
 
