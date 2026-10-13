@@ -2524,6 +2524,9 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         // Profile: only full-width images are copied back (Mario Golf keeps
         // its course picture in one; its narrow strips garbled the HUD).
         if (slot >= 0 && x->sys->options.gfxCopyBackFull && x->fb[slot].width < 320) slot = -1;
+        // Profile: only loads as wide as the image read its picture (Vigilante
+        // 8 keeps fonts and palettes in memory once drawn into).
+        if (slot >= 0 && x->sys->options.gfxCopyBackSameWidth && x->st->texWidth != x->fb[slot].width) slot = -1;
         x->tmemDataGen++;
         x->fbLoad.valid = 0;
         if (op != 0x30) fb_load(x, w, op == 0x33);

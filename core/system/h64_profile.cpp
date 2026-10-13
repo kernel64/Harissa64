@@ -55,6 +55,14 @@ static const GameProfile s_profiles[] = {
     // Impact's MIO0 blocks: a black screen after the title). SM64 itself
     // never does.
     { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART },
+    // Fonts and palettes live in memory once drawn into as a colour image
+    // (Vigilante 8: 360-wide image at 0x377EC0, palettes and fonts from
+    // 0x397400; 2nd Offense: 320-wide at 0x3B6DC0, font at 0x3BD5C8). Loads
+    // there copied the GPU's picture back over them: 2nd Offense's PRESS START
+    // came out as dark stripes (GitHub issue #4). Vigilante 8's title text
+    // and some picture tiles (YUV) are still missing for another reason.
+    { "NV8", "Vigilante 8", H64_GP_COPY_BACK_SAME_WIDTH },
+    { "NVG", "Vigilante 8: Second Offense", H64_GP_COPY_BACK_SAME_WIDTH },
     // A 10-pixel border around the picture: scissor x 10-309, the border
     // painted by fills from the edges. In 16:9 widescreen both moved towards
     // the centre and the scene stayed boxed at 4:3 (GitHub issue #2).
@@ -99,4 +107,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxSlotByWidth = (f & H64_GP_SLOT_BY_WIDTH) != 0;
     sys->options.piOddCart = (f & H64_GP_PI_ODD_CART) != 0;
     sys->options.gfxWsBorder = (f & H64_GP_WS_BORDER) != 0;
+    sys->options.gfxCopyBackSameWidth = (f & H64_GP_COPY_BACK_SAME_WIDTH) != 0;
 }

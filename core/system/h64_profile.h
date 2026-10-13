@@ -28,7 +28,8 @@ enum
     H64_GP_SMALL_TO_RDRAM = 2048, // options.gfxSmallToRdram
     H64_GP_SLOT_BY_WIDTH = 4096,  // options.gfxSlotByWidth
     H64_GP_PI_ODD_CART = 8192,    // options.piOddCart
-    H64_GP_WS_BORDER = 16384      // options.gfxWsBorder
+    H64_GP_WS_BORDER = 16384,     // options.gfxWsBorder
+    H64_GP_COPY_BACK_SAME_WIDTH = 32768 // options.gfxCopyBackSameWidth
 };
 
 // The flags for a game code (4 characters, the region ignored); *name gets
