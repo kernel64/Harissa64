@@ -21,6 +21,7 @@ struct hle_t;
 // CPU cycles an HLE task keeps the RSP busy.
 #define H64_HLE_AUDIO_CYCLES 20000u
 #define H64_HLE_GFX_CYCLES 100000u
+#define H64_HLE_STREAM_POLL 4000u   // a streamed display list looks for more of itself every so many CPU cycles
 
 struct hle_t *h64_hle_create(H64System *sys);
 void h64_hle_free(struct hle_t *hle);
@@ -34,6 +35,10 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
 // A graphics task waiting for the CPU (sys->rsp.hleWait) goes on; 1 when it
 // has ended (*dpInterrupt: raise the DP interrupt then), 0 if it waits again.
 int h64_hle_resume(H64System *sys, int *dpInterrupt);
+// A streamed graphics task (options.gfxStream) at the end of its busy time:
+// 1 when it still runs (*busyCycles until the next look), 0 when it ended
+// (*dpInterrupt: it had a full sync).
+int h64_hle_stream_poll(H64System *sys, u32 *busyCycles, int *dpInterrupt);
 int h64_hle_gfx_measure(H64System *sys, u32 *verts, u32 *tris, u32 *commands);
 u32 h64_hle_gfx_cost(H64System *sys);   // the last graphics task's estimated RSP time (0: timing off)
 

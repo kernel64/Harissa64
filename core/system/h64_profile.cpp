@@ -122,6 +122,10 @@ static const GameProfile s_profiles[] = {
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
     { "NCS", "S.C.A.R.S.", H64_GP_SHORT_GFX_TASK },
+    // Writes its display list while the RSP runs it: the list branches to
+    // itself until the CPU writes more. The HLE ran into it and left every
+    // such task to the LLE RSP (~12 M RSP instructions a second).
+    { "NGX", "Gauntlet Legends", H64_GP_GFX_STREAM },
     // S2DEX 1.07 for its pictures and pieces (LLE before: garbled on the
     // console's renderer), tasks from the default other modes.
     { "NMT", "Magical Tetris Challenge", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
@@ -183,4 +187,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxCopyBackSameWidth = (f & H64_GP_COPY_BACK_SAME_WIDTH) != 0;
     sys->options.gfxShortTask = (f & H64_GP_SHORT_GFX_TASK) != 0;
     sys->options.gfxBigTexPool = (f & H64_GP_BIG_TEX_POOL) != 0;
+    sys->options.gfxStream = (f & H64_GP_GFX_STREAM) != 0;
 }
