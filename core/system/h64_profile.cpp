@@ -115,6 +115,21 @@ static const GameProfile s_profiles[] = {
     // S2DEX 1.07 for its pictures and pieces (LLE before: garbled on the
     // console's renderer), tasks from the default other modes.
     { "NMT", "Magical Tetris Challenge", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
+    // S2DEX2 2D objects (G_OBJ_LOADTXTR 05 and the rest) went to the LLE RSP:
+    // Kirby's menus and stage screens 7-10 VI/s in Xenia (53-61 with this),
+    // Command & Conquer's briefings 6-7 (35-60). V-Rally 99 (G_OBJ_MOVEMEM
+    // DC) also keeps textures inside a 640-wide image's guessed extent:
+    // ~40 copy backs a frame once its 2D objects are drawn here.
+    { "NK4", "Kirby 64: The Crystal Shards", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
+    { "NCC", "Command & Conquer", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
+    { "NVL", "V-Rally Edition 99", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_SAME_WIDTH },
+    // S2DEX 1.07 (Puzzle League, Star Soldier) and 1.03 (GT 64) went to the
+    // LLE RSP. Star Soldier also keeps textures inside a wide image's guessed
+    // extent: ~600 copy backs a frame in its stages (dark garbled floor,
+    // 12-20 VI/s in Xenia); without them right and 60 VI/s.
+    { "NPN", "Pokemon Puzzle League", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
+    { "NS6", "Star Soldier: Vanishing Earth", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_SAME_WIDTH },
+    { "NGC", "GT 64: Championship Edition", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)

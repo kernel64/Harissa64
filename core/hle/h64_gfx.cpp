@@ -66,6 +66,7 @@ struct GfxUcode
     int flx;     // F3DFLX (F-Zero X's races): F3DEX2 with an "alpha light" in the second lookat's slot and
                  // texture generation that gives vertex alpha from a table (GLideN64 F3DFLX2)
     u32 crc;     // CRC-32 of the first 4 KB of code (see detect_ucode)
+    int s2v103;  // S2DEX 1.03: its own rounding table and placement of 2D objects
     int line;    // L3DEX / L3DEX2: triangles and G_LINE3D are drawn as lines
     int omInit;  // each task starts from the microcode's default other modes (F3DLP)
     int cullOne; // F3DLX.Rej: culling both faces culls the back faces only
@@ -477,6 +478,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->noNear = 0;
     u->cull40 = 0;
     u->flx = 0;
+    u->s2v103 = 0;
     u->line = 0;
     u->omInit = 0;
     u->cullOne = 0;
@@ -579,10 +581,11 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             if (v && v[5] == '2') u->type = UC_S2DEX2;
             else if (!v && g->sys->options.gfxS2dex1)
             {
-                // S2DEX 1.05 and later (Yoshi's Story: 1.06); 1.03 places its
-                // sprites differently (GLideN64) and stays with the LLE RSP.
+                // S2DEX 1.05 and later (Yoshi's Story: 1.06), and 1.03 (GT 64),
+                // which rounds and places its objects differently (GLideN64).
                 const char *n = strstr(str + 19, " 1.");
                 if (n && n[3] >= '0' && n[3] <= '9' && n[4] >= '5' && n[4] <= '9') u->type = UC_S2DEX1;
+                else if (n && n[3] == '0' && n[4] == '3') { u->type = UC_S2DEX1; u->s2v103 = 1; }
             }
         }
         H64_INFO("[gfx] microcode \"%s\" at %06X: %s", str, u->start,
@@ -601,7 +604,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             if (o != u && o->type != UC_NONE && o->crc == u->crc)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
-                u->cull40 = o->cull40; u->flx = o->flx; u->line = o->line;
+                u->cull40 = o->cull40; u->flx = o->flx; u->s2v103 = o->s2v103; u->line = o->line;
                 u->omInit = o->omInit; u->cullOne = o->cullOne;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
@@ -2329,7 +2332,7 @@ static void bg_copy(H64Gfx *g, u32 addr)
 // G_BG_1CYC's bands for frame lines [frameY, frameY + frameH) (10.2), the
 // picture not wrapping vertically in between (see bg_1cyc).
 static void bg_1cyc_part(H64Gfx *g, u32 ptr, u32 fmt, u32 siz, u32 pal, u32 bpp, u32 tmemBytes, s32 imageX, s32 imageW,
-                         s32 imageY, s32 imageH, s32 frameX, s32 frameW, s32 frameY, s32 frameH, s32 scaleW, s32 scaleH)
+                         s32 strideW, s32 imageY, s32 imageH, s32 frameX, s32 frameW, s32 frameY, s32 frameH, s32 scaleW, s32 scaleH)
 {
     s32 xa, xw;
     for (xa = 0; xa < frameW; xa += xw)
@@ -2369,7 +2372,7 @@ static void bg_1cyc_part(H64Gfx *g, u32 ptr, u32 fmt, u32 siz, u32 pal, u32 bpp,
             if (rows < 1) break;
             xl = xh + (u32)xw;
             yl = yt + (u32)(yh - ya);
-            out_rdp1(g, 0xFD000000u | (fmt << 21) | (siz << 19) | (u32)(imageW - 1), ptr);                    // SETTIMG
+            out_rdp1(g, 0xFD000000u | (fmt << 21) | (siz << 19) | (u32)(strideW - 1), ptr);                   // SETTIMG
             out_rdp1(g, 0xF5000000u | (fmt << 21) | (siz << 19) | (line << 9), 0x07000000u);                 // SETTILE 7
             out_rdp1(g, 0xE6000000u, 0);                                                                     // LOADSYNC
             out_rdp1(g, 0xF4000000u | ((u32)sx0 << 14) | ((u32)ty0 << 2),
@@ -2397,8 +2400,19 @@ static void bg_1cyc(H64Gfx *g, u32 addr)
     s32 frameY = rd16(g, a + 12), frameH = (u16)rd16(g, a + 14);
     u32 ptr = seg_to_phys(g, rd32(g, a + 16));
     u32 fmt = rd8(g, a + 22), siz = rd8(g, a + 23), pal = (u16)rd16(g, a + 24), flip = (u16)rd16(g, a + 26);
-    s32 scaleW = (u16)rd16(g, a + 28), scaleH = (u16)rd16(g, a + 30);
+    s32 scaleW = (u16)rd16(g, a + 28), scaleH = (u16)rd16(g, a + 30), strideW;
     u32 bpp = 4u << siz, tmemBytes = fmt == 2 ? 2048 : 4096, cycle = (g->omH >> 20) & 3;
+    if (g->sys->options.gfxS2dex1 && scaleW > 0 && scaleH > 0)
+    {
+        // The microcode draws the picture once: a frame larger than the
+        // scaled picture is cut to it (GLideN64 BgRect1CycStripped, Aw/Ah:
+        // ((image << 10) / scale - 1) & ~3 in 10.2). Command & Conquer's
+        // logos were repeated over their frames.
+        s32 limW = (((s32)((u32)(u16)rd16(g, a + 2) << 10) / scaleW) - 1) & ~3;
+        s32 limH = (((s32)((u32)(u16)rd16(g, a + 10) << 10) / scaleH) - 1) & ~3;
+        if (limW > 0 && frameW > limW) frameW = limW;
+        if (limH > 0 && frameH > limH) frameH = limH;
+    }
     if (flip || (siz != 1 && siz != 2) || cycle > 1 || imageW <= 0 || imageH <= 0 || scaleW <= 0 || scaleH <= 0)
     {
         g->abort = 1;   // not handled here: the LLE RSP draws it
@@ -2411,6 +2425,11 @@ static void bg_1cyc(H64Gfx *g, u32 addr)
     if (frameW <= 0 || frameH <= 0) return;
     imageX %= imageW * 32;
     imageY %= imageH * 32;
+    // The microcode's lines are imageW texels rounded down to 8 bytes apart
+    // (GLideN64 BgRect1CycStripped: D2): Pokemon Puzzle League's 321-texel
+    // pictures came out sheared. Only for the S2DEX 1.x profile games.
+    strideW = imageW;
+    if (g->sys->options.gfxS2dex1 && (u32)imageW * bpp >= 64) strideW = (s32)(((u32)imageW * bpp / 64) * 64 / bpp);
     // A picture that wraps vertically (Yoshi's Story's scrolling backgrounds)
     // is drawn in parts, each from its own first line (only for the games
     // whose profile turns S2DEX 1.x on, so far).
@@ -2424,7 +2443,7 @@ static void bg_1cyc(H64Gfx *g, u32 addr)
             if (partH <= 0) partH = 4;
             if (partH > frameH) partH = frameH;
         }
-        bg_1cyc_part(g, ptr, fmt, siz, pal, bpp, tmemBytes, imageX, imageW, imageY, imageH, frameX, frameW, frameY, partH, scaleW, scaleH);
+        bg_1cyc_part(g, ptr, fmt, siz, pal, bpp, tmemBytes, imageX, imageW, strideW, imageY, imageH, frameX, frameW, frameY, partH, scaleW, scaleH);
         if (g->abort || partH >= frameH) break;
         imageY = (imageY + (s32)(((s64)partH * scaleH) / 128)) % (imageH * 32);
         frameY += partH;
@@ -2476,10 +2495,17 @@ static void read_obj_sprite(H64Gfx *g, u32 a, ObjSprite *o)
 
 // The microcode's rounding corrections, by object render mode (the
 // CorrectorsA01/A23/B03 tables, S2DEX 1.05 and later).
-struct ObjCorr { s16 A0, A1, A2, A3, B0, B2, B3; };
+struct ObjCorr { s16 A0, A1, A2, A3, B0, B2, B3, B5, B7; };
 
-static void obj_corr(u32 rm, ObjCorr *c)
+static void obj_corr(u32 rm, ObjCorr *c, int v103)
 {
+    // S2DEX 1.03's CorrectorsB03 table (8 entries per row), the row picked by
+    // render mode bits 1-3 (GLideN64 S2DEXCoordCorrector, eVer1_3).
+    static const s16 b03v103[64] = {
+        -4, 0, 0, 0, 0, 1, 0, 0,     -4, 0, 0, 0, 0, 1, -1, 1,
+        -4, 0, 3, 0, 0, 1, 0, 0,     -4, 0, 3, 0, 0, 1, -1, 0,
+        -1, 3, 0, -16, 0, 1, 0, -1,  -1, 3, 0, -16, 0, 1, -1, -1,
+        -1, 3, 0, -16, 0, 0, 0, 0,   -1, 3, 0, -16, 0, 0, -1, 0 };
     static const s16 a01[16] = { 0, 0, 0x10, 0x20, 0x20, 0x40, 0x30, 0x60, 0, -12, 0x10, 0x14, 0x20, 0x34, 0x30, 0x54 };
     static const s16 a23[8] = { 1, -2, -2, -2, 1, 0, 0, 0 };
     static const s16 b03[8] = { -4, 0, 0, 1, -1, 3, -16, 0 };
@@ -2493,6 +2519,12 @@ static void obj_corr(u32 rm, ObjCorr *c)
     c->B0 = b03[o3];
     c->B2 = b03[2 + o3];
     c->B3 = b03[3 + o3];
+    c->B5 = c->B7 = 0;
+    if (v103)
+    {
+        const s16 *r = &b03v103[((rm << 3) & 0x70) >> 1];
+        c->B0 = r[0]; c->B2 = r[2]; c->B3 = r[3]; c->B5 = r[5]; c->B7 = r[7];
+    }
 }
 
 // Tile 0 for the sprite's texels (clamped, no mirror), as the microcode sets it.
@@ -2553,7 +2585,7 @@ static void obj_rect(H64Gfx *g, u32 addr, int useMatrix)
     u32 scaleW, scaleH, cycle = (g->omH >> 20) & 3;
     u64 w[2];
     read_obj_sprite(g, seg_to_phys(g, addr), &o);
-    obj_corr(g->objRender, &cc);
+    obj_corr(g->objRender, &cc, g->uc->s2v103);
     if (useMatrix)
     {
         u32 bx = g->objScaleX ? g->objScaleX : 1, by = g->objScaleY ? g->objScaleY : 1;
@@ -2568,6 +2600,15 @@ static void obj_rect(H64Gfx *g, u32 addr, int useMatrix)
         yh = (s16)(yhp >> 16);
         xl = (s16)((xhp + (s32)(((u64)(u32)((s32)o.imageW - cc.A1) << 24) * (0x80007FFFu / scaleW) >> 32)) >> 16);
         yl = (s16)((yhp + (s32)(((u64)(u32)((s32)o.imageH - cc.A1) << 24) * (0x80007FFFu / scaleH) >> 32)) >> 16);
+        if (g->uc->s2v103)
+        {
+            // S2DEX 1.03 (GLideN64 ObjCoordinates, eVer1_3): each corner
+            // rounded by B0, the size plus B2, the texture from B3.
+            xh = (s16)((((((s64)o.objX << 27) * (s64)(0x80007FFFu / bx)) >> 48) + g->objX + cc.A2) & cc.B0);
+            yh = (s16)((((((s64)o.objY << 27) * (s64)(0x80007FFFu / by)) >> 48) + g->objY + cc.A2) & cc.B0);
+            xl = (s16)(((((((s64)o.imageW - cc.A1) << 8) * (s64)(0x80007FFFu / scaleW)) >> 32) + cc.B2) & cc.B0) + xh;
+            yl = (s16)(((((((s64)o.imageH - cc.A1) << 8) * (s64)(0x80007FFFu / scaleH)) >> 32) + cc.B2) & cc.B0) + yh;
+        }
     }
     else
     {
@@ -2578,7 +2619,7 @@ static void obj_rect(H64Gfx *g, u32 addr, int useMatrix)
         xl = (s16)((((u64)(u32)((s32)o.imageW - cc.A1) << 24) * (0x80007FFFu / scaleW)) >> 48) + xh;
         yl = (s16)((((u64)(u32)((s32)o.imageH - cc.A1) << 24) * (0x80007FFFu / scaleH)) >> 48) + yh;
     }
-    sh = cc.A0 + cc.B2;
+    sh = cc.A0 + (useMatrix && g->uc->s2v103 ? cc.B3 : cc.B2);
     th = sh - (s32)((((u32)yh & 3) * 0x0200 * scaleH) >> 16);
     dsdx = (s32)scaleW;
     dtdy = (s32)scaleH;
@@ -2606,9 +2647,14 @@ static void obj_sprite(H64Gfx *g, u32 addr)
     float s0 = 0, s1, t0 = 0, t1;
     u32 k, oldTile = g->texTile, oldLevel = g->texLevel;
     read_obj_sprite(g, seg_to_phys(g, addr), &o);
-    obj_corr(g->objRender, &cc);
+    obj_corr(g->objRender, &cc, g->uc->s2v103);
     x0 = (s16)((g->objX + cc.B3) & cc.B0);
     y0 = (s16)((g->objY + cc.B3) & cc.B0);
+    if (g->uc->s2v103)
+    {
+        x0 = (s16)(((g->objX + cc.B5) & cc.B0) + cc.B7);
+        y0 = (s16)(((g->objY + cc.B5) & cc.B0) + cc.B7);
+    }
     ulx = (s16)(o.objX + cc.A3);
     uly = (s16)(o.objY + cc.A3);
     lrx = (s16)((((u64)(u32)((s32)o.imageW - cc.A1) << 8) * (0x80007FFFu / o.scaleW)) >> 32) + ulx;
@@ -2694,6 +2740,7 @@ static void run_s2dex1(H64Gfx *g, u32 w0, u32 w1)
     case 0xB2: obj_rect(g, w1, 1); break;                          // G_OBJ_RECTANGLE_R
     case 0xB3: break;                                              // G_RDPHALF_2 (read with TEXRECT)
     case 0xB4: g->half1 = w1; break;                               // G_RDPHALF_1
+    case 0xB6: case 0xB7: case 0xBB: break;   // G_CLEARGEOMETRYMODE, G_SETGEOMETRYMODE, G_TEXTURE: no effect on 2D objects (Puzzle League, Star Soldier)
     case 0xB8: end_dl(g); break;                                   // G_ENDDL
     case 0xB9: set_othermode(g, 0, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;
     case 0xBA: set_othermode(g, 1, (w0 >> 8) & 0xFF, w0 & 0xFF, w1); break;
