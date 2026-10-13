@@ -303,7 +303,15 @@ def run():
         sys.exit('console not answering')
     user_ini = con.get('harissa64v2.ini')
     backup = os.path.join(DATA, 'saves_backup')
-    n = con.backup_saves(backup)
+    for attempt in range(3):   # the console's FTP sometimes times out
+        try:
+            n = con.backup_saves(backup)
+            break
+        except Exception as e:
+            log('saves backup attempt %d failed: %s' % (attempt + 1, e))
+            if attempt == 2:
+                sys.exit('saves backup failed: nothing was changed on the console')
+            time.sleep(10)
     log('saves backed up: %d files' % n)
     dpath = os.path.join(OUT, 'dashboard.bmp')
     run.dashboard = small(dpath) if con.capture(dpath) else None

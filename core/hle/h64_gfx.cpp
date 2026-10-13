@@ -62,6 +62,7 @@ struct GfxUcode
     int zex;     // F3DZEX (Zelda): G_BRANCH_W instead of G_BRANCH_Z
     int noNear;  // ".NoN": no near-plane clipping
     int rare;    // RARE_*
+    int cull40;  // F3DEX 0.95/0.96 (Mario Kart 64's): G_CULLDL vertex numbers * 40, as F3D
 };
 
 struct GfxVtx
@@ -466,6 +467,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->type = UC_NONE;
     u->zex = 0;
     u->noNear = 0;
+    u->cull40 = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
@@ -524,7 +526,10 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
                      !strncmp(str + 14, "F3DFLX", 6) || !strncmp(str + 14, "F3DLP", 5))
                 u->type = UC_NONE;   // variants not handled yet
             else if (str[28] == '1' || !strncmp(str + 28, "0.95", 4) || !strncmp(str + 28, "0.96", 4))
+            {
                 u->type = UC_F3DEX;
+                u->cull40 = str[28] == '0';
+            }
             else if (j > 31 && str[31] == '2')
                 u->type = UC_F3DEX2;
         }
@@ -1753,7 +1758,11 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
     case 0xBC: f3d_moveword(g, w0, w1); break;   // G_MOVEWORD
     case 0xBD: if (w1 == 0) pop_matrix(g, 1); break;   // G_POPMTX (modelview)
     case 0xBE:          // G_CULLDL
-        if (ex) { if (cull_vertices(g, (w0 & 0xFFFF) >> 1, (w1 & 0xFFFF) >> 1)) end_dl(g); }
+        // Vertex numbers * 2, or * 40 for F3D and the F3DEX 0.9x microcodes
+        // (Mario Kart 64 Amped Up: 0x140 = up to vertex 7; read * 2 it was
+        // vertex 160, out of range, and every list was culled: no road, no
+        // karts).
+        if (ex && !g->uc->cull40) { if (cull_vertices(g, (w0 & 0xFFFF) >> 1, (w1 & 0xFFFF) >> 1)) end_dl(g); }
         else if (cull_vertices(g, (w0 & 0xFFFFFF) / 40, w1 / 40 - 1)) end_dl(g);
         break;
     case 0xBF:          // G_TRI1
