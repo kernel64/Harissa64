@@ -76,6 +76,11 @@ static const GameProfile s_profiles[] = {
     // 0x2D4000: ~600 copy backs a frame once in game (1 VI/s in Xenia, the
     // first room's door and Mega Man black); without them 60 VI/s, textured.
     { "NM6", "Mega Man 64", H64_GP_COPY_BACK_SAME_WIDTH },
+    // Calls osContInit before its timers exist: a cold boot with Count near
+    // 0 armed a timer there and read a null pointer (nothing on screen).
+    { "NBX", "BattleTanx", H64_GP_BOOT_TIME },
+    // 6106: with the HLE boot only its sound ran, never a graphics task.
+    { "NCW", "Cruis'n World", H64_GP_IPL3_BOOT },
 };
 
 u32 h64_game_profile(const char *gameCode, const char **name)

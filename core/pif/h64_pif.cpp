@@ -308,6 +308,12 @@ void h64_hle_boot(H64System *sys)
     // capture: BD, CE = 3, ExcCode 31).
     cpu->cop0[CP0_CAUSE] = 0xB000007Cu;
     cpu->cop0[CP0_LLADDR] = 0xFFFFFFFFu;               // usual power-on value (PeterLemon LL_LLD_SC_SCD)
+    // Count holds no set value at power on. BattleTanx calls osContInit
+    // before the timers exist; with Count near 0 libultra arms a 0.5 s timer
+    // there and the game read a null pointer. Its profile starts Count one
+    // second (46875000 ticks) in.
+    if (h64_game_profile(sys->rom.gameCode, NULL) & H64_GP_BOOT_TIME)
+        cpu->countOffset = 46875000u - (u32)(cpu->cycles >> 1);
     cpu->pc = (u64)(s64)(s32)entry;
     cpu->nextPc = cpu->pc + 4;
     H64_INFO("[boot] HLE boot: CIC %s seed %02X, TV type %d, entry %08X", h64_cic_name(sys->rom.cic),
