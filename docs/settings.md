@@ -35,7 +35,7 @@ Keeps your changes for next time. If you leave without saving, they last until y
 ## Graphics
 
 **Preset**
-A quick way to set the look in one go. It changes the texture filter, smoothing, sharpening, blur and screen effect, but leaves resolution and aspect ratio alone.
+A quick way to set the look in one go. It changes the texture filter, smoothing, sharpening, blur and screen effect, but leaves the resolution alone.
 - *Original*: the plain N64 picture, with crisp pixels.
 - *N64 Enhanced*: smoother textures and a touch of sharpening. A good everyday choice.
 - *N64 Smooth*: the same, with light scanlines.
@@ -44,16 +44,13 @@ A quick way to set the look in one go. It changes the texture filter, smoothing,
 If you change one of those settings yourself, the preset shows *Custom*.
 
 **Resolution**
-How many pixels the games are drawn with. More pixels give a sharper picture but ask more of the console.
-- *Native 320x240*: the size the N64 used. Blocky, but authentic.
-- *x2 640x480*: twice as sharp.
-- *x3 960x720*: the default, a good balance.
-- *HD 1280x720 (16:9)*: the sharpest. Made for widescreen: with *16:9 Widescreen* below, nothing gets stretched. A very busy game may run slower with it. If so, go back to x3.
+How many pixels the games are drawn with. More pixels give a sharper picture but ask more of the console. The resolution also sets the shape of the picture.
+- *Native 320x240*: the size the N64 used. Blocky, but authentic. 4:3.
+- *x2 640x480*: twice as sharp. 4:3.
+- *x3 960x720*: the default, a good balance. 4:3.
+- *HD 1280x720 (16:9)*: the sharpest, in widescreen. A very busy game may run slower with it. If so, go back to x3.
 
-**Aspect ratio**
-- *4:3*: the original shape, with black bars on the sides of a wide TV.
-- *16:9 Widescreen*: fills a wide TV and shows more of the scene on the left and right, without stretching anything. The menus and the on-screen info stay in the middle, where the game expects them. It works better in some games than others: N64 games were made for 4:3, so some don't draw what's at the far edges, and you may see things pop in or empty strips there.
-- *16:9 Stretched*: the 4:3 picture pulled wider to fill the screen. Everything looks a bit wider, but nothing is missing.
+With the 4:3 resolutions you get the original shape, with black bars on the sides of a wide TV. With HD 1280x720 the picture fills a wide TV and shows more of the scene on the left and right, without stretching anything. The menus and the on-screen info stay in the middle, where the game expects them. Widescreen works better in some games than others: N64 games were made for 4:3, so some don't draw what's at the far edges, and you may see things pop in or empty strips there. If a game looks wrong in HD, pick x3.
 
 **Texture filter**
 How textures look up close.

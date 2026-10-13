@@ -149,13 +149,13 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 
 // ---- Settings ----
 // Main page: CPU, RSP, audio, FPS, the Graphics and Controls pages, save, back. The Graphics
-// page (resolution, aspect, texture filter, smoothing, sharpening, blur, screen effect) is
+// page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
 enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
-enum { G_PRESET = 0, G_RES, G_ASPECT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+enum { G_PRESET = 0, G_RES, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
-// blur, screen effect. Resolution and aspect stay as they are.
+// blur, screen effect. The resolution stays as it is.
 struct GfxPreset { const char *name; int texFilter, smooth, sharpen, blur, screen; };
 static const GfxPreset s_presets[4] = {
     { "Original", 2, 0, 0, 0, 0 },        // nearest, nothing added
@@ -187,7 +187,6 @@ static void settings_values(UiMenu *m, const Config *c)
     if (s_graphicsPage)
     {
         static const char *res[4] = { "Native 320x240", "x2 640x480", "x3 960x720", "HD 1280x720 (16:9)" };
-        static const char *asp[3] = { "4:3", "16:9 Widescreen", "16:9 Stretched" };
         static const char *filt[3] = { "N64 3-point", "Bilinear", "Nearest" };
         static const char *lvl[3] = { "Off", "Low", "High" };
         static const char *blr[3] = { "Off", "Soft", "Strong" };
@@ -195,7 +194,6 @@ static void settings_values(UiMenu *m, const Config *c)
         int pr = current_preset(c);
         sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? "Custom" : s_presets[pr].name);
         sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 4 ? 4 : c->resScale) - 1]);
-        sprintf(m->value[G_ASPECT], "< %s >", asp[c->aspect < 0 || c->aspect > 2 ? 0 : c->aspect]);
         sprintf(m->value[G_FILTER], "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]);
         sprintf(m->value[G_SMOOTH], "< %s >", onoff(c->smooth));
         sprintf(m->value[G_SHARPEN], "< %s >", lvl[c->sharpen < 0 || c->sharpen > 2 ? 0 : c->sharpen]);
@@ -236,7 +234,6 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuClear(m, "Graphics", "A:Select|DPAD:Change|B:Back");
     UiMenuAdd(m, "Preset", "");
     UiMenuAdd(m, "Resolution", "");
-    UiMenuAdd(m, "Aspect ratio", "");
     UiMenuAdd(m, "Texture filter", "");
     UiMenuAdd(m, "Edge smoothing (FXAA)", "");
     UiMenuAdd(m, "Sharpen", "");
@@ -738,7 +735,6 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
             break;
         }
         case G_RES: c->resScale = (c->resScale - 1 + dir + 4) % 4 + 1; break;
-        case G_ASPECT: c->aspect = (c->aspect + dir + 3) % 3; break;
         case G_FILTER: c->texFilter = (c->texFilter + dir + 3) % 3; break;
         case G_SMOOTH: c->smooth = !c->smooth; break;
         case G_SHARPEN: c->sharpen = (c->sharpen + dir + 3) % 3; if (c->sharpen) c->blur = 0; break;

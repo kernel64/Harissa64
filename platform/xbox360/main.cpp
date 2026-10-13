@@ -679,9 +679,11 @@ static void RunDynarecTest(const Config *c, char *report, size_t len)
 static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c)
 {
     H64XenosOptions o;
-    // 16:9 widescreen shows more than the game's viewport: keep the triangles
-    // the microcode would drop outside it.
-    sys->options.gfxKeepOffscreen = c->aspect == 1;
+    // The aspect follows the resolution: HD 1280x720 is 16:9 widescreen (the
+    // 3D drawn wider), every other resolution 4:3. Widescreen shows more than
+    // the game's viewport: keep the triangles the microcode would drop outside it.
+    int aspect = c->resScale == 4 ? 1 : 0;
+    sys->options.gfxKeepOffscreen = aspect == 1;
     if (!renderer) return;
     o.scale = c->resScale;
     o.texFilter = c->texFilter;
@@ -689,7 +691,7 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     o.sharpen = c->sharpen;
     o.blur = c->blur;
     o.screen = c->screen;
-    o.aspect = c->aspect;
+    o.aspect = aspect;
     h64_xenos_set_options(renderer, &o);
 }
 
