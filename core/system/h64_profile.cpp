@@ -99,6 +99,14 @@ static const GameProfile s_profiles[] = {
     { "NSV", "Space Station Silicon Valley", H64_GP_OTHERMODE_INIT },
     // Same: grey textures in the levels (its HUD thermometer, banners).
     { "NTT", "Tonic Trouble", H64_GP_OTHERMODE_INIT },
+    // Same (h64test --gameflags 10 against no profile, then the LLE RSP):
+    // Gex's floors and HUD, Bust-A-Move 2's menu pictures, Clay Fighter's
+    // ground, Doom 64's menu icons, Elmo's grey logos.
+    { "NX2", "Gex 64: Enter the Gecko", H64_GP_OTHERMODE_INIT },
+    { "NBU", "Bust-A-Move 2", H64_GP_OTHERMODE_INIT },
+    { "NC2", "Clay Fighter: Sculptor's Cut", H64_GP_OTHERMODE_INIT },
+    { "NDM", "Doom 64", H64_GP_OTHERMODE_INIT },
+    { "NEL", "Elmo's Letter Adventure", H64_GP_OTHERMODE_INIT },
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
