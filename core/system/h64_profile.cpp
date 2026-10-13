@@ -41,6 +41,9 @@ static const GameProfile s_profiles[] = {
     // Its menus read the frame back in small pieces (~500 copy backs a
     // frame, 1-12 VI/s in Xenia): one whole copy instead, 60 VI/s.
     { "NBO", "Bottom of the 9th", H64_GP_COPY_BACK_WHOLE },
+    // Loads its textures from memory where the intro's 640x480 frames were:
+    // copying those old frames back over them drew the snow canyons black.
+    { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH },
     // Copies its background into the frame's memory through 512-pixel
     // images with copy-mode rectangles, then draws in a 328-pixel frame at
     // the same address (one slot for both showed horizontal streaks).

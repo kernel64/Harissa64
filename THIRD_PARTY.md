@@ -25,6 +25,8 @@ The graphics HLE (`core/hle/h64_gfx.cpp`: microcode detection (including the CRC
 
 The same applies to the line microcodes (L3DEX, L3DEX2: `uCodes/L3DEX.cpp`, `uCodes/L3DEX2.cpp`, line width and quad from `gSPLine3D` and `GraphicsDrawer::_drawThickLine`), F3D's 2D sprites (`gSPSprite2DBase`) and the F3DLX.Rej culling rule (`GBI.cpp`), followed from the same GLideN64 sources. So are F3DAM's texture coordinate matrix (`uCodes/F3DAM.cpp`, `calcF3DAMTexCoords` in `gSP.cpp`), S2DEX 1.03's rounding table and object placement, and how G_BG_1CYC cuts its frame to the picture and spaces its lines (`S2DEXCoordCorrector`, `ObjCoordinates`, `BgRect1CycStripped` in `uCodes/S2DEX.cpp`).
 
+Factor 5's microcodes (`core/hle/h64_gfx_f5.inc`: Star Wars: Rogue Squadron's F3DSWRS commands, terrain generation, sprite rectangles) follow GLideN64's `uCodes/F5Rogue.cpp` (Lemmy's LemNemu port, microcode decoding by olivieryuyu; same commit, GPL v2): studied and rewritten.
+
 Behaviour learned from test ROMs is credited in comments but no code is taken from them: n64-systemtest (Lemmy, MIT; studied, never copied), angrylion-rdp-plus (MAME licence, not GPL-compatible: not studied for code), Dillonb/n64-tests (no licence stated) and PeterLemon/N64 (Unlicense). The ROMs themselves are downloaded by `tests/scripts/fetch_test_roms.py` and never committed.
 
 ## ares licence
