@@ -36,6 +36,11 @@ static const GameProfile s_profiles[] = {
     // Never sets the texture conversion either (F3DLX 1.23): its legal
     // screens' 32-bit letters were read as YUV, almost invisible.
     { "N22", "Ready 2 Rumble Boxing: Round 2", H64_GP_OTHERMODE_INIT },
+    // Its map and menus are S2DEX2 2D objects: on the LLE RSP ~100 ms a frame.
+    { "NSQ", "StarCraft 64", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
+    // Its menus read the frame back in small pieces (~500 copy backs a
+    // frame, 1-12 VI/s in Xenia): one whole copy instead, 60 VI/s.
+    { "NBO", "Bottom of the 9th", H64_GP_COPY_BACK_WHOLE },
     // Copies its background into the frame's memory through 512-pixel
     // images with copy-mode rectangles, then draws in a 328-pixel frame at
     // the same address (one slot for both showed horizontal streaks).
