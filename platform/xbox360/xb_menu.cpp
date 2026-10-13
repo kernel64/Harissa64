@@ -304,8 +304,8 @@ static void ctl_place(int item, int *col, float *row)
     case C_STICK: *col = 2; *row = 0; return;
     case C_DEAD: *col = 2; *row = 1; return;
     case C_RANGE: *col = 2; *row = 2; return;
-    case C_RESET: *col = 2; *row = 4; return;
-    default: *col = 2; *row = 5; return;
+    case C_RESET: *col = 0; *row = 7; return;
+    default: *col = 0; *row = 8; return;
     }
 }
 
@@ -503,6 +503,89 @@ static void ctl_value_text(int item, const H64PadMap *map, char *out)
     else out[0] = 0;
 }
 
+// ---- The N64 controller drawn on the Controls page ----
+// A plain drawing of the controller in units (100 x 56, scaled by `s`): the
+// control being edited is outlined, and blinks while it waits for an input.
+static D3DCOLOR pad_rgb(int r, int g, int b) { return D3DCOLOR_ARGB(255, r, g, b); }
+
+// Where `item` is on the drawing (a box in units, its corner radius); 0: not on it.
+static int pad_shape(int item, float *x, float *y, float *w, float *h, float *r)
+{
+    static const float circles[][4] = {   // item, centre x, y, radius
+        { H64_N64_A, 78.5f, 30.0f, 3.6f }, { H64_N64_B, 73.0f, 23.0f, 3.0f }, { H64_N64_START, 50.0f, 13.5f, 2.6f },
+        { H64_N64_CUP, 86.0f, 12.5f, 2.1f }, { H64_N64_CDOWN, 86.0f, 21.5f, 2.1f },
+        { H64_N64_CLEFT, 81.5f, 17.0f, 2.1f }, { H64_N64_CRIGHT, 90.5f, 17.0f, 2.1f },
+        { C_STICK, 50.0f, 30.0f, 6.0f }, { C_DEAD, 50.0f, 30.0f, 6.0f }, { C_RANGE, 50.0f, 30.0f, 6.0f },
+    };
+    static const float boxes[][6] = {     // item, x, y, w, h, radius
+        { H64_N64_DUP, 13.8f, 10.7f, 4.4f, 4.3f, 1.0f }, { H64_N64_DDOWN, 13.8f, 19.4f, 4.4f, 4.3f, 1.0f },
+        { H64_N64_DLEFT, 9.5f, 15.0f, 4.3f, 4.4f, 1.0f }, { H64_N64_DRIGHT, 18.2f, 15.0f, 4.3f, 4.4f, 1.0f },
+        { H64_N64_L, 8.0f, 1.0f, 22.0f, 5.5f, 2.5f }, { H64_N64_R, 70.0f, 1.0f, 22.0f, 5.5f, 2.5f },   // the part above the body
+        { H64_N64_Z, 45.5f, 45.0f, 9.0f, 7.0f, 2.0f },
+    };
+    int i;
+    for (i = 0; i < (int)(sizeof(circles) / sizeof(circles[0])); i++)
+        if ((int)circles[i][0] == item)
+        {
+            *x = circles[i][1] - circles[i][3]; *y = circles[i][2] - circles[i][3];
+            *w = *h = circles[i][3] * 2; *r = circles[i][3];
+            return 1;
+        }
+    for (i = 0; i < (int)(sizeof(boxes) / sizeof(boxes[0])); i++)
+        if ((int)boxes[i][0] == item)
+        {
+            *x = boxes[i][1]; *y = boxes[i][2]; *w = boxes[i][3]; *h = boxes[i][4]; *r = boxes[i][5];
+            return 1;
+        }
+    return 0;
+}
+
+static void draw_n64_pad(float ox, float oy, float s, int hiItem, int blink)
+{
+    const D3DCOLOR dark = pad_rgb(54, 56, 64), shoulder = pad_rgb(78, 80, 90);
+    float x, y, w, h, r;
+    int i;
+#define PU(v) ((v) * s)
+    // Shoulder buttons behind the body, then the body: three handles and the top bar.
+    UiRoundRect(ox + PU(8), oy + PU(1), PU(22), PU(8), PU(2.5f), shoulder, shoulder);
+    UiRoundRect(ox + PU(70), oy + PU(1), PU(22), PU(8), PU(2.5f), shoulder, shoulder);
+    UiShadow(ox + PU(4), oy + PU(6), PU(92), PU(50), PU(9), 18, UI_COL_SHADOW);
+    UiRoundRect(ox + PU(6), oy + PU(12), PU(20), PU(40), PU(10), pad_rgb(152, 154, 164), pad_rgb(112, 114, 124));
+    UiRoundRect(ox + PU(74), oy + PU(12), PU(20), PU(40), PU(10), pad_rgb(152, 154, 164), pad_rgb(112, 114, 124));
+    UiRoundRect(ox + PU(41), oy + PU(12), PU(18), PU(44), PU(9), pad_rgb(152, 154, 164), pad_rgb(108, 110, 120));
+    UiRoundRect(ox + PU(4), oy + PU(6), PU(92), PU(20), PU(9), pad_rgb(178, 180, 190), pad_rgb(146, 148, 158));
+    // D-pad, Start, the stick, Z (under the middle handle on the real one).
+    UiRoundRect(ox + PU(9.5f), oy + PU(15), PU(13), PU(4.4f), PU(1), dark, dark);
+    UiRoundRect(ox + PU(13.8f), oy + PU(10.7f), PU(4.4f), PU(13), PU(1), dark, dark);
+    UiCircle(ox + PU(50), oy + PU(13.5f), PU(2.6f), pad_rgb(206, 44, 44));
+    UiCircle(ox + PU(50), oy + PU(30), PU(6), pad_rgb(66, 68, 78));
+    UiCircle(ox + PU(50), oy + PU(30), PU(4), pad_rgb(196, 198, 206));
+    UiRoundRect(ox + PU(45.5f), oy + PU(45), PU(9), PU(7), PU(2), dark, dark);
+    UiText(UI_BOLD, PU(4.5f), ox + PU(50), oy + PU(48.5f), UI_COL_TEXT2, "Z", UI_CENTER);
+    // A, B and the four C buttons.
+    UiCircle(ox + PU(78.5f), oy + PU(30), PU(3.6f), pad_rgb(52, 92, 214));
+    UiText(UI_BOLD, PU(4.2f), ox + PU(78.5f), oy + PU(30), UI_COL_TEXT, "A", UI_CENTER);
+    UiCircle(ox + PU(73), oy + PU(23), PU(3), pad_rgb(40, 164, 72));
+    UiText(UI_BOLD, PU(3.6f), ox + PU(73), oy + PU(23), UI_COL_TEXT, "B", UI_CENTER);
+    for (i = H64_N64_CUP; i <= H64_N64_CRIGHT; i++)
+        if (pad_shape(i, &x, &y, &w, &h, &r))
+            UiCircle(ox + PU(x + r), oy + PU(y + r), PU(r), pad_rgb(232, 192, 40));
+    // The control being edited: outlined; blinking while an input is awaited.
+    if (pad_shape(hiItem, &x, &y, &w, &h, &r))
+    {
+        float on = blink ? 0.5f + 0.5f * sinf(UiTime() * 12.566f) : 1.0f, pad = 3.0f;
+        int a = (int)(255 * on);
+        x = ox + PU(x); y = oy + PU(y); w = PU(w); h = PU(h); r = PU(r);
+        if (blink)
+        {
+            UiShadow(x - 2, y - 2, w + 4, h + 4, r + 2, 16, D3DCOLOR_ARGB((int)(200 * on), 255, 112, 84));
+            UiRoundRect(x, y, w, h, r, D3DCOLOR_ARGB((int)(190 * on), 255, 112, 84), D3DCOLOR_ARGB((int)(190 * on), 234, 76, 58));
+        }
+        UiRoundRing(x - pad, y - pad, w + pad * 2, h + pad * 2, r + pad, 2.5f, D3DCOLOR_ARGB(a, 255, 112, 84));
+    }
+#undef PU
+}
+
 static void controls_draw(const UiMenu *m)
 {
     static UiAnim selX, selY;
@@ -587,14 +670,11 @@ static void controls_draw(const UiMenu *m)
         }
     }
 
-    // A word of help under the stick settings, or the last change.
+    // The controller under the stick settings, with the control being edited.
     {
-        float hx = ctl_col_x(2) + 20, hy = ctl_row_y(6) + 18;
-        DWORD age = GetTickCount() - s_ctl.msgAt;
-        if (s_ctl.msg[0] && age < 3000) UiText(UI_BOLD, 18, hx, hy, UI_COL_ACCENT_HI, s_ctl.msg, UI_LEFT);
-        else
-            paragraph(UI_REGULAR, 16, hx, hy - 10, CTL_COLW - 40, 4, UI_COL_TEXT3,
-                      "Several inputs can press the same N64 button. BACK stays reserved for the emulator's menu.");
+        float s = CTL_COLW / 100.0f, top = ctl_row_y(3) + 8, bottom = y + CTL_H - 86;
+        draw_n64_pad(ctl_col_x(2), top + (bottom - top - 56 * s) * 0.5f, s,
+                     s_ctl.capturing ? s_ctl.capItem : selItem, s_ctl.capturing);
     }
 
     UiRect(x + 24, y + CTL_H - 78, CTL_W - 48, 1, UI_COL_LINE);
@@ -611,10 +691,15 @@ static void controls_draw(const UiMenu *m)
             if (left > 0) UiRoundRect(bx, y + CTL_H - 42, bw * left, 6, 3, UI_COL_ACCENT_HI, UI_COL_ACCENT);
         }
     }
-    else if (selItem < H64_N64_COUNT)
-        UiFooter(x + 40, y + CTL_H - 39, "A:Set|Y:Add|X:Clear|LB/RB:Player|B:Back");
     else
-        UiFooter(x + 40, y + CTL_H - 39, "A:Select|DPAD:Change|LB/RB:Player|B:Back");
+    {
+        // The last change, or a word of help, on the right.
+        DWORD age = GetTickCount() - s_ctl.msgAt;
+        if (selItem < H64_N64_COUNT) UiFooter(x + 40, y + CTL_H - 39, "A:Set|Y:Add|X:Clear|LB/RB:Player|B:Back");
+        else UiFooter(x + 40, y + CTL_H - 39, "A:Select|DPAD:Change|LB/RB:Player|B:Back");
+        if (s_ctl.msg[0] && age < 3000) UiText(UI_BOLD, 18, x + CTL_W - 40, y + CTL_H - 39, UI_COL_ACCENT_HI, s_ctl.msg, UI_RIGHT);
+        else UiText(UI_REGULAR, 16, x + CTL_W - 40, y + CTL_H - 39, UI_COL_TEXT3, "BACK stays reserved for the emulator's menu", UI_RIGHT);
+    }
 }
 
 void SettingsBuild(UiMenu *m, const Config *c, int perGame)
@@ -959,15 +1044,30 @@ static void game_tile(float x, float y, float w, float h, const char *name)
     UiTextShadowed(UI_BOLD, h * 0.46f, x + 28, y + h * 0.5f, D3DCOLOR_ARGB(240, 255, 255, 255), ini, UI_LEFT);
 }
 
-static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsPath)
+static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, int ctlTest)
 {
     UiMenu m;
     UiInput in;
     UiInputInit(&in);
     SettingsBuild(&m, c, 0);
+    if (ctlTest >= 0)
+    {
+        // controlstest=N: the Controls page on item N, waiting for an input.
+        controls_open(&m, c);
+        m.sel = ctlTest % C_COUNT;
+    }
     for (;;)
     {
-        int r = SettingsInput(&m, c, 0, UiInputPoll(&in));
+        int r;
+        if (ctlTest >= 0 && !s_ctl.capturing && s_ctlOrder[m.sel] < H64_N64_COUNT)
+        {
+            s_ctl.capturing = 1;
+            s_ctl.capItem = s_ctlOrder[m.sel];
+            s_ctl.capAdd = 0;
+            s_ctl.capReleased = 0;
+            s_ctl.capStart = GetTickCount();
+        }
+        r = SettingsInput(&m, c, 0, UiInputPoll(&in));
         if (r == SET_BACK) return;
         if (r == SET_SAVE_ALL)
         {
@@ -1093,6 +1193,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     }
     UiInputInit(&in);
     memset(&details, 0, sizeof(details));
+    if (c->controlsTest >= 0) settings_loop(dev, c, settingsPath, c->controlsTest);
     // A newer release on GitHub: a message for a few seconds (the check runs
     // in the background and may answer later, or never without a network).
     // updatecheck=2 (testing): as if this were version 0.0.0, so any release is newer.
@@ -1129,7 +1230,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         }
         if (down & XINPUT_GAMEPAD_Y)
         {
-            settings_loop(dev, c, settingsPath);
+            settings_loop(dev, c, settingsPath, -1);
             UiInputInit(&in);
         }
         if (down & XINPUT_GAMEPAD_X)
