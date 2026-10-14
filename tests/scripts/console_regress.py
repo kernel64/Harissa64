@@ -180,6 +180,22 @@ def small(path):
     return Image.open(path).convert('RGB').resize((320, 180))
 
 
+def noisy(img):
+    # The screen shows noise for a moment while the title quits; shrunk to
+    # 320x180 it averages to an even grey, so a run of such captures looked
+    # like a frozen frame and could win over the real one. Neighbouring
+    # pixels of noise differ far more than in any game picture.
+    p = img.convert('L').tobytes()
+    w, h = img.size
+    tot = n = 0
+    for y in range(0, h, 2):
+        row = y * w
+        for x in range(0, w - 1, 2):
+            tot += abs(p[row + x] - p[row + x + 1])
+            n += 1
+    return n and tot / float(n) > 13.0
+
+
 def diff(a, b):
     pa, pb = a.tobytes(), b.tobytes()
     return sum(abs(x - y) for x, y in zip(pa, pb)) / float(len(pa))
@@ -238,7 +254,10 @@ def run_case(con, c, update, log):
     while time.time() - t0 < 18:
         p = os.path.join(tmp, '%03d.bmp' % len(caps))
         if con.capture(p):
-            caps.append(small(p))
+            full = Image.open(p)
+            cw, ch = full.size
+            centre = full.crop((cw // 2 - 160, ch // 2 - 90, cw // 2 + 160, ch // 2 + 90))
+            caps.append(None if noisy(centre) else small(p))
         else:
             caps.append(None)
         time.sleep(0.5)
