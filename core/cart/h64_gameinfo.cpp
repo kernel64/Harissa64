@@ -200,7 +200,10 @@ int h64_gameinfo_parse(H64GameInfo *info, const char *text, u32 len)
             else if (key == "wiki") info->wiki = value == "yes" ? 1 : value == "none" ? 0 : -1;
             else
                 for (i = 0; i < H64_ARRAY_COUNT(s_fields); i++)
-                    if (key == s_fields[i].key) copy_str((char *)info + s_fields[i].offset, (int)s_fields[i].size, value.c_str());
+                    // "???" (unknown in libretro-database): left out here too, for
+                    // info files cached before the database filter (merge).
+                    if (key == s_fields[i].key && value.find("???") == std::string::npos)
+                        copy_str((char *)info + s_fields[i].offset, (int)s_fields[i].size, value.c_str());
         }
         p = eol + 1;
     }
