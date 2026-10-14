@@ -21,6 +21,9 @@ void ConfigDefaults(Config *c)
     c->lastRom[0] = 0;
     c->showFps = 0;
     c->updateCheck = 1;
+    c->artDownload = 1;
+    c->browserDemo = 0;
+    c->artAll = 0;
     c->gameFlags = -1;
     c->logCpu = 5;
     c->menuAt = 0;
@@ -86,6 +89,9 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "lastrom")) { strncpy(c->lastRom, eq + 1, sizeof(c->lastRom) - 1); c->lastRom[sizeof(c->lastRom) - 1] = 0; }
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
         else if (!strcmp(line, "updatecheck")) c->updateCheck = atoi(eq + 1);
+        else if (!strcmp(line, "artdownload")) c->artDownload = atoi(eq + 1);
+        else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);
+        else if (!strcmp(line, "artall")) c->artAll = atoi(eq + 1);
         else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtol(eq + 1, NULL, 16);
         else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
@@ -154,6 +160,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\n", c->resScale, c->texFilter, c->sharpen,
             c->blur, c->screen);
+    if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.
     for (i = 0; i < 4; i++)

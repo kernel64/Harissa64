@@ -111,13 +111,15 @@
       <PreprocessorDefinitions>inline=__inline;BR_USE_WIN32_RAND=0;BR_USE_WIN32_TIME=0;BR_USE_URANDOM=0;BR_USE_UNIX_TIME=0;BR_RDRAND=0;BR_AES_X86NI=0;BR_SSE2=0;BR_POWER8=0;BR_INT128=0;BR_UMUL128=0;BR_LE_UNALIGNED=0;BR_BE_UNALIGNED=0;BR_64=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="xb_art.cpp" />
     <ClCompile Include="xb_audio.cpp" />
     <ClCompile Include="xb_config.cpp" />
     <ClCompile Include="xb_menu.cpp" />
     <ClCompile Include="xb_ui.cpp" />
-    <ClCompile Include="xb_update.cpp">
+    <ClCompile Include="xb_net.cpp">
       <AdditionalIncludeDirectories>..\..\third_party\bearssl\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <ClCompile Include="xb_update.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\core\**\*.h" />

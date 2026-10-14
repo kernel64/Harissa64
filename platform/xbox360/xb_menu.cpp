@@ -16,6 +16,7 @@
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "../../core/common/h64_fenv.h"
+#include "xb_art.h"
 #include "xb_ui.h"
 #include "xb_update.h"
 
@@ -179,6 +180,10 @@ static int current_preset(const Config *c)
 }
 static int s_graphicsPage;
 static int s_perGame;
+static int s_browser;   // opened from the ROM list: the box art rows are shown
+#define S_ART (S_CONTROLS + 1)       // "Box art downloads" (ROM list only)
+#define S_ART_ALL (S_CONTROLS + 2)   // "Get box art for all games" (ROM list only)
+#define S_SAVE_ALL (s_browser ? S_CONTROLS + 3 : S_CONTROLS + 1)
 
 static const char *onoff(int v) { return v ? "On" : "Off"; }
 
@@ -210,6 +215,7 @@ static void settings_values(UiMenu *m, const Config *c)
         for (i = 0; i < 4; i++) custom |= !h64_padmap_is_default(&c->padMap[i]);
         strcpy(m->value[S_CONTROLS], custom ? "Custom" : "Default");
     }
+    if (s_browser) sprintf(m->value[S_ART], "< %s >", c->artDownload ? "On" : "Off");
 }
 
 static void settings_main(UiMenu *m, const Config *c)
@@ -222,6 +228,11 @@ static void settings_main(UiMenu *m, const Config *c)
     UiMenuAdd(m, "Show FPS", "");
     UiMenuAdd(m, "Graphics", "");
     UiMenuAdd(m, "Controls", "");
+    if (s_browser)
+    {
+        UiMenuAdd(m, "Box art downloads", "");
+        UiMenuAdd(m, "Get box art for all games", "");
+    }
     UiMenuAdd(m, "Save for all games", "");
     if (s_perGame) UiMenuAdd(m, "Save for this game only", "");
     UiMenuAdd(m, "Back", "");
@@ -702,6 +713,7 @@ static void controls_draw(const UiMenu *m)
 void SettingsBuild(UiMenu *m, const Config *c, int perGame)
 {
     s_perGame = perGame;
+    s_browser = 0;
     s_ctl.capturing = 0;
     settings_main(m, c);
 }
@@ -782,14 +794,20 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
         }
         changed = 1;
     }
+    if (s_browser && m->sel == S_ART && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        c->artDownload = !c->artDownload;
+        changed = 1;
+    }
     settings_values(m, c);
     if (changed) return SET_CHANGED;
     if (down & XINPUT_GAMEPAD_A)
     {
         int last = m->count - 1;
         if (m->sel == last) return SET_BACK;
-        if (m->sel == S_CONTROLS + 1) return SET_SAVE_ALL;
-        if (perGame && m->sel == S_CONTROLS + 2) return SET_SAVE_GAME;
+        if (s_browser && m->sel == S_ART_ALL) return SET_ART_ALL;
+        if (m->sel == S_SAVE_ALL) return SET_SAVE_ALL;
+        if (perGame && m->sel == S_SAVE_ALL + 1) return SET_SAVE_GAME;
     }
     return SET_NONE;
 }
@@ -845,7 +863,8 @@ void AboutDraw(void)
     heading(col2, ty, "ACKNOWLEDGEMENTS");
     ty += 16 + paragraph(UI_REGULAR, 19, col2, ty + 16, 368, 6, UI_COL_TEXT2,
                          "Thanks to the ares, ParaLLEl-RDP, mupen64plus, GLideN64, libdragon and zlib projects, "
-                         "and to Timothy Lottes and AMD for their display filters.");
+                         "and to Timothy Lottes and AMD for their display filters. Box art and game "
+                         "information: libretro, GameDB-N64, Wikipedia.");
     UiText(UI_REGULAR, 17, col2, ty + 18, UI_COL_TEXT3, "Details and licences: THIRD_PARTY.md", UI_LEFT);
 
     ty = y + 474;
@@ -949,10 +968,11 @@ u8 *RomFileLoad(const char *path, u32 *size)
 }
 
 // Reads the first 4 KB of a ROM (any dump order, plain or zipped) into *rom.
-// Returns the ROM size, or 0 when it is not an N64 ROM.
+// Returns the ROM size, or 0 when it is not an N64 ROM. Any thread.
 static u32 read_header(const char *path, H64Rom *rom)
 {
-    static u8 head[0x1000];
+    const u32 headSize = 0x1000;
+    u8 *head;
     H64ZipReader r;
     H64ZipEntry e;
     int zip, ok;
@@ -960,11 +980,15 @@ static u32 read_header(const char *path, H64Rom *rom)
     HANDLE h = rom_open(path, &r, &e, &zip, &len);
     memset(rom, 0, sizeof(*rom));
     if (h == INVALID_HANDLE_VALUE) return 0;
-    ok = len >= sizeof(head) && (zip ? h64_zip_extract(&r, &e, head, sizeof(head)) == 0 : handle_read(h, 0, head, sizeof(head)) == sizeof(head));
+    head = (u8 *)malloc(headSize);
+    ok = head && len >= headSize && (zip ? h64_zip_extract(&r, &e, head, headSize) == 0 : handle_read(h, 0, head, headSize) == headSize);
     CloseHandle(h);
-    if (!ok || h64_rom_load(rom, head, sizeof(head))) return 0;
+    if (!ok || h64_rom_load(rom, head, headSize)) { free(head); return 0; }
+    free(head);
     return len;
 }
+
+u32 RomReadHeader(const char *path, H64Rom *rom) { return read_header(path, rom); }
 
 int RomFolderName(const char *path, char *out, size_t size)
 {
@@ -979,7 +1003,7 @@ int RomFolderName(const char *path, char *out, size_t size)
 struct RomInfo
 {
     int ok;
-    char name[24], code[8], size[16], save[48], folder[64];
+    char name[24], code[8], size[16], save[48], folder[64], region[32];
 };
 
 static void rom_details(const char *path, RomInfo *info)
@@ -997,6 +1021,7 @@ static void rom_details(const char *path, RomInfo *info)
     else _snprintf(info->size, sizeof(info->size), "%u KB", len >> 10);
     _snprintf(info->save, sizeof(info->save), "%s%s", h64_save_type_name(type), pak ? " + Controller Pak" : "");
     h64_save_folder_name(&rom, info->folder, (int)sizeof(info->folder));
+    strncpy(info->region, h64_gameinfo_region_name(rom.gameCode[3]), sizeof(info->region) - 1);
     info->size[sizeof(info->size) - 1] = 0;
     info->save[sizeof(info->save) - 1] = 0;
     h64_rom_free(&rom);
@@ -1018,35 +1043,19 @@ static void initials(const char *name, char *out)
     out[n] = 0;
 }
 
-// The tile above the details: a gradient picked from the name, with its initials.
-static void game_tile(float x, float y, float w, float h, const char *name)
-{
-    static const D3DCOLOR tops[6] = { D3DCOLOR_ARGB(255, 240, 92, 66), D3DCOLOR_ARGB(255, 245, 150, 60), D3DCOLOR_ARGB(255, 150, 100, 235),
-                                      D3DCOLOR_ARGB(255, 70, 140, 240), D3DCOLOR_ARGB(255, 40, 180, 170), D3DCOLOR_ARGB(255, 110, 190, 80) };
-    static const D3DCOLOR bottoms[6] = { D3DCOLOR_ARGB(255, 150, 28, 30), D3DCOLOR_ARGB(255, 180, 70, 20), D3DCOLOR_ARGB(255, 80, 40, 150),
-                                         D3DCOLOR_ARGB(255, 30, 70, 160), D3DCOLOR_ARGB(255, 16, 100, 110), D3DCOLOR_ARGB(255, 40, 110, 50) };
-    char ini[4];
-    u32 hsh = 2166136261u;
-    const char *p;
-    int k;
-    for (p = name; *p; p++) hsh = (hsh ^ (u8)*p) * 16777619u;
-    k = (int)(hsh % 6);
-    initials(name, ini);
-    UiShadow(x, y + 6, w, h, 16, 20, D3DCOLOR_ARGB(110, 0, 0, 0));
-    UiRoundRect(x, y, w, h, 16, tops[k], bottoms[k]);
-    UiRoundRing(x, y, w, h, 16, 1.0f, D3DCOLOR_ARGB(50, 255, 255, 255));
-    // A soft sheen along the top half.
-    UiRoundRect(x + 2, y + 2, w - 4, h * 0.5f, 14, D3DCOLOR_ARGB(34, 255, 255, 255), D3DCOLOR_ARGB(0, 255, 255, 255));
-    UiTextShadowed(UI_BOLD, h * 0.46f, x + 28, y + h * 0.5f, D3DCOLOR_ARGB(240, 255, 255, 255), ini, UI_LEFT);
-}
-
-static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, int ctlTest)
+// The settings for all games, from the ROM list. Returns 1 when the user
+// asked for the box art of all games.
+static int settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, int ctlTest)
 {
     UiMenu m;
     UiInput in;
     UiInputInit(&in);
     SettingsBuild(&m, c, 0);
-    if (ctlTest >= 0)
+    s_browser = 1;
+    settings_main(&m, c);
+    if (ctlTest >= 200)
+        m.sel = (ctlTest - 200) % m.count;   // controlstest=200+N: this page, on item N
+    else if (ctlTest >= 0)
     {
         // controlstest=N: the Controls page on item N; 100+N: also waiting
         // for an input, again and again (captures of the blinking control).
@@ -1056,7 +1065,7 @@ static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settings
     for (;;)
     {
         int r;
-        if (ctlTest >= 100 && !s_ctl.capturing && s_ctlOrder[m.sel] < H64_N64_COUNT)
+        if (ctlTest >= 100 && ctlTest < 200 && !s_ctl.capturing && s_ctlOrder[m.sel] < H64_N64_COUNT)
         {
             s_ctl.capturing = 1;
             s_ctl.capItem = s_ctlOrder[m.sel];
@@ -1065,11 +1074,13 @@ static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settings
             s_ctl.capStart = GetTickCount();
         }
         r = SettingsInput(&m, c, 0, UiInputPoll(&in));
-        if (r == SET_BACK) return;
+        if (r == SET_BACK) { s_browser = 0; return 0; }
+        if (r == SET_ART_ALL) { s_browser = 0; return 1; }
         if (r == SET_SAVE_ALL)
         {
             H64_INFO("[menu] settings for all games %s", ConfigWriteMenuKeys(c, settingsPath, 1) ? "saved" : "NOT saved");
-            return;
+            s_browser = 0;
+            return 0;
         }
         dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
         UiBegin(dev);
@@ -1081,20 +1092,294 @@ static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settings
     }
 }
 
-// One label / value pair of the details card.
-static void detail(float x, float y, float w, const char *label, const char *value)
+// ---- Box art in the browser ----
+// The browser's copies of what xb_art.cpp sends (textures and text), by ROM
+// file; the least recently shown is dropped when the table is full.
+#define ART_VIEWS 24
+struct ArtView
 {
-    char fit[96];
-    UiText(UI_BOLD, 14, x, y, UI_COL_TEXT3, label, UI_LEFT);
-    UiTextFit(UI_REGULAR, 20, w, value, fit, sizeof(fit));
-    UiText(UI_REGULAR, 20, x, y + 26, UI_COL_TEXT, fit, UI_LEFT);
+    int used;
+    char path[256];
+    int hasInfo;
+    H64GameInfo info;
+    IDirect3DTexture9 *cover, *glow;
+    int coverW, coverH;
+    float coverAt;      // UiTime() when the cover arrived (its fade-in)
+    DWORD lastUse;
+};
+static ArtView s_views[ART_VIEWS];
+static DWORD s_viewClock;
+
+static void view_free(IDirect3DDevice9 *dev, ArtView *v)
+{
+    if (v->cover) UiImageRelease(dev, v->cover);
+    if (v->glow) UiImageRelease(dev, v->glow);
+    memset(v, 0, sizeof(*v));
 }
 
-static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, int rows, const RomInfo *info)
+static ArtView *view_find(const char *path)
+{
+    int i;
+    for (i = 0; i < ART_VIEWS; i++)
+        if (s_views[i].used && !_stricmp(s_views[i].path, path))
+        {
+            s_views[i].lastUse = ++s_viewClock;
+            return &s_views[i];
+        }
+    return NULL;
+}
+
+// Turns the worker's results into textures.
+static void views_take(IDirect3DDevice9 *dev)
+{
+    ArtResult r;
+    while (ArtTake(&r))
+    {
+        ArtView *v = view_find(r.path);
+        float coverAt = UiTime();
+        if (v)
+        {
+            // Newer files for a ROM already shown (a download finished): a cover it had does not fade in again.
+            if (v->cover && r.cover) coverAt = v->coverAt;
+            view_free(dev, v);
+        }
+        else
+        {
+            int i, best = 0;
+            for (i = 0; i < ART_VIEWS; i++)
+            {
+                if (!s_views[i].used) { best = i; break; }
+                if (s_views[i].lastUse < s_views[best].lastUse) best = i;
+            }
+            v = &s_views[best];
+            if (v->used)
+            {
+                ArtForget(v->path);   // sent again if the user comes back to it
+                view_free(dev, v);
+            }
+        }
+        v->used = 1;
+        strncpy(v->path, r.path, sizeof(v->path) - 1);
+        v->hasInfo = r.hasInfo;
+        v->info = r.info;
+        if (r.cover)
+        {
+            v->cover = UiImageCreate(dev, r.cover, r.coverW, r.coverH);
+            v->coverW = r.coverW;
+            v->coverH = r.coverH;
+        }
+        if (r.glow) v->glow = UiImageCreate(dev, r.glow, ART_GLOW_W, ART_GLOW_H);
+        v->coverAt = coverAt;
+        v->lastUse = ++s_viewClock;
+        ArtResultFree(&r);
+    }
+}
+
+static void views_clear(IDirect3DDevice9 *dev)
+{
+    int i;
+    for (i = 0; i < ART_VIEWS; i++)
+        if (s_views[i].used) view_free(dev, &s_views[i]);
+    ArtForgetAll();
+}
+
+// ---- Browser layout (UI pixels) ----
+#define LIST_W 556.0f
+#define LIST_Y 128.0f
+#define ROW_H 36.0f
+#define CARD_X 644.0f
+#define CARD_Y 44.0f
+#define CARD_W ((float)UI_WIDTH - UI_SAFE_X - CARD_X)
+#define CARD_B 620.0f            // bottom of the list and the card
+#define STAGE_H 240.0f
+
+static float smooth01(float t)
+{
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// A colour pair picked from a game's name (the placeholder's gradient).
+static void name_colors(const char *name, D3DCOLOR *top, D3DCOLOR *bottom)
+{
+    static const D3DCOLOR tops[6] = { D3DCOLOR_ARGB(255, 240, 92, 66), D3DCOLOR_ARGB(255, 245, 150, 60), D3DCOLOR_ARGB(255, 150, 100, 235),
+                                      D3DCOLOR_ARGB(255, 70, 140, 240), D3DCOLOR_ARGB(255, 40, 180, 170), D3DCOLOR_ARGB(255, 110, 190, 80) };
+    static const D3DCOLOR bottoms[6] = { D3DCOLOR_ARGB(255, 150, 28, 30), D3DCOLOR_ARGB(255, 180, 70, 20), D3DCOLOR_ARGB(255, 80, 40, 150),
+                                         D3DCOLOR_ARGB(255, 30, 70, 160), D3DCOLOR_ARGB(255, 16, 100, 110), D3DCOLOR_ARGB(255, 40, 110, 50) };
+    u32 hsh = 2166136261u;
+    const char *p;
+    for (p = name; *p; p++) hsh = (hsh ^ (u8)*p) * 16777619u;
+    *top = tops[hsh % 6];
+    *bottom = bottoms[hsh % 6];
+}
+
+// The picture area when there is no box art: the name's gradient and its initials.
+static void stage_placeholder(float x, float y, float w, float h, const char *name, float a)
+{
+    D3DCOLOR top, bottom;
+    char ini[4];
+    if (a <= 0.01f) return;
+    name_colors(name, &top, &bottom);
+    initials(name, ini);
+    UiRoundRect(x, y, w, h, 16, UiAlpha(top, a * 0.85f), UiAlpha(bottom, a * 0.85f));
+    UiRoundRect(x + 2, y + 2, w - 4, h * 0.5f, 14, UiAlpha(D3DCOLOR_ARGB(30, 255, 255, 255), a), D3DCOLOR_ARGB(0, 255, 255, 255));
+    UiTextShadowed(UI_BOLD, 92, x + w * 0.5f, y + h * 0.5f, UiAlpha(D3DCOLOR_ARGB(235, 255, 255, 255), a), ini, UI_CENTER);
+}
+
+// A small rounded label ("Platform", "1-4 players"); returns its width.
+static float chip(float x, float cy, const char *text, float a)
+{
+    float w = UiTextWidth(UI_BOLD, 15, text) + 26, h = 28;
+    UiRoundRect(x, cy - h * 0.5f, w, h, h * 0.5f, UiAlpha(D3DCOLOR_ARGB(255, 50, 53, 68), a), UiAlpha(D3DCOLOR_ARGB(255, 42, 45, 58), a));
+    UiRoundRing(x, cy - h * 0.5f, w, h, h * 0.5f, 1.0f, UiAlpha(D3DCOLOR_ARGB(34, 255, 255, 255), a));
+    UiText(UI_BOLD, 15, x + w * 0.5f, cy, UiAlpha(UI_COL_TEXT2, a), text, UI_CENTER);
+    return w;
+}
+
+// One label / value pair of the card's last row.
+static void detail(float x, float y, float w, const char *label, const char *value, float a)
+{
+    char fit[96];
+    UiText(UI_BOLD, 13, x, y, UiAlpha(UI_COL_TEXT3, a), label, UI_LEFT);
+    UiTextFit(UI_REGULAR, 19, w, value, fit, sizeof(fit));
+    UiText(UI_REGULAR, 19, x, y + 25, UiAlpha(UI_COL_TEXT, a), fit, UI_LEFT);
+}
+
+// The card on the right: box art, title, facts. `selAt`: when the selection
+// changed (the card fades and slides in).
+static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, int busy, float selAt)
+{
+    const float x = CARD_X, y = CARD_Y, w = CARD_W, h = CARD_B - CARD_Y, ix = x + 22, iw = w - 44;
+    const float sx = ix, sy = y + 22, sw = iw, sh = STAGE_H;
+    const H64GameInfo *gi = v && v->hasInfo && v->info.found ? &v->info : NULL;
+    float now = UiTime(), a = 0.3f + 0.7f * smooth01((now - selAt) / 0.2f), slide = (1.0f - smooth01((now - selAt) / 0.2f)) * 10.0f;
+    float ca = 0, ty, divY = CARD_B - 76;
+    char buf[1024];
+
+    UiPanel(x, y, w, h, 22);
+
+    // ---- The picture: the box art over a glow of its own colours, else the placeholder.
+    if (v && v->cover)
+        ca = smooth01((now - (v->coverAt > selAt ? v->coverAt : selAt)) / 0.25f);
+    UiRoundRect(sx, sy, sw, sh, 16, D3DCOLOR_ARGB(255, 22, 23, 31), D3DCOLOR_ARGB(255, 16, 17, 23));
+    {
+        // The initials only when no picture is on its way: the worker sends a game
+        // with its picture already decoded, so before its answer, wait a moment.
+        float pa = v ? 1.0f : smooth01((now - selAt - 0.3f) / 0.2f);
+        stage_placeholder(sx, sy, sw, sh, shown, a * pa * (1.0f - ca));
+    }
+    if (ca > 0)
+    {
+        float maxW = sw - 56, maxH = sh - 36, cw = (float)v->coverW, chh = (float)v->coverH, k, cx, cy;
+        if (v->glow) UiImage(v->glow, sx, sy, sw, sh, 16, UiAlpha(D3DCOLOR_ARGB(255, 255, 255, 255), ca * a));
+        // A veil keeps the glow behind the box (and the edges dark).
+        UiRoundRect(sx, sy, sw, sh, 16, UiAlpha(D3DCOLOR_ARGB(120, 12, 13, 18), ca * a), UiAlpha(D3DCOLOR_ARGB(185, 12, 13, 18), ca * a));
+        k = maxW / cw < maxH / chh ? maxW / cw : maxH / chh;
+        if (k > 1.15f) k = 1.15f;
+        cw *= k;
+        chh *= k;
+        cx = sx + (sw - cw) * 0.5f;
+        cy = sy + (sh - chh) * 0.5f + (1.0f - ca) * 6.0f;
+        UiShadow(cx, cy + 8, cw, chh, 8, 26, UiAlpha(D3DCOLOR_ARGB(170, 0, 0, 0), ca * a));
+        UiImage(v->cover, cx, cy, cw, chh, 7, UiAlpha(D3DCOLOR_ARGB(255, 255, 255, 255), ca * a));
+        UiRoundRing(cx, cy, cw, chh, 7, 1.0f, UiAlpha(D3DCOLOR_ARGB(40, 255, 255, 255), ca * a));
+    }
+    UiRoundRing(sx, sy, sw, sh, 16, 1.0f, UiAlpha(UI_COL_LINE, a));
+    if (busy && ca <= 0)
+    {
+        // Downloading: a pill with three pulsing dots at the bottom right of the picture.
+        float pw = UiTextWidth(UI_REGULAR, 15, "Downloading") + 64, ph = 30, px = sx + sw - pw - 12, py = sy + sh - ph - 12;
+        int d;
+        UiRoundRect(px, py, pw, ph, ph * 0.5f, D3DCOLOR_ARGB(200, 16, 17, 23), D3DCOLOR_ARGB(200, 16, 17, 23));
+        UiText(UI_REGULAR, 15, px + 14, py + ph * 0.5f, UI_COL_TEXT2, "Downloading", UI_LEFT);
+        for (d = 0; d < 3; d++)
+        {
+            float on = 0.5f + 0.5f * sinf(now * 6.0f - d * 0.9f);
+            UiCircle(px + pw - 38 + d * 11, py + ph * 0.5f, 3.0f, UiAlpha(UI_COL_ACCENT_HI, 0.35f + 0.65f * on));
+        }
+    }
+
+    // ---- Title, then year, developer, publisher.
+    ty = sy + sh + 32 + slide;
+    {
+        int lines = UiTextWrap(UI_BOLD, 26, iw, 2, gi && gi->title[0] ? gi->title : shown, buf, sizeof(buf));
+        UiText(UI_BOLD, 26, ix, ty, UiAlpha(UI_COL_TEXT, a), buf, UI_LEFT);
+        ty += (lines - 1) * 26 * 1.35f + 32;
+    }
+    buf[0] = 0;
+    if (gi)
+    {
+        const char *parts[3];
+        int k, np = 0;
+        parts[np++] = gi->year[0] ? gi->year : NULL;
+        parts[np++] = gi->developer[0] ? gi->developer : NULL;
+        parts[np++] = gi->publisher[0] && _stricmp(gi->publisher, gi->developer) ? gi->publisher : NULL;
+        for (k = 0; k < np; k++)
+        {
+            if (!parts[k]) continue;
+            if (buf[0]) strcat(buf, "  " UI_CH_MIDDOT "  ");
+            strncat(buf, parts[k], sizeof(buf) - strlen(buf) - 8);
+        }
+    }
+    if (!buf[0] && ri->ok) strncpy(buf, ri->name, sizeof(buf) - 1);   // the header's own name
+    if (buf[0])
+    {
+        char fit[256];
+        UiTextFit(UI_REGULAR, 18, iw, buf, fit, sizeof(fit));
+        UiText(UI_REGULAR, 18, ix, ty, UiAlpha(gi ? UI_COL_TEXT2 : UI_COL_TEXT3, a), fit, UI_LEFT);
+        ty += 36;
+    }
+
+    // ---- Genre, players, region.
+    {
+        float cxp = ix;
+        const char *region = gi && gi->region[0] ? gi->region : ri->region;
+        char players[24];
+        int any = 0;
+        if (gi && gi->genre[0]) { cxp += chip(cxp, ty, gi->genre, a) + 8; any = 1; }
+        if (gi && gi->players[0])
+        {
+            _snprintf(players, sizeof(players) - 1, "%s player%s", gi->players, strcmp(gi->players, "1") ? "s" : "");
+            players[sizeof(players) - 1] = 0;
+            cxp += chip(cxp, ty, players, a) + 8;
+            any = 1;
+        }
+        if (region[0] && cxp + UiTextWidth(UI_BOLD, 15, region) + 26 <= ix + iw) { cxp += chip(cxp, ty, region, a) + 8; any = 1; }
+        if (any) ty += 30;
+    }
+
+    // ---- A few lines about the game (Wikipedia), as many as fit above the last row.
+    if (gi && gi->description[0])
+    {
+        float lineH = 17 * 1.35f, room = divY - 20 - (ty + 4);
+        int maxLines = (int)(room / lineH);
+        if (maxLines > 0)
+        {
+            int lines = UiTextWrap(UI_REGULAR, 17, iw, maxLines, gi->description, buf, sizeof(buf));
+            UiText(UI_REGULAR, 17, ix, ty + 4 + lineH * 0.5f, UiAlpha(UI_COL_TEXT2, a), buf, UI_LEFT);
+            UiText(UI_REGULAR, 13, ix, ty + 4 + lines * lineH + 9, UiAlpha(UI_COL_TEXT3, a), "Text: Wikipedia (CC BY-SA)", UI_LEFT);
+        }
+    }
+
+    // ---- What the emulator knows from the file.
+    UiRect(ix, divY, iw, 1, UI_COL_LINE);
+    if (!ri->ok)
+        UiText(UI_REGULAR, 19, ix, divY + 36, UI_COL_ACCENT_HI, "Not an N64 ROM", UI_LEFT);
+    else
+    {
+        detail(ix, divY + 22, 110, "GAME CODE", ri->code, 1.0f);
+        detail(ix + 128, divY + 22, 90, "SIZE", ri->size, 1.0f);
+        detail(ix + 236, divY + 22, iw - 236, "SAVE", ri->save, 1.0f);
+    }
+}
+
+static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, int rows, const RomInfo *info, const ArtView *view,
+                         int busy, float selAt, const ArtStatus *st)
 {
     static UiAnim selAnim;
-    const float listX = UI_SAFE_X, listY = 128, listW = 700, rowH = 36, pad = 12;
-    const float listH = rows * rowH + 2 * pad, cardX = 788, cardW = UI_WIDTH - UI_SAFE_X - cardX;
+    const float listX = UI_SAFE_X, listY = LIST_Y, listW = LIST_W, rowH = ROW_H, pad = 12;
+    const float listH = rows * rowH + 2 * pad;
     int n = (int)roms.size(), i;
     char buf[160];
     UiBackdrop();
@@ -1106,8 +1391,8 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     if (n)
     {
         sprintf(buf, "%d / %d", sel + 1, n);
-        UiText(UI_REGULAR, 19, UI_WIDTH - UI_SAFE_X, 64, UI_COL_TEXT2, buf, UI_RIGHT);
-        UiText(UI_REGULAR, 15, UI_WIDTH - UI_SAFE_X, 88, UI_COL_TEXT3, "game:\\roms\\", UI_RIGHT);
+        UiText(UI_REGULAR, 19, listX + listW, 64, UI_COL_TEXT2, buf, UI_RIGHT);
+        UiText(UI_REGULAR, 15, listX + listW, 88, UI_COL_TEXT3, "game:\\roms\\", UI_RIGHT);
     }
     UiPanel(listX, listY, listW, listH, 20);
     if (!n)
@@ -1119,7 +1404,7 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     }
     else
     {
-        float sy = anim_step(&selAnim, listY + pad + (sel - top) * rowH, 0), textW = listW - 72;
+        float sy = anim_step(&selAnim, listY + pad + (sel - top) * rowH, 0), textW = listW - 64;
         selection_bar(listX + 10, sy + 1, listW - (n > rows ? 36 : 20), rowH - 2);
         for (i = 0; i < rows && top + i < n; i++)
         {
@@ -1138,47 +1423,46 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
             UiRoundRect(tx, ty, 4, th, 2, D3DCOLOR_ARGB(20, 255, 255, 255), D3DCOLOR_ARGB(20, 255, 255, 255));
             UiRoundRect(tx, yy, 4, hh, 2, D3DCOLOR_ARGB(150, 255, 255, 255), D3DCOLOR_ARGB(110, 255, 255, 255));
         }
-
-        // Details card.
-        UiPanel(cardX, listY, cardW, listH, 20);
-        game_tile(cardX + 20, listY + 20, cardW - 40, 118, roms[sel].shown.c_str());
-        {
-            float ty = listY + 162;
-            int lines = UiTextWrap(UI_BOLD, 25, cardW - 40, 2, roms[sel].shown.c_str(), buf, sizeof(buf));
-            UiText(UI_BOLD, 25, cardX + 20, ty + 17, UI_COL_TEXT, buf, UI_LEFT);
-            ty += lines * 25 * 1.35f + 6;
-            if (!info->ok)
-                UiText(UI_REGULAR, 19, cardX + 20, ty + 12, UI_COL_ACCENT_HI, "Not an N64 ROM", UI_LEFT);
-            else
-            {
-                float half = (cardW - 40) * 0.5f, gy = listY + listH - 186;
-                UiText(UI_REGULAR, 18, cardX + 20, ty + 12, UI_COL_TEXT2, info->name, UI_LEFT);
-                UiRect(cardX + 20, gy - 24, cardW - 40, 1, UI_COL_LINE);
-                detail(cardX + 20, gy, half - 12, "GAME CODE", info->code);
-                detail(cardX + 20 + half, gy, half - 12, "SIZE", info->size);
-                detail(cardX + 20, gy + 62, cardW - 40, "SAVE", info->save);
-                detail(cardX + 20, gy + 124, cardW - 40, "SAVE FOLDER", info->folder);
-            }
-        }
+        card_draw(roms[sel].shown.c_str(), info, view, busy, selAt);
     }
     UiScreenFooter(n ? "A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard" : "Y:Settings|X:About|BACK:Dashboard");
+    if (st->bulk)
+    {
+        // "Download all" progress at the right end of the footer.
+        const float bw = 150, right = UI_WIDTH - UI_SAFE_X, cy = 664;
+        float frac = st->total ? (float)st->done / st->total : 0;
+        if (st->done) sprintf(buf, "Box art %d / %d", st->done, st->total);
+        else strcpy(buf, "Box art: connecting" UI_CH_ELLIPSIS);
+        UiText(UI_REGULAR, 17, right - bw - 16, cy, UI_COL_TEXT2, buf, UI_RIGHT);
+        UiRoundRect(right - bw, cy - 3, bw, 6, 3, D3DCOLOR_ARGB(30, 255, 255, 255), D3DCOLOR_ARGB(30, 255, 255, 255));
+        if (frac > 0) UiRoundRect(right - bw, cy - 3, bw * frac, 6, 3, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    }
 }
 
-#define UPDATE_MSG_MS 8000   // how long the "new version" message stays
+#define MSG_MS 6000   // how long a message (new version, box art) stays
+
+// Box art may be downloaded here (the settings allow it; not in Xenia, whose
+// network is not the console's, unless artdownload=2).
+static int art_net_possible(const Config *c) { return (!c->xenia && h64_fenv_reliable()) || c->artDownload == 2; }
 
 int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char *path, size_t pathSize)
 {
     std::vector<RomEntry> roms;
+    std::vector<const char *> paths;
     UiInput in;
-    int sel = 0, top = 0, detailsFor = -1, i;
+    int sel = 0, top = 0, detailsFor = -1, i, lastSel = -1;
     RomInfo details;
     const int rows = 13;
-    char newVersion[32], updateMsg[96];
-    DWORD updateAt = 0;
-    updateMsg[0] = 0;
+    char newVersion[32], msg[128], drive[16];
+    DWORD msgAt = 0, demoAt = GetTickCount();
+    float selAt = 0;
+    msg[0] = 0;
     scan_roms(&roms);
     for (i = 0; i < (int)roms.size(); i++)
+    {
+        paths.push_back(roms[i].file.c_str());
         if (!_stricmp(roms[i].file.c_str(), c->lastRom)) sel = i;
+    }
     if (c->autoStart > 0 && !roms.empty())
     {
         // Remote checks: the last selection, then the next ROMs in the list.
@@ -1188,9 +1472,18 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         H64_INFO("[menu] autostart %d: %s", c->autoIndex + 1, path);
         return 1;
     }
+    // Box art: in the folder of the settings' drive ("game:\config\settings.ini" -> game).
+    for (i = 0; settingsPath[i] && settingsPath[i] != ':' && i < (int)sizeof(drive) - 1; i++) drive[i] = settingsPath[i];
+    drive[i] = 0;
+    if (!settingsPath[i] || !i) strcpy(drive, "game");
+    ArtStart(drive);
+    ArtSetNetwork(c->artDownload && art_net_possible(c));
+    ArtPause(0);
+
     UiInputInit(&in);
     memset(&details, 0, sizeof(details));
     if (c->controlsTest >= 0) settings_loop(dev, c, settingsPath, c->controlsTest);
+    if (c->artAll && !roms.empty() && art_net_possible(c)) ArtBulkStart(&paths[0], (int)paths.size());   // artall=1 (checks)
     // A newer release on GitHub: a message for a few seconds (the check runs
     // in the background and may answer later, or never without a network).
     // updatecheck=2 (testing): as if this were version 0.0.0, so any release is newer.
@@ -1198,17 +1491,30 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     for (;;)
     {
         WORD down = UiInputPoll(&in);
+        ArtStatus st;
+        int n = (int)roms.size();
         if (UpdateCheckTake(newVersion, sizeof(newVersion)))
         {
-            _snprintf(updateMsg, sizeof(updateMsg) - 1, "Harissa64 %s is available on GitHub", newVersion);
-            updateMsg[sizeof(updateMsg) - 1] = 0;
-            updateAt = GetTickCount();
-            H64_INFO("[update] %s", updateMsg);
+            _snprintf(msg, sizeof(msg) - 1, "Harissa64 %s is available on GitHub", newVersion);
+            msg[sizeof(msg) - 1] = 0;
+            msgAt = GetTickCount();
+            H64_INFO("[update] %s", msg);
         }
-        int n = (int)roms.size();
-        if ((down & XINPUT_GAMEPAD_BACK) && confirm_quit(dev)) return 0;
+        if (ArtTakeNote(msg, sizeof(msg))) msgAt = GetTickCount();
+        if ((down & XINPUT_GAMEPAD_BACK) && confirm_quit(dev))
+        {
+            views_clear(dev);
+            ArtPause(1);
+            return 0;
+        }
         if (n)
         {
+            if (c->browserDemo > 0 && GetTickCount() - demoAt >= (DWORD)c->browserDemo)
+            {
+                // browserdemo=N: walk the list by itself (captures).
+                sel = (sel + 1) % n;
+                demoAt = GetTickCount();
+            }
             if (down & XINPUT_GAMEPAD_DPAD_UP) sel = (sel + n - 1) % n;
             if (down & XINPUT_GAMEPAD_DPAD_DOWN) sel = (sel + 1) % n;
             if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) sel = sel > rows ? sel - rows : 0;
@@ -1219,15 +1525,40 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
                 path[pathSize - 1] = 0;
                 strncpy(c->lastRom, path, sizeof(c->lastRom) - 1);
                 ConfigWriteMenuKeys(c, settingsPath, 1);
+                // The game needs the memory and the GPU: the pictures go, the worker waits.
+                views_clear(dev);
+                ArtPause(1);
                 return 1;
             }
             if (sel < top) top = sel;
             if (sel >= top + rows) top = sel - rows + 1;
             if (detailsFor != sel) { rom_details(roms[sel].file.c_str(), &details); detailsFor = sel; }
+            if (sel != lastSel)
+            {
+                // The selection first, then its neighbours (read ahead from the files already there).
+                const char *want[5];
+                int k, cnt = 0;
+                static const int order[5] = { 0, 1, -1, 2, -2 };
+                for (k = 0; k < 5 && k < n; k++) want[cnt++] = paths[(sel + order[k] + n * 2) % n];
+                ArtWant(want, cnt);
+                selAt = UiTime();
+                lastSel = sel;
+            }
         }
         if (down & XINPUT_GAMEPAD_Y)
         {
-            settings_loop(dev, c, settingsPath, -1);
+            int all = settings_loop(dev, c, settingsPath, -1);
+            ArtSetNetwork(c->artDownload && art_net_possible(c));
+            if (all && n)
+            {
+                if (!art_net_possible(c)) strcpy(msg, "Downloads are not available here");
+                else
+                {
+                    ArtBulkStart(&paths[0], n);
+                    strcpy(msg, "Getting box art for all games" UI_CH_ELLIPSIS);
+                }
+                msgAt = GetTickCount();
+            }
             UiInputInit(&in);
         }
         if (down & XINPUT_GAMEPAD_X)
@@ -1235,15 +1566,18 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             AboutScreen(dev);
             UiInputInit(&in);
         }
+        views_take(dev);
+        ArtGetStatus(&st);
 
         dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
         UiBegin(dev);
-        browser_draw(roms, sel, top, rows, &details);
-        if (updateMsg[0])
+        browser_draw(roms, sel, top, rows, &details, n ? view_find(roms[sel].file.c_str()) : NULL,
+                     n && !_stricmp(st.busyPath, roms[sel].file.c_str()), selAt, &st);
+        if (msg[0])
         {
-            DWORD age = GetTickCount() - updateAt;
-            if (age < UPDATE_MSG_MS) UiToast(updateMsg, (float)age, (float)UPDATE_MSG_MS);
-            else updateMsg[0] = 0;
+            DWORD age = GetTickCount() - msgAt;
+            if (age < MSG_MS) UiToast(msg, (float)age, (float)MSG_MS);
+            else msg[0] = 0;
         }
         UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);

@@ -36,10 +36,12 @@ static const char s_uiVs[] =
     "VOUT main(VIN v) { VOUT o; o.pos = float4(v.pos, 0.0, 1.0); o.col = v.col; o.t = v.t; o.p = v.p; return o; }\n";
 
 // Rounded box distance (negative inside), optionally turned into a ring; or
-// the atlas's distance field. Kept short: the Xenos compiler ran out of
-// registers on long display shaders.
+// the atlas's distance field; or a picture (t.z = 2: the image on s1 over the
+// box, its corners rounded like a shape's). Kept short: the Xenos compiler
+// ran out of registers on long display shaders.
 static const char s_uiPs[] =
     "sampler atlas : register(s0);\n"
+    "sampler image : register(s1);\n"
     "float4 main(float4 col : COLOR0, float4 t : TEXCOORD0, float4 p : TEXCOORD1) : COLOR\n"
     "{\n"
     "  float2 q = abs(t.xy) - p.xy + p.z;\n"
@@ -48,7 +50,8 @@ static const char s_uiPs[] =
     "  float shape = saturate(0.5 - d / p.w);\n"
     "  shape = shape * shape * (3.0 - 2.0 * shape);\n"
     "  float text = saturate((tex2D(atlas, t.xy).x - 0.5) * p.x + p.y);\n"
-    "  return float4(col.rgb, col.a * (t.z > 0.5 ? text : shape));\n"
+    "  float4 img = t.z > 1.5 ? tex2D(image, t.xy / (2.0 * p.xy) + 0.5) : float4(1.0, 1.0, 1.0, 1.0);\n"
+    "  return float4(col.rgb * img.rgb, col.a * img.a * (t.z > 0.5 && t.z < 1.5 ? text : shape));\n"
     "}\n";
 
 static IDirect3DDevice9 *s_dev;
@@ -162,12 +165,19 @@ void UiBegin(IDirect3DDevice9 *dev)
     dev->SetVertexDeclaration(s_decl);
     dev->SetVertexShader(s_vs);
     dev->SetPixelShader(s_ps);
-    dev->SetTexture(0, s_atlas);
-    dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
-    dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
-    dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-    dev->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    // Unit 1 holds the pictures (UiImage); the atlas when none is drawn, never nothing.
+    {
+        DWORD u;
+        for (u = 0; u < 2; u++)
+        {
+            dev->SetTexture(u, s_atlas);
+            dev->SetSamplerState(u, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+            dev->SetSamplerState(u, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+            dev->SetSamplerState(u, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+            dev->SetSamplerState(u, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+            dev->SetSamplerState(u, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+        }
+    }
     dev->SetRenderState(D3DRS_ZENABLE, FALSE);
     dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
     dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
@@ -276,6 +286,64 @@ void UiBackdrop(void)
 }
 
 void UiDim(void) { UiRect(0, 0, UI_WIDTH, UI_HEIGHT, UI_COL_DIM); }
+
+D3DCOLOR UiAlpha(D3DCOLOR c, float a) { return with_alpha(c, a); }
+
+// ---- Pictures ----
+IDirect3DTexture9 *UiImageCreate(IDirect3DDevice9 *dev, const unsigned char *rgba, int w, int h)
+{
+    IDirect3DTexture9 *tex = NULL;
+    D3DLOCKED_RECT lr;
+    int x, y;
+    if (!dev || !rgba || w <= 0 || h <= 0) return NULL;
+    if (FAILED(dev->CreateTexture(w, h, 1, 0, D3DFMT_LIN_A8R8G8B8, D3DPOOL_DEFAULT, &tex, NULL)) || !tex) return NULL;
+    if (FAILED(tex->LockRect(0, &lr, NULL, 0)))
+    {
+        tex->Release();
+        return NULL;
+    }
+    // Bytes R, G, B, A to the texture's A, R, G, B (memory order of a big-endian ARGB word).
+    for (y = 0; y < h; y++)
+    {
+        const unsigned char *s = rgba + (size_t)y * w * 4;
+        unsigned char *d = (unsigned char *)lr.pBits + (size_t)y * lr.Pitch;
+        for (x = 0; x < w; x++, s += 4, d += 4)
+        {
+            d[0] = s[3];
+            d[1] = s[0];
+            d[2] = s[1];
+            d[3] = s[2];
+        }
+    }
+    tex->UnlockRect(0);
+    return tex;
+}
+
+void UiImageRelease(IDirect3DDevice9 *dev, IDirect3DTexture9 *tex)
+{
+    if (!tex) return;
+    // The device keeps no reference: never release what the GPU may still read.
+    if (dev)
+    {
+        dev->SetTexture(1, s_atlas ? (IDirect3DBaseTexture9 *)s_atlas : NULL);
+        dev->BlockUntilIdle();
+    }
+    tex->Release();
+}
+
+void UiImage(IDirect3DTexture9 *tex, float x, float y, float w, float h, float r, D3DCOLOR color)
+{
+    float p[4], pad = 2.0f, hw = w * 0.5f, hh = h * 0.5f;
+    if (!s_dev || !tex || w <= 0 || h <= 0) return;
+    if (r > hw) r = hw;
+    if (r > hh) r = hh;
+    flush();
+    s_dev->SetTexture(1, tex);
+    p[0] = hw; p[1] = hh; p[2] = r; p[3] = 1.0f;
+    quad(x - pad, y - pad, x + w + pad, y + h + pad, -hw - pad, -hh - pad, hw + pad, hh + pad, 2.0f, 0.0f, p, color, color);
+    flush();
+    s_dev->SetTexture(1, s_atlas);
+}
 
 void UiPanel(float x, float y, float w, float h, float r)
 {

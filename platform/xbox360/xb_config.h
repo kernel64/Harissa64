@@ -42,6 +42,10 @@ struct Config
     int logCpu;         // logcpu=N: hardware thread of the log writer (5)
     int gameFlags;      // gameflags=HEX: the game's profile flags instead of the table's (checks; -1: the table)
     int updateCheck;    // updatecheck=0: do not ask GitHub for a newer release (xb_update.cpp); 2: as if running 0.0.0 (testing)
+    int artDownload;    // artdownload=0: the ROM browser uses only the box art and game information already in
+                        // <drive>:\art\games\ (xb_art.cpp); 1 (default): it downloads what is missing; 2: also in Xenia
+    int browserDemo;    // browserdemo=N: the ROM browser moves its selection down every N ms (captures in Xenia)
+    int artAll;         // artall=1: the ROM browser starts "Get box art for all games" by itself (checks)
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
     int parseWorker;    // parseworker=0: display lists parsed on the graphics worker too (no second worker)
     int asyncAudio;     // asyncaudio=0: audio HLE tasks on the CPU thread
@@ -57,7 +61,8 @@ struct Config
     u32 menuAt;         // menuat=N: open the in-game menu at VI N (remote checks; does not skip the ROM browser)
     u32 aboutAt;        // aboutat=N: the same, showing the About panel
     int controlsTest;   // controlstest=N: the ROM list opens Settings > Controls on item N; 100+N: also
-                        // waiting for an input, again and again (remote checks of the drawing; -1: off)
+                        // waiting for an input, again and again; 200+N: the Settings page on item N
+                        // (remote checks of the drawing; -1: off)
     int autoStart;      // autostart=N: the ROM browser starts N games by itself, the last selection then the
                         // next ones in the list (remote checks of game changes)
     int autoIndex;      // games the browser started by itself so far

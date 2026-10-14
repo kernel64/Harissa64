@@ -29,6 +29,14 @@ Shows the speed in a corner of the screen. 60 means full speed (50 for European 
 
 **Graphics** and **Controls** open their own pages, described below.
 
+These two are only there when you open the settings from the game list:
+
+**Box art downloads**
+*On* (the default): when you select a game that has no box art or info yet, Harissa64 fetches them from the internet, once, and keeps them in `art\games`. *Off*: it only shows what is already in that folder. If the console has no internet, nothing bad happens either way: the game just shows its initials.
+
+**Get box art for all games**
+Downloads the box art and info of every game in your list in one go. You can keep browsing while it works: the progress shows at the bottom right. At the end a message says how many games got a picture. Games it couldn't find before are tried again. Without internet, a message tells you so and nothing changes. On a PC, `tools/fetch_game_art.py` does the same thing (see the README).
+
 **Save for all games / Save for this game only**
 Keeps your changes for next time. If you leave without saving, they last until you quit the game.
 
