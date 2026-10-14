@@ -18,6 +18,10 @@ struct SaveDbEntry { u32 crc1, crc2; u8 type, pak; };
 static const SaveDbEntry s_saveDb[] = {
 #include "h64_savedb.inc"
 };
+struct SaveCodeEntry { char code[5]; u8 type, pak; };
+static const SaveCodeEntry s_saveByCode[] = {
+#include "h64_savedb_codes.inc"
+};
 
 int h64_save_type_for_rom(const H64Rom *rom, int *pak)
 {
@@ -42,6 +46,18 @@ int h64_save_type_for_rom(const H64Rom *rom, int *pak)
         }
         if (e->crc1 < rom->crc1 || (e->crc1 == rom->crc1 && e->crc2 < rom->crc2)) lo = mid + 1;
         else hi = mid - 1;
+    }
+    {
+        // Not in the CRC table: a ROM hack keeps its game's code but not its
+        // CRCs (Banjo-Tooie hacks stopped on "NO CONTROLLER" with the default
+        // save); the game code gives the game's save type.
+        unsigned i;
+        for (i = 0; i < sizeof(s_saveByCode) / sizeof(s_saveByCode[0]); i++)
+            if (!memcmp(s_saveByCode[i].code, rom->gameCode, 4))
+            {
+                *pak = s_saveByCode[i].pak;
+                return s_saveByCode[i].type;
+            }
     }
     return H64_SAVE_AUTO;
 }

@@ -65,6 +65,18 @@ void UiBackdrop(void);
 void UiDim(void);
 // A panel: shadow, translucent body, a fine light edge.
 void UiPanel(float x, float y, float w, float h, float r);
+// `c` with its alpha multiplied by `a` (0..1): fades.
+D3DCOLOR UiAlpha(D3DCOLOR c, float a);
+
+// ---- Pictures (box art) ----
+// A texture from 8-bit RGBA pixels (bytes R, G, B, A); NULL on failure. Draw
+// it at about its own size: it has no mipmaps.
+IDirect3DTexture9 *UiImageCreate(IDirect3DDevice9 *dev, const unsigned char *rgba, int w, int h);
+// Waits for the GPU to be done with it, then releases it (outside UiBegin/UiEnd).
+void UiImageRelease(IDirect3DDevice9 *dev, IDirect3DTexture9 *tex);
+// Draws the whole picture stretched over (x, y, w, h), corners rounded by `r`,
+// tinted by `color` (white: as it is; its alpha fades the picture).
+void UiImage(IDirect3DTexture9 *tex, float x, float y, float w, float h, float r, D3DCOLOR color);
 
 // ---- Text ----
 // Draws `text` with the vertical middle of its capitals at `cy` (later lines
@@ -111,7 +123,7 @@ void UiFpsBadge(const char *text);
 struct UiInput
 {
     WORD held, prev;
-    DWORD repeatAt;
+    DWORD repeatAt, holdStart;
 };
 void UiInputInit(UiInput *in);
 WORD UiInputPoll(UiInput *in);   // XINPUT_GAMEPAD_* bits newly pressed (or repeating)

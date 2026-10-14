@@ -34,7 +34,8 @@ struct H64Ai
     u32 dramAddr, len, control, status, dacrate, bitrate; u32 fifoLen[2]; u32 fifoCount; u64 bufferCycles;
     u64 statQueued, statReads, statReadSum; u32 statBuffers;   // statistics: bytes queued, AI_LEN reads
 };
-struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; };   // latch: last CPU write to the cartridge bus
+// latch: last CPU write to the cartridge bus; cartOdd: bit 0 of the last PI_CART_ADDR write (options.piOddCart)
+struct H64Pi { u32 regs[13]; u32 latch; u64 latchUntil; u32 cartOdd; };
 // RI registers, and the registers of the four 2 MB RDRAM modules (8 MB), which
 // the 6105 IPL3 programs and probes to size the memory.
 #define H64_RDRAM_MODULES 4
@@ -104,6 +105,26 @@ struct H64Options
     int gfxKeepOffscreen;   // 16:9 widescreen: gfxViewportClip off (more than the viewport is shown)
     int gfxOtherModeInit;   // graphics HLE (game profile): each task starts from the microcode's other modes
     int gfxNoCopyBack;      // GPU renderer (game profile): frames it drew are never copied back for texture loads
+    int gfxS2dex1;          // graphics HLE (game profile): S2DEX 1.05+ in C++ (else the LLE RSP runs it)
+    int gfxCopyBackFull;    // GPU renderer (game profile): copy back only images at least 320 pixels wide
+    int gfxRdramCopy;       // GPU renderer (game profile): copy-mode 1:1 rectangles move memory (xenos rdram_copy_rect)
+    int gfxCopyBackWhole;   // GPU renderer (game profile): a copy back for a load copies the whole image
+    int gfxFrameToRdram;    // GPU renderer (game profile): the picture the VI shows is copied back to RDRAM
+    int gfxSmallToRdram;    // GPU renderer (game profile): small images the RDP leaves are copied back to RDRAM
+    int gfxSlotByWidth;     // GPU renderer (game profile): one frame slot per address and width
+    int gfxBigTexPool;          // GPU renderer (game profile): textures over 512 KB are kept outside the texture arena
+    int gfxCopyBackSameWidth;   // GPU renderer (game profile): a texture load copies a GPU image back only when it is
+                                // as wide as the image (other loads read data the game keeps in that memory)
+    int gfxWsBorder;        // GPU renderer (game profile), 16:9 widescreen: a scissor within 16 pixels of both edges
+                            // counts as full width, and fills touching an edge stay there (a border around the picture)
+    int piOddCart;          // game profile: a ROM DMA from an odd cartridge address starts at that byte, as the
+                            // old PC emulators did (the PI ignores bit 0); SM64 ROM hacks rely on it
+    int gfxShortTask;       // graphics worker (game profile): a task keeps the RSP busy H64_HLE_GFX_CYCLES at most
+    int gfxNoOldFrame;      // GPU renderer (game profile): never show a frame older than the one on screen
+    int gfxSoft8bit;        // GPU renderer (game profile): drawing into 8-bit colour images done by the software RDP
+    int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
+    int gfxStream;          // graphics HLE (game profile): a display list may branch to itself until the CPU
+                            // writes more of it; tasks run on the CPU thread (no graphics worker)
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts

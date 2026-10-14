@@ -27,6 +27,17 @@ void h64_gfx_free(H64Gfx *gfx);
 // whether the display list ended with an RDP full sync), 0 to leave the
 // task to the LLE RSP.
 int h64_gfx_run_task(H64System *sys, H64Gfx *gfx, int *fullSync);
+// Boss's ZSort microcode waits for the CPU inside a task: such tasks run on
+// the CPU thread (h64_gfx_task_sync), stop when the microcode waits
+// (h64_gfx_waiting) and go on with h64_gfx_resume when SP_STATUS changes.
+int h64_gfx_task_sync(H64System *sys, H64Gfx *gfx);
+int h64_gfx_waiting(const H64Gfx *gfx);
+int h64_gfx_resume(H64System *sys, H64Gfx *gfx, int *fullSync);
+// Streamed display lists (options.gfxStream): the task stopped at a branch to
+// itself (h64_gfx_stream_waiting); h64_gfx_stream_resume goes on once the CPU
+// rewrote that command: -1 not yet, 1 ran on (it may wait again), 0 ended.
+int h64_gfx_stream_waiting(const H64Gfx *gfx);
+int h64_gfx_stream_resume(H64System *sys, H64Gfx *gfx, int *fullSync);
 // Calibration (h64test --gfx-cost-log): parses the task in DMEM without
 // rendering it and returns what it would do.
 int h64_gfx_measure(H64System *sys, H64Gfx *gfx, u32 *verts, u32 *tris, u32 *commands);
@@ -44,6 +55,12 @@ struct H64GfxOut;
 H64GfxOut *h64_gfx_out_create(void);
 void h64_gfx_out_free(H64GfxOut *out);
 int h64_gfx_parse_task(H64System *sys, H64Gfx *gfx, H64GfxOut *out, int *fullSync, int *mustSync);
+// The lists parsed so far (h64_gfx_run_task or h64_gfx_stream_resume with
+// h64_gfx_set_no_flush on) into `out`, with the snapshot of the RDRAM their
+// loads read, for h64_gfx_render on the worker; 1 when the task must be
+// rendered before it ends (profile gfxFrameToRdram, or no snapshot memory).
+int h64_gfx_package(H64System *sys, H64Gfx *gfx, H64GfxOut *out);
+void h64_gfx_set_no_flush(H64Gfx *gfx, int on);
 void h64_gfx_render(H64System *sys, H64Gfx *gfx, H64GfxOut *out);
 
 // Whether the HLE knows the microcode the task in DMEM starts with (it may

@@ -21,6 +21,9 @@ void test_save(H64TestContext *ctx);
 void test_state(H64TestContext *ctx);
 void test_zip(H64TestContext *ctx);
 void test_pif(H64TestContext *ctx);
+void test_padmap(H64TestContext *ctx);
+void test_png(H64TestContext *ctx);
+void test_gameinfo(H64TestContext *ctx);
 
 static const H64TestCase s_tests[] = {
     { "types", test_types },
@@ -42,6 +45,9 @@ static const H64TestCase s_tests[] = {
     { "state", test_state },
     { "zip", test_zip },
     { "pif", test_pif },
+    { "padmap", test_padmap },
+    { "png", test_png },
+    { "gameinfo", test_gameinfo },
 };
 
 int h64_run_all_unit_tests(int *testsOut, int *checksOut)

@@ -2,7 +2,7 @@
 
 Harissa64 is a Nintendo 64 emulator for the Xbox 360. It runs on modded consoles (RGH or JTAG) and starts like any other homebrew, from Aurora, FreeStyle Dash or another dashboard. The name comes from harissa, the Tunisian chili paste.
 
-It's a hobby project, written from scratch. A lot of games already run at full speed, a few are still slow in busy scenes, and most of the library hasn't been tried yet. The [games list](docs/games.md) shows what we tested and how fast it runs.
+It's a hobby project, written from scratch. A lot of games already run at full speed, a few are still slow in busy scenes, and most of the library hasn't been tried yet. The [games list](docs/games.md) shows how games run, with the version they were tested on. Add your own results there.
 
 Use it only with games you own. No ROMs are included, and none will be.
 
@@ -32,6 +32,8 @@ The emulator remembers the last game you picked. In Aurora it shows up as "Haris
 | D-pad | D-pad |
 | START | START |
 
+You can change these in **Settings > Controls**: pick an N64 button, press A, then press the Xbox button or stick direction you want for it. Y adds a second button, X clears it. Each player (1 to 4) has their own controls, and you can save them for all games or for one game. BACK is kept for the emulator's menu.
+
 While playing:
 
 - **Short press on BACK**: pause and open the menu (save or load a state, settings, reset, back to the game list, quit).
@@ -40,6 +42,22 @@ While playing:
 - **Hold BACK for 3 seconds**: back to the game list.
 
 In the game list, X shows the About page.
+
+## Box art and game info
+
+When you move through the game list, the right side shows the game's box art, its real title, year, developer, genre, number of players and a few lines about it.
+
+If your console is online, Harissa64 downloads these by itself the first time you select a game, and keeps them in the `art\games` folder next to the `.xex`. After that they show up straight away, even offline. To get everything in one go, open **Settings** from the game list (Y) and pick **Get box art for all games**. You can turn the downloads off in the same place.
+
+No internet on the console? Run the script on a PC instead (you need [Python 3](https://www.python.org)):
+
+```
+python tools/fetch_game_art.py "C:\path\to\your\roms"
+```
+
+It fills an `art\games` folder: copy it to the console, into the Harissa64 folder. Games it can't find just show their initials.
+
+The pictures and the text come from [libretro-thumbnails](https://github.com/libretro-thumbnails/Nintendo_-_Nintendo_64), [libretro-database](https://github.com/libretro/libretro-database), [GameDB-N64](https://github.com/niemasd/GameDB-N64) and Wikipedia. They are not part of Harissa64.
 
 ## Saves
 
@@ -56,7 +74,9 @@ The **Graphics** page has four presets:
 - **N64 Smooth**: the same with light scanlines.
 - **N64 CRT**: looks like an old TV.
 
-You can also pick the resolution (native, x2 or x3), widescreen 16:9 (the 3D view gets wider instead of being stretched; it works better in some games than others), texture filtering, edge smoothing and a few screen effects.
+You can also pick the resolution (native, x2 or x3 in 4:3, or HD 1280x720 in 16:9 widescreen, where the 3D view gets wider instead of being stretched; it works better in some games than others), texture filtering, edge smoothing and a few screen effects.
+
+Every setting is explained in [docs/settings.md](docs/settings.md).
 
 ## Good to know
 

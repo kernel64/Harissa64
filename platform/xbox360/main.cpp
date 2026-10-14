@@ -679,9 +679,11 @@ static void RunDynarecTest(const Config *c, char *report, size_t len)
 static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c)
 {
     H64XenosOptions o;
-    // 16:9 widescreen shows more than the game's viewport: keep the triangles
-    // the microcode would drop outside it.
-    sys->options.gfxKeepOffscreen = c->aspect == 1;
+    // The aspect follows the resolution: HD 1280x720 is 16:9 widescreen (the
+    // 3D drawn wider), every other resolution 4:3. Widescreen shows more than
+    // the game's viewport: keep the triangles the microcode would drop outside it.
+    int aspect = c->resScale == 4 ? 1 : 0;
+    sys->options.gfxKeepOffscreen = aspect == 1;
     if (!renderer) return;
     o.scale = c->resScale;
     o.texFilter = c->texFilter;
@@ -689,7 +691,8 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     o.sharpen = c->sharpen;
     o.blur = c->blur;
     o.screen = c->screen;
-    o.aspect = c->aspect;
+    o.brightness = c->brightness;
+    o.aspect = aspect;
     h64_xenos_set_options(renderer, &o);
 }
 
@@ -700,36 +703,33 @@ static XINPUT_STATE s_padsMore[3];          // controllers 2-4: N64 ports 2-4
 static int s_padsMoreValid[3];
 static const H64InputScript *s_script;   // scripted input (input=), NULL: the controller
 
-static s8 StickAxis(SHORT v)
-{
-    int x = v;
-    const int dead = 7000;
-    if (x > -dead && x < dead) return 0;
-    x = x > 0 ? (x - dead) * 80 / (32767 - dead) : (x + dead) * 80 / (32768 - dead);
-    return (s8)(x > 80 ? 80 : x < -80 ? -80 : x);
-}
+static const H64PadMap *s_padMaps;      // the controls of ports 1-4 (Config.padMap; edited live by the menu)
 
-// An Xbox 360 controller as an N64 one (mapping as V1).
-static void PadFromXInput(const XINPUT_GAMEPAD *g, H64Pad *pad)
+// The pad mapping's button bits are XInput's.
+static_assert(H64_XB_A == XINPUT_GAMEPAD_A && H64_XB_B == XINPUT_GAMEPAD_B && H64_XB_X == XINPUT_GAMEPAD_X &&
+              H64_XB_Y == XINPUT_GAMEPAD_Y && H64_XB_START == XINPUT_GAMEPAD_START && H64_XB_BACK == XINPUT_GAMEPAD_BACK &&
+              H64_XB_DPAD_UP == XINPUT_GAMEPAD_DPAD_UP && H64_XB_DPAD_DOWN == XINPUT_GAMEPAD_DPAD_DOWN &&
+              H64_XB_DPAD_LEFT == XINPUT_GAMEPAD_DPAD_LEFT && H64_XB_DPAD_RIGHT == XINPUT_GAMEPAD_DPAD_RIGHT &&
+              H64_XB_LEFT_THUMB == XINPUT_GAMEPAD_LEFT_THUMB && H64_XB_RIGHT_THUMB == XINPUT_GAMEPAD_RIGHT_THUMB &&
+              H64_XB_LEFT_SHOULDER == XINPUT_GAMEPAD_LEFT_SHOULDER && H64_XB_RIGHT_SHOULDER == XINPUT_GAMEPAD_RIGHT_SHOULDER,
+              "H64_XB_* must be XInput's button bits");
+
+// An Xbox 360 controller as an N64 one, through port `port`'s mapping (the
+// default one is V1's: core/pif/h64_padmap.cpp).
+static void PadFromXInput(const XINPUT_GAMEPAD *g, int port, H64Pad *pad)
 {
-    u16 b = 0;
-    if (g->wButtons & XINPUT_GAMEPAD_A) b |= 0x8000;
-    if (g->wButtons & XINPUT_GAMEPAD_B) b |= 0x4000;
-    if ((g->wButtons & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y)) || g->bLeftTrigger > 64 || g->bRightTrigger > 64) b |= 0x2000;
-    if (g->wButtons & XINPUT_GAMEPAD_START) b |= 0x1000;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_UP) b |= 0x0800;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_DOWN) b |= 0x0400;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_LEFT) b |= 0x0200;
-    if (g->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) b |= 0x0100;
-    if (g->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) b |= 0x0020;
-    if (g->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) b |= 0x0010;
-    if (g->sThumbRY > 16000) b |= 0x0008;
-    if (g->sThumbRY < -16000) b |= 0x0004;
-    if (g->sThumbRX < -16000) b |= 0x0002;
-    if (g->sThumbRX > 16000) b |= 0x0001;
-    pad->buttons = b;
-    pad->x = StickAxis(g->sThumbLX);
-    pad->y = StickAxis(g->sThumbLY);
+    H64PadInput in;
+    H64PadMap def;
+    const H64PadMap *m = s_padMaps ? &s_padMaps[port] : NULL;
+    in.buttons = g->wButtons;
+    in.lt = g->bLeftTrigger;
+    in.rt = g->bRightTrigger;
+    in.lx = g->sThumbLX;
+    in.ly = g->sThumbLY;
+    in.rx = g->sThumbRX;
+    in.ry = g->sThumbRY;
+    if (!m) { h64_padmap_default(&def); m = &def; }
+    h64_padmap_apply(m, &in, pad);
 }
 
 // Called by the PIF just before the game reads the controllers. Controller n
@@ -742,13 +742,13 @@ static void PadHook(H64System *sys)
     sys->padMask = 1;
     // BACK held: the buttons are front-end shortcuts, not the game's.
     if (!s_padValid || (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK)) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; }
-    else PadFromXInput(&s_pad.Gamepad, &sys->pad[0]);
+    else PadFromXInput(&s_pad.Gamepad, 0, &sys->pad[0]);
     for (i = 0; i < 3; i++)
     {
         if (s_padsMoreValid[i])
         {
             sys->padMask |= 2u << i;
-            PadFromXInput(&s_padsMore[i].Gamepad, &sys->pad[i + 1]);
+            PadFromXInput(&s_padsMore[i].Gamepad, i + 1, &sys->pad[i + 1]);
         }
         else
         {
@@ -1088,10 +1088,16 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     sys->options.gfxTiming = c->gfxTiming;
     // Per-game settings (core/system/h64_profile.cpp); the ini may still force late parse.
     h64_apply_game_profile(sys);
+    if (c->gameFlags >= 0)
+    {
+        h64_apply_profile_flags(sys, (u32)c->gameFlags);
+        H64_INFO("[profile] gameflags=%X from the ini", c->gameFlags);
+    }
     if (c->lateParse >= 0) sys->options.gfxLateParse = c->lateParse;
     if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
+    s_padMaps = c->padMap;
     sys->profClock = ProfClock;
     s_script = c->input.count ? &c->input : NULL;
     xb_audio_set_target_ms(c->audioMs);
@@ -1263,9 +1269,28 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             prevButtons = 0;
             continue;
         }
+        u64 profBefore[H64_PROF_COUNT];
+        u64 instBefore = sys->cpu.instructions;
+        memcpy(profBefore, sys->prof, sizeof(profBefore));
         QueryPerformanceCounter(&t0);
         if (RunFrame(sys)) { result = RG_BROWSER; break; }
         QueryPerformanceCounter(&t1);
+        {
+            // A frame whose emulation took over 100 ms: where the time went
+            // (sys->prof deltas, in ms; the N64 pc), to find periodic stalls.
+            double ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
+            if (ms > 100.0)
+            {
+                double k = 1000.0 / (double)freq.QuadPart;   // profClock is the QPC
+                H64_INFO("[stall] frame %u: run %.1f ms | cpu code %.1f helper %.1f events %.1f jit %.1f gfx %.1f audio %.1f rsp lle %.1f wait gfx %.1f | %llu instructions, pc %08X",
+                         presented, ms, (sys->prof[H64_PROF_BLOCKS] - profBefore[H64_PROF_BLOCKS]) * k,
+                         (sys->prof[H64_PROF_HELPER] - profBefore[H64_PROF_HELPER]) * k, (sys->prof[H64_PROF_EVENTS] - profBefore[H64_PROF_EVENTS]) * k,
+                         (sys->prof[H64_PROF_JIT_COMPILE] - profBefore[H64_PROF_JIT_COMPILE]) * k, (sys->prof[H64_PROF_GFX_HLE] - profBefore[H64_PROF_GFX_HLE]) * k,
+                         (sys->prof[H64_PROF_AUDIO_HLE] - profBefore[H64_PROF_AUDIO_HLE]) * k, (sys->prof[H64_PROF_RSP_LLE] - profBefore[H64_PROF_RSP_LLE]) * k,
+                         (sys->prof[H64_PROF_ASYNC_WAIT] - profBefore[H64_PROF_ASYNC_WAIT]) * k,
+                         (unsigned long long)(sys->cpu.instructions - instBefore), (u32)sys->cpu.pc);
+            }
+        }
         PresentFrame(sys, renderer);
         QueryPerformanceCounter(&t2);
         profRun += t1.QuadPart - t0.QuadPart;
@@ -1509,6 +1534,9 @@ int __cdecl main()
     H64_INFO("[main] Harissa64 V2 %s (Xbox 360), %s-endian, %d-bit pointers", H64_VERSION_STRING,
              H64_HOST_BIG_ENDIAN ? "big" : "little", (int)(sizeof(void *) * 8));
     LoadConfig(&cfg);
+    // logcpu=N: the hardware thread that writes the log (5 by default, shared
+    // with the display list parser; checks of the 2 s stalls).
+    if (s_logThread && cfg.logCpu >= 0 && cfg.logCpu <= 5 && cfg.logCpu != 5) XSetThreadProcessor(s_logThread, (DWORD)cfg.logCpu);
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
     s_jitNoFpu = !cfg.jitFpu;
     s_noRegCache = !cfg.regCache;

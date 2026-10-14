@@ -195,7 +195,7 @@ void h64_pif_reset(H64System *sys)
 //    s5 reset type (0 = cold), s6 CIC seed, s7 version, sp near the top of RDRAM;
 //  - osMemSize (0x80000318) = 8 MB;
 //  - PI domain 1 timing from the ROM header, RI as IPL3 programs it;
-//  - DMEM holds ROM[0..0x1000) as IPL2 left it.
+//  - DMEM and IMEM as IPL3 leaves them (6101-6103; 6106: ROM[0..0x1000) in DMEM).
 //
 // 6105 cartridges (Banjo-Tooie, Conker, Perfect Dark, Donkey Kong 64...) run
 // their real IPL3 instead (ipl3_boot): it starts a program on the RSP that
@@ -251,6 +251,21 @@ void h64_hle_boot(H64System *sys)
         return;
     }
     memcpy(sys->spMem, sys->rom.data, 0x1000);
+    // What IPL3 leaves in the RSP memories just before it jumps to the game
+    // (read from the IPL3s themselves): 6101/6102 clear DMEM and IMEM, 6103
+    // fills them with 0xFFFFFFFF and writes its CIC number (6103 = 0x17D7) to
+    // IMEM's first word and to 0x80000310. Diddy Kong Racing checks that DMEM
+    // starts with 0xFFFFFFFF; with the ROM header there it took itself for a
+    // copy and slowed down on purpose (a 7.5 M-instruction loop every frame:
+    // ~10 game frames a second). The 6106 IPL3 decrypts itself as it runs:
+    // its end state is not known, DMEM keeps ROM[0..0x1000) there.
+    if (sys->rom.cic == H64_CIC_6101 || sys->rom.cic == H64_CIC_6102)
+        memset(sys->spMem, 0, sizeof(sys->spMem));
+    else if (sys->rom.cic == H64_CIC_6103)
+    {
+        memset(sys->spMem, 0xFF, sizeof(sys->spMem));
+        h64_store_be32(sys->spMem + 0x1000, 0x17D7);
+    }
     for (i = 0; i < len; i++)
     {
         u32 src = 0x1000 + i;
@@ -264,7 +279,7 @@ void h64_hle_boot(H64System *sys)
     h64_store_be32(sys->rdram + 0x304, 0);             // ROM type: cartridge
     h64_store_be32(sys->rdram + 0x308, 0xB0000000u);   // osRomBase
     h64_store_be32(sys->rdram + 0x30C, 0);             // reset type: cold
-    h64_store_be32(sys->rdram + 0x310, sys->rom.cicSeed);
+    h64_store_be32(sys->rdram + 0x310, sys->rom.cic == H64_CIC_6103 ? 0x17D7u : sys->rom.cicSeed);   // 6103: its CIC number
     h64_store_be32(sys->rdram + 0x314, 0);             // version
     h64_store_be32(sys->rdram + 0x318, H64_RDRAM_SIZE);
 
@@ -293,6 +308,12 @@ void h64_hle_boot(H64System *sys)
     // capture: BD, CE = 3, ExcCode 31).
     cpu->cop0[CP0_CAUSE] = 0xB000007Cu;
     cpu->cop0[CP0_LLADDR] = 0xFFFFFFFFu;               // usual power-on value (PeterLemon LL_LLD_SC_SCD)
+    // Count holds no set value at power on. BattleTanx calls osContInit
+    // before the timers exist; with Count near 0 libultra arms a 0.5 s timer
+    // there and the game read a null pointer. Its profile starts Count one
+    // second (46875000 ticks) in.
+    if (h64_game_profile(sys->rom.gameCode, NULL) & H64_GP_BOOT_TIME)
+        cpu->countOffset = 46875000u - (u32)(cpu->cycles >> 1);
     cpu->pc = (u64)(s64)(s32)entry;
     cpu->nextPc = cpu->pc + 4;
     H64_INFO("[boot] HLE boot: CIC %s seed %02X, TV type %d, entry %08X", h64_cic_name(sys->rom.cic),
