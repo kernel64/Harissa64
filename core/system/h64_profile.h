@@ -34,7 +34,8 @@ enum
     H64_GP_SHORT_GFX_TASK = 1 << 20, // options.gfxShortTask
     H64_GP_BIG_TEX_POOL = 1 << 24,   // options.gfxBigTexPool
     H64_GP_GFX_STREAM = 1 << 21,     // options.gfxStream
-    H64_GP_NO_OLD_FRAME = 1 << 26    // options.gfxNoOldFrame
+    H64_GP_NO_OLD_FRAME = 1 << 26,   // options.gfxNoOldFrame
+    H64_GP_DEPTH_FILL_RDRAM = 1 << 27 // options.gfxDepthFillToRdram
 };
 
 // The flags for a game code (4 characters, the region ignored); *name gets

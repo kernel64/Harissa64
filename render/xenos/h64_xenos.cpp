@@ -216,6 +216,7 @@ struct Xenos
     u32 debugFrom;
     u32 dzPrim, dzHigh, dzTris, dzLastPrim;   // xenosdebug=15: triangles with prim depth / a vertex z >= 32767 / all, last prim depth
     float dzMin, dzMax;                        // xenosdebug=15: vertex z range (N64 units, 32767 = far)
+    u64 dbgPresentT;   // xenosdebug=7: clock at the previous present
     u32 debugLines;    // xenosdebug=9: lines logged so far     // xenosdebug=8: the first of the two presents logged (xenosdebug=8000+N: present N)
     IDirect3DTexture9 *shown;   // texture shown at the last present
     int shownSlot;              // frame slot the VI showed at the last present (-1: none)
@@ -2167,6 +2168,35 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     x->stats.triangles++;
 }
 
+// Profile gfxDepthFillToRdram: a depth clear also fills the depth image in
+// RDRAM, where the game reads it with the CPU (DK64's camera checks whether
+// Kong is hidden; with the GPU's depth only, it read stale values).
+static void depth_fill_rdram(Xenos *x, u32 x0, u32 x1, u32 y0, u32 y1)
+{
+    const H64RdpState *st = x->st;
+    u32 w = st->colorWidth ? st->colorWidth : 320, base = st->depthAddr & 0xFFFFFE, y, xx, lo, hi;
+    u8 *ram = x->sys->rdram;
+    if (x1 >= w) x1 = w - 1;
+    if (x0 > x1 || y0 > y1) return;
+    for (y = y0; y <= y1; y++)
+        for (xx = x0; xx <= x1; xx++)
+        {
+            u32 a = base + (y * w + xx) * 2;
+            if (a + 2 > H64_RDRAM_SIZE) return;
+            h64_store_be16(ram + a, (u16)((xx & 1) ? st->fillColor : st->fillColor >> 16));
+        }
+    lo = base + (y0 * w + x0) * 2;
+    hi = base + (y1 * w + x1) * 2 + 2;
+    if (x->deferNotify)
+    {
+        // On the graphics worker: the recompiler is the CPU thread's; tell it later.
+        if (x->pendingHi <= x->pendingLo) { x->pendingLo = lo; x->pendingHi = hi; }
+        else { if (lo < x->pendingLo) x->pendingLo = lo; if (hi > x->pendingHi) x->pendingHi = hi; }
+    }
+    else
+        h64_jit_notify_write(x->sys, lo, hi - lo);
+}
+
 static void fill_rect(Xenos *x, const u32 *w)
 {
     const H64RdpState *st = x->st;
@@ -2205,6 +2235,7 @@ static void fill_rect(Xenos *x, const u32 *w)
         x->stateDirty = 1;
         x->dev->Clear(1, &r, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
+        if (x->sys->options.gfxDepthFillToRdram) depth_fill_rdram(x, xl >> 2, xh >> 2, yl >> 2, yh >> 2);
         return;
     }
     select_framebuffer(x);
@@ -2768,9 +2799,11 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     if (x->debug == 7 && x->presentCount >= 600 && x->presentCount < 1000)
     {
         // xenosdebug=7: every present for a moment (frames shown out of order).
-        H64_INFO("[xenos] present %u: origin %06X -> slot %d (addr %06X, last drawn at present %u, use %u), cur slot %d",
+        u64 now = h64_prof_now(x->sys);
+        H64_INFO("[xenos] present %u: origin %06X -> slot %d (addr %06X, last drawn at present %u, use %u), cur slot %d, vi %u, dt %u, vi regs %08X %08X %08X %08X %08X",
                  x->presentCount, origin, found, found >= 0 ? x->fb[found].addr : 0, found >= 0 ? x->fb[found].drawnAt : 0,
-                 found >= 0 ? x->fb[found].lastUse : 0, x->curSlot);
+                 found >= 0 ? x->fb[found].lastUse : 0, x->curSlot, x->sys->vi.frames, (u32)(now - x->dbgPresentT), vi[9], vi[10], vi[12], vi[13], vi[2]);
+        x->dbgPresentT = now;
     }
     if (x->debug == 15 && (x->presentCount % 60) == 0)
     {
