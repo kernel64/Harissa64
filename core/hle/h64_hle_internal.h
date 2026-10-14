@@ -109,6 +109,7 @@ struct hle_t
     unsigned int sp_status;   // status bits the task sets when it ends (rsp_break)
     int forwarded;            // the task was left to the LLE RSP
     u32 dirtyLo, dirtyHi;     // RDRAM range written by the task (for the recompiler)
+    int streamFullSync;       // a streamed graphics task had a full sync (h64_hle_stream_poll)
     u8 *checkRam;             // hleAudioCheck: RDRAM copy the HLE ran on
     u8 *checkMask;            // hleAudioCheck: 1 for each RDRAM byte the HLE wrote
     int checkPending;         // hleAudioCheck: compare when the LLE task ends
@@ -182,6 +183,10 @@ void alist_process_nead_mats(struct hle_t *hle);
 void alist_process_nead_efz(struct hle_t *hle);
 void mp3_task(struct hle_t *hle, unsigned int index, uint32_t address);
 void musyx_v1_task(struct hle_t *hle);
+// ---- jpeg.c (h64_hle_jpeg.cpp) ----
+void jpeg_decode_PS0(struct hle_t *hle);
+void jpeg_decode_PS(struct hle_t *hle);
+void jpeg_decode_OB(struct hle_t *hle);
 void musyx_v2_task(struct hle_t *hle);
 
 // ---- memory.h ----
@@ -215,6 +220,8 @@ static inline unsigned int align(unsigned int x, unsigned amount)
 // big-endian halfword, like upstream's native pointer on a big-endian host.
 // RDRAM writes widen the task's dirty range (`h` is NULL for DMEM).
 void hle_dram_dirty(struct hle_t *hle, u32 address, size_t count);
+// Resident Evil 2's own tasks (h64_hle_re2.cpp): 1 when the microcode is one of them (and it ran).
+int h64_hle_re2_task(struct hle_t *hle, u32 ucode, u32 ucodeData);
 
 struct HleRef16
 {

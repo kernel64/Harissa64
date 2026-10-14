@@ -76,6 +76,9 @@ struct H64RdpState
     u32 loadRamGen;              // changes each time a deferred job sets loadRam (one per task or DPC batch)
     const u32 *cpuRanges;        // with loadRam: start, end pairs of colour images the CPU wrote over since
     u32 cpuRangeCount;           // the GPU drew them (loads there read the snapshot, see h64_gfx.cpp)
+    int softDraw;                // 1: this command draws even with options.rdpStateOnly (a GPU renderer hands it over)
+    u8 *drawRam;                 // where drawing reads and writes (NULL: RDRAM), e.g. a deferred job's snapshot
+    u8 *drawRam2;                // also written (NULL: none), e.g. RDRAM beside the snapshot
     H64RdpTile tiles[8];
 
     u32 rasterFlags;             // RS_*
@@ -127,6 +130,9 @@ int h64_rdp_fetch_row_argb(const H64RdpState *st, const H64RdpTile *tile, u32 s0
 H64RdpState *h64_rdp_state(H64System *sys);
 s32 h64_rdp_sample_copy(H64RdpState *st, const H64RdpTile *tile, s32 s, s32 t, int sOffset, int tlut, int fbSize);
 void h64_rdp_texture_convert(const H64RdpTexel *in, const s32 *factors, H64RdpTexel *out);
+// A 16-bit YUV texel as the texture filter reads it (u - 128, v - 128, y, y),
+// chroma from its pair (s >> 1).
+void h64_rdp_fetch_yuv(const H64RdpState *st, const H64RdpTile *tile, u32 s, u32 t, H64RdpTexel *out);
 void h64_rdp_compute_lod(u32 *tile0, u32 *tile1, s32 *lodFrac, u32 maxLevel, s32 minLod, const s32 *st, const s32 *stDx,
                          const s32 *stDy, int perspectiveOverflow, int texLod, int sharpen, int detail);
 

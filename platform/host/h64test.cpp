@@ -7,6 +7,7 @@
 //     --dillon            stop when r30 becomes non-zero (Dillonb/n64-tests: -1 = pass)
 //     --until TEXT        stop when an ISViewer line contains TEXT
 //     --info              print the ROM header and exit
+//     --game-db DIR       with --info: the ROM browser's game information from the database files in DIR
 //     --state             print the CPU state at the end
 //     --trace-exc N       print the first N exceptions (not interrupts)
 //     --fb-png FILE       write the framebuffer the VI shows at the end (raw, no VI filtering)
@@ -19,6 +20,7 @@
 #include "../../core/common/h64_types.h"
 #include "../../core/common/h64_endian.h"
 #include "../../core/cart/h64_zip.h"
+#include "../../core/cart/h64_gameinfo.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "../../core/system/h64_system.h"
@@ -255,6 +257,45 @@ static void nop_hook(void *user)
     c->nopHook = 0;
 }
 
+static u8 *read_file(const char *path, u32 *size);
+
+// --game-db DIR: what the ROM browser would show for this ROM, from the
+// database files in DIR (the console's art\games\db\ folder, or the one
+// tools/fetch_game_art.py fills).
+static void print_game_info(const char *dir, const H64Rom *rom, const char *romPath)
+{
+    H64GameDb *db = h64_gamedb_new();
+    H64GameInfo gi;
+    char covers[8][128], stem[256], key[16], text[4096];
+    const char *base = romPath, *p;
+    int i, n = 0;
+    for (p = romPath; *p; p++)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    strncpy(stem, base, sizeof(stem) - 1);
+    stem[sizeof(stem) - 1] = 0;
+    if (strrchr(stem, '.')) *strrchr(stem, '.') = 0;
+    for (i = 0; i < H64_GAMEDB_FILE_COUNT; i++)
+    {
+        char path[1024];
+        u32 len;
+        u8 *data;
+        snprintf(path, sizeof(path), "%s/%s", dir, h64_gamedb_files[i].file);
+        data = read_file(path, &len);
+        if (!data) { printf("[gameinfo] missing %s\n", path); continue; }
+        printf("[gameinfo] %s: %d games\n", h64_gamedb_files[i].file,
+               h64_gamedb_files[i].json ? h64_gamedb_add_gamedb_json(db, (const char *)data, len) : h64_gamedb_add_dat(db, (const char *)data, len));
+        free(data);
+    }
+    h64_gameinfo_key(rom->gameCode, rom->crc1, key);
+    h64_gameinfo_clear(&gi);
+    printf("[gameinfo] key %s, code %s, version %d: %s\n", key, rom->gameCode, rom->version,
+           h64_gamedb_lookup(db, rom->gameCode, rom->version, stem, &gi, covers, 8, &n) ? "found" : "NOT FOUND");
+    for (i = 0; i < n; i++) printf("[gameinfo] box art %d: %s\n", i + 1, covers[i]);
+    h64_gameinfo_format(&gi, text, sizeof(text));
+    printf("%s", text);
+    h64_gamedb_free(db);
+}
+
 static u8 *read_file(const char *path, u32 *size)
 {
     FILE *f = fopen(path, "rb");
@@ -377,15 +418,15 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u8 *file;
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
-    int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1;
+    int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1; u32 gameFlags = 0;
     u32 rdpLogFrame = 0, peekVa = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
-    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0, *jitProf = 0;
+    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0, *jitProf = 0, *gameDb = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 asyncCycles = 0;
     u32 traceFrames = 0, traceStep = 0;
-    int jitOps = 0, noJitFpu = 0, cpi = 1, noLink = 0, noRegCache = 0, noFpCache = 0, fastFpu = 0, fullExits = 0, noSuper = 0;
+    int jitOps = 0, noJitFpu = 0, cpi = 1, cpiGiven = 0, noLink = 0, noRegCache = 0, noFpCache = 0, fastFpu = 0, fullExits = 0, noSuper = 0;
     H64System *ref = 0;
     int i, frames = 600, dillon = 0, info = 0, state = 0, result = 0;
     double seconds = 0;
@@ -398,12 +439,14 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--dillon")) dillon = 1;
         else if (!strcmp(argv[i], "--until") && i + 1 < argc) s_untilText = argv[++i];
         else if (!strcmp(argv[i], "--info")) info = 1;
+        else if (!strcmp(argv[i], "--game-db") && i + 1 < argc) { gameDb = argv[++i]; info = 1; }
         else if (!strcmp(argv[i], "--state")) state = 1;
         else if (!strcmp(argv[i], "--trace-exc") && i + 1 < argc) s_traceExc = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch-pc") && i + 1 < argc) watchPc = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--gfx-cost-log")) gfxCostLog = 1;
         else if (!strcmp(argv[i], "--keep-offscreen")) keepOffscreen = 1;
         else if (!strcmp(argv[i], "--no-profile")) noProfile = 1;
+        else if (!strcmp(argv[i], "--gameflags") && i + 1 < argc) { gameFlags = (u32)strtoul(argv[++i], 0, 16); noProfile = 2; }
         else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--peek") && i + 1 < argc) peekVa = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
@@ -469,7 +512,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--fast-fpu")) fastFpu = 1;
         else if (!strcmp(argv[i], "--full-exits")) fullExits = 1;
         else if (!strcmp(argv[i], "--no-superblocks")) noSuper = 1;
-        else if (!strcmp(argv[i], "--cpi") && i + 1 < argc) cpi = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--cpi") && i + 1 < argc) { cpi = atoi(argv[++i]); cpiGiven = 1; }
         else if (!strcmp(argv[i], "--trace-frames") && i + 1 < argc) traceFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--trace-step") && i + 1 < argc) traceStep = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hle")) { hleGfx = 1; hleAudio = 1; }
@@ -521,6 +564,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         char folder[64];
         h64_save_folder_name(&sys->rom, folder, sizeof(folder));
         printf("[info] save folder name: %s\n", folder);
+        if (gameDb) print_game_info(gameDb, &sys->rom, path);
         h64_system_free(sys);
         free(sys);
         return 0;
@@ -559,6 +603,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.hleAudioCheck = hleAudio == 2;
     sys->options.gfxCostLog = gfxCostLog;
     if (!noProfile) h64_apply_game_profile(sys);   // --no-profile: none of the per-game settings
+    else if (noProfile == 2) h64_apply_profile_flags(sys, gameFlags);   // --gameflags HEX: these instead (as the ini's gameflags=)
     sys->options.gfxKeepOffscreen = keepOffscreen;
     sys->options.rdpLogFrame = rdpLogFrame;
     sys->padMask = padCount >= 1 && padCount <= 4 ? (1u << padCount) - 1u : 1u;   // --pads N: ports 1..N plugged in
@@ -592,6 +637,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         if (!st || h64_state_load(sys, st, n)) { fprintf(stderr, "cannot load the state %s\n", loadState); return 2; }
         if (ref && h64_state_load(ref, st, n)) { fprintf(stderr, "cannot load the state into the reference system\n"); return 2; }   // --lockstep
         free(st);
+        // A state keeps the cpi it was saved with; an explicit --cpi wins.
+        if (cpiGiven) { sys->cpu.cpi = (u32)(cpi > 0 ? cpi : 1); if (ref) ref->cpu.cpi = sys->cpu.cpi; }
     }
     if (traceFrames && traceStep >= 1000000000u)
     {
@@ -789,7 +836,12 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             if (ok == 0 && h64_png_write_rgb(out, rgb, w, h) == 0)
                 printf("[run] %s %dx%d written to %s\n", k == 0 ? "VI output" : "framebuffer", w, h, out);
             else
+            {
+                const u32 *v = sys->vi.regs;
                 printf("[run] no %s (VI blank)\n", k == 0 ? "VI output" : "framebuffer");
+                printf("[run] VI regs %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X %08X\n",
+                       v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13]);
+            }
         }
     }
     if (wavPath)

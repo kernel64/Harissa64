@@ -65,6 +65,20 @@ void test_pif(H64TestContext *ctx)
         H64_CHECK_EQ(ctx, (s8)sys->pifRam[at[ch] + 4], 10 + ch);
         H64_CHECK_EQ(ctx, (s8)sys->pifRam[at[ch] + 5], -20 - ch);
     }
+
+    // HLE boot: the RSP memories and osCicId as each IPL3 leaves them (Diddy
+    // Kong Racing slows itself down unless DMEM starts with 0xFFFFFFFF).
+    sys->rom.cic = H64_CIC_6103;
+    h64_hle_boot(sys);
+    H64_CHECK_EQ(ctx, h64_load_be32(sys->spMem), 0xFFFFFFFFu);
+    H64_CHECK_EQ(ctx, h64_load_be32(sys->spMem + 0xFFC), 0xFFFFFFFFu);
+    H64_CHECK_EQ(ctx, h64_load_be32(sys->spMem + 0x1000), 0x17D7u);
+    H64_CHECK_EQ(ctx, h64_load_be32(sys->spMem + 0x1FFC), 0xFFFFFFFFu);
+    H64_CHECK_EQ(ctx, h64_load_be32(sys->rdram + 0x310), 0x17D7u);
+    sys->rom.cic = H64_CIC_6102;
+    h64_hle_boot(sys);
+    H64_CHECK_EQ(ctx, h64_load_be32(sys->spMem), 0u);
+    H64_CHECK_EQ(ctx, h64_load_be32(sys->spMem + 0x1000), 0u);
     h64_system_free(sys);
     free(sys);
 }

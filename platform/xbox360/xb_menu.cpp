@@ -15,7 +15,10 @@
 #include "../../core/cart/h64_zip.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
+#include "../../core/common/h64_fenv.h"
+#include "xb_art.h"
 #include "xb_ui.h"
+#include "xb_update.h"
 
 // Moves an animated value towards its target (exponential, ~70 ms), or
 // jumps there when the animation restarts.
@@ -108,6 +111,8 @@ static float draw_value(float right, float cy, const char *value, int selected)
     return right - UiText(UI_REGULAR, 21, right, cy, text, value, UI_RIGHT);
 }
 
+static void controls_draw(const UiMenu *m);
+
 void UiMenuDraw(const UiMenu *m)
 {
     static UiAnim sel;
@@ -116,6 +121,7 @@ void UiMenuDraw(const UiMenu *m)
     const float w = 660, rowH = 48, head = 100, foot = 78;
     float h = head + m->count * rowH + 18 + foot, x = (UI_WIDTH - w) * 0.5f, y = (UI_HEIGHT - h) * 0.5f, sy;
     int i, restart = strcmp(lastTitle, m->title) != 0 || lastCount != m->count;
+    if (m->page == UI_PAGE_CONTROLS) { controls_draw(m); lastTitle[0] = 0; return; }
     strncpy(lastTitle, m->title, sizeof(lastTitle) - 1);
     lastCount = m->count;
     UiDim();
@@ -143,14 +149,14 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 }
 
 // ---- Settings ----
-// Main page: CPU, RSP, audio, FPS, the Graphics page, save, back. The Graphics
-// page (resolution, aspect, texture filter, smoothing, sharpening, blur, screen effect) is
+// Main page: CPU, RSP, audio, FPS, the Graphics and Controls pages, save, back. The Graphics
+// page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
-enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS };
-enum { G_PRESET = 0, G_RES, G_ASPECT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
+enum { G_PRESET = 0, G_RES, G_BRIGHT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
-// blur, screen effect. Resolution and aspect stay as they are.
+// blur, screen effect. The resolution stays as it is.
 struct GfxPreset { const char *name; int texFilter, smooth, sharpen, blur, screen; };
 static const GfxPreset s_presets[4] = {
     { "Original", 2, 0, 0, 0, 0 },        // nearest, nothing added
@@ -174,6 +180,10 @@ static int current_preset(const Config *c)
 }
 static int s_graphicsPage;
 static int s_perGame;
+static int s_browser;   // opened from the ROM list: the box art rows are shown
+#define S_ART (S_CONTROLS + 1)       // "Box art downloads" (ROM list only)
+#define S_ART_ALL (S_CONTROLS + 2)   // "Get box art for all games" (ROM list only)
+#define S_SAVE_ALL (s_browser ? S_CONTROLS + 3 : S_CONTROLS + 1)
 
 static const char *onoff(int v) { return v ? "On" : "Off"; }
 
@@ -181,27 +191,35 @@ static void settings_values(UiMenu *m, const Config *c)
 {
     if (s_graphicsPage)
     {
-        static const char *res[3] = { "Native 320x240", "x2 640x480", "x3 960x720" };
-        static const char *asp[3] = { "4:3", "16:9 Widescreen", "16:9 Stretched" };
+        static const char *res[4] = { "Native 320x240", "x2 640x480", "x3 960x720", "HD 1280x720 (16:9)" };
         static const char *filt[3] = { "N64 3-point", "Bilinear", "Nearest" };
         static const char *lvl[3] = { "Off", "Low", "High" };
         static const char *blr[3] = { "Off", "Soft", "Strong" };
         static const char *scr[6] = { "None", "Scanlines", "CRT", "CRT curved", "LCD grid", "Light scanlines" };
         int pr = current_preset(c);
         sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? "Custom" : s_presets[pr].name);
-        sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 3 ? 3 : c->resScale) - 1]);
-        sprintf(m->value[G_ASPECT], "< %s >", asp[c->aspect < 0 || c->aspect > 2 ? 0 : c->aspect]);
+        sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 4 ? 4 : c->resScale) - 1]);
         sprintf(m->value[G_FILTER], "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]);
         sprintf(m->value[G_SMOOTH], "< %s >", onoff(c->smooth));
         sprintf(m->value[G_SHARPEN], "< %s >", lvl[c->sharpen < 0 || c->sharpen > 2 ? 0 : c->sharpen]);
         sprintf(m->value[G_BLUR], "< %s >", blr[c->blur < 0 || c->blur > 2 ? 0 : c->blur]);
         sprintf(m->value[G_SCREEN], "< %s >", scr[c->screen < 0 || c->screen > 5 ? 0 : c->screen]);
+        {
+            static const char *br[3] = { "Normal", "Lighter", "Much lighter" };
+            sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
+        }
         return;
     }
     sprintf(m->value[S_CPU], "< %s >", strcmp(c->cpu, "interp") ? "Recompiler" : "Interpreter");
     sprintf(m->value[S_HLE], "< %s >", c->hle ? "HLE" : "LLE");
     sprintf(m->value[S_AUDIO], "< %d ms >", c->audioMs);
     sprintf(m->value[S_FPS], "< %s >", onoff(c->showFps));
+    {
+        int i, custom = 0;
+        for (i = 0; i < 4; i++) custom |= !h64_padmap_is_default(&c->padMap[i]);
+        strcpy(m->value[S_CONTROLS], custom ? "Custom" : "Default");
+    }
+    if (s_browser) sprintf(m->value[S_ART], "< %s >", c->artDownload ? "On" : "Off");
 }
 
 static void settings_main(UiMenu *m, const Config *c)
@@ -213,6 +231,12 @@ static void settings_main(UiMenu *m, const Config *c)
     UiMenuAdd(m, "Audio margin", "");
     UiMenuAdd(m, "Show FPS", "");
     UiMenuAdd(m, "Graphics", "");
+    UiMenuAdd(m, "Controls", "");
+    if (s_browser)
+    {
+        UiMenuAdd(m, "Box art downloads", "");
+        UiMenuAdd(m, "Get box art for all games", "");
+    }
     UiMenuAdd(m, "Save for all games", "");
     if (s_perGame) UiMenuAdd(m, "Save for this game only", "");
     UiMenuAdd(m, "Back", "");
@@ -225,7 +249,7 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuClear(m, "Graphics", "A:Select|DPAD:Change|B:Back");
     UiMenuAdd(m, "Preset", "");
     UiMenuAdd(m, "Resolution", "");
-    UiMenuAdd(m, "Aspect ratio", "");
+    UiMenuAdd(m, "Brightness", "");
     UiMenuAdd(m, "Texture filter", "");
     UiMenuAdd(m, "Edge smoothing (FXAA)", "");
     UiMenuAdd(m, "Sharpen", "");
@@ -235,9 +259,467 @@ static void settings_graphics(UiMenu *m, const Config *c)
     settings_values(m, c);
 }
 
+// ---- Controls page ----
+// Which Xbox 360 input drives each N64 control, per player (LB/RB), and the
+// analog stick's source, dead zone and sensitivity. A on a button waits for
+// an input to set it (Y adds one more, X clears); BACK or 5 s cancel.
+// Inputs are read from controller 1, whichever player is being edited.
+enum { C_STICK = H64_N64_COUNT, C_DEAD, C_RANGE, C_RESET, C_BACK, C_COUNT };
+#define CAPTURE_MS 5000
+
+struct ControlsState
+{
+    Config *c;
+    int player;          // 0..3
+    int capturing;       // waiting for an input for item `capItem`
+    int capItem, capAdd, capReleased;
+    DWORD capStart;
+    char msg[64];        // a short note under the panel ("D-pad up set")
+    DWORD msgAt;
+};
+static ControlsState s_ctl;
+
+// The items in the order up/down walks them, and where each one is shown.
+static const int s_ctlOrder[C_COUNT] = {
+    H64_N64_A, H64_N64_B, H64_N64_Z, H64_N64_START, H64_N64_L, H64_N64_R,
+    H64_N64_DUP, H64_N64_DDOWN, H64_N64_DLEFT, H64_N64_DRIGHT, H64_N64_CUP, H64_N64_CDOWN, H64_N64_CLEFT, H64_N64_CRIGHT,
+    C_STICK, C_DEAD, C_RANGE, C_RESET, C_BACK,
+};
+
+#define CTL_X 70.0f
+#define CTL_Y 55.0f
+#define CTL_W 1140.0f
+#define CTL_H 610.0f
+#define CTL_ROW 40.0f
+#define CTL_TOP 150.0f       // first row's top, from the panel's
+#define CTL_COLW 352.0f
+#define CTL_GAP 20.0f
+
+// Column and row slot (0-based, in rows of CTL_ROW; headings take half a row) of an item.
+static void ctl_place(int item, int *col, float *row)
+{
+    switch (item)
+    {
+    case H64_N64_A: *col = 0; *row = 0; return;
+    case H64_N64_B: *col = 0; *row = 1; return;
+    case H64_N64_Z: *col = 0; *row = 2; return;
+    case H64_N64_START: *col = 0; *row = 3; return;
+    case H64_N64_L: *col = 0; *row = 4; return;
+    case H64_N64_R: *col = 0; *row = 5; return;
+    case H64_N64_DUP: *col = 1; *row = 0; return;
+    case H64_N64_DDOWN: *col = 1; *row = 1; return;
+    case H64_N64_DLEFT: *col = 1; *row = 2; return;
+    case H64_N64_DRIGHT: *col = 1; *row = 3; return;
+    case H64_N64_CUP: *col = 1; *row = 5; return;
+    case H64_N64_CDOWN: *col = 1; *row = 6; return;
+    case H64_N64_CLEFT: *col = 1; *row = 7; return;
+    case H64_N64_CRIGHT: *col = 1; *row = 8; return;
+    case C_STICK: *col = 2; *row = 0; return;
+    case C_DEAD: *col = 2; *row = 1; return;
+    case C_RANGE: *col = 2; *row = 2; return;
+    case C_RESET: *col = 0; *row = 7; return;
+    default: *col = 0; *row = 8; return;
+    }
+}
+
+static float ctl_col_x(int col) { return CTL_X + 24 + col * (CTL_COLW + CTL_GAP); }
+static float ctl_row_y(float row) { return CTL_Y + CTL_TOP + row * CTL_ROW; }
+
+static void controls_open(UiMenu *m, Config *c)
+{
+    UiMenuClear(m, "Controls", "");
+    m->page = UI_PAGE_CONTROLS;
+    m->count = C_COUNT;
+    m->sel = 0;
+    s_ctl.c = c;
+    s_ctl.capturing = 0;
+    s_ctl.msg[0] = 0;
+    if (s_ctl.player < 0 || s_ctl.player > 3) s_ctl.player = 0;
+}
+
+static void ctl_note(const char *text)
+{
+    strncpy(s_ctl.msg, text, sizeof(s_ctl.msg) - 1);
+    s_ctl.msg[sizeof(s_ctl.msg) - 1] = 0;
+    s_ctl.msgAt = GetTickCount();
+}
+
+// Controller 1's state as the mapping's input.
+static int ctl_read(H64PadInput *in)
+{
+    XINPUT_STATE st;
+    if (XInputGetState(0, &st) != ERROR_SUCCESS) return 0;
+    in->buttons = st.Gamepad.wButtons;
+    in->lt = st.Gamepad.bLeftTrigger;
+    in->rt = st.Gamepad.bRightTrigger;
+    in->lx = st.Gamepad.sThumbLX;
+    in->ly = st.Gamepad.sThumbLY;
+    in->rx = st.Gamepad.sThumbRX;
+    in->ry = st.Gamepad.sThumbRY;
+    return 1;
+}
+
+// While waiting for an input: everything released first (the A that started
+// it), then the first input pressed. BACK cancels, as does the time out.
+static int controls_capture(void)
+{
+    H64PadInput in;
+    u32 src = 0;
+    H64PadMap *map = &s_ctl.c->padMap[s_ctl.player];
+    int i;
+    char note[64];
+    if (ctl_read(&in))
+    {
+        if (in.buttons & XINPUT_GAMEPAD_BACK)
+        {
+            s_ctl.capturing = 0;
+            ctl_note("Cancelled");
+            return SET_NONE;
+        }
+        src = h64_padmap_sources(&in);
+    }
+    if (!s_ctl.capReleased)
+    {
+        if (!src) { s_ctl.capReleased = 1; s_ctl.capStart = GetTickCount(); }
+        return SET_NONE;
+    }
+    if (GetTickCount() - s_ctl.capStart >= CAPTURE_MS)
+    {
+        s_ctl.capturing = 0;
+        ctl_note("No input: unchanged");
+        return SET_NONE;
+    }
+    if (!src) return SET_NONE;
+    for (i = 0; i < H64_SRC_COUNT; i++)
+        if (src & (1u << i)) break;
+    if (s_ctl.capAdd) map->src[s_ctl.capItem] |= 1u << i;
+    else map->src[s_ctl.capItem] = 1u << i;
+    s_ctl.capturing = 0;
+    _snprintf(note, sizeof(note) - 1, "%s: %s %s", h64_padmap_n64_label(s_ctl.capItem), h64_padmap_source_label(i),
+              s_ctl.capAdd ? "added" : "set");
+    note[sizeof(note) - 1] = 0;
+    ctl_note(note);
+    return SET_CHANGED;
+}
+
+static int controls_input(UiMenu *m, Config *c, WORD down)
+{
+    H64PadMap *map;
+    int item, dir, col, i;
+    float row;
+    s_ctl.c = c;
+    map = &c->padMap[s_ctl.player];
+    if (s_ctl.capturing) return controls_capture();
+    item = s_ctlOrder[m->sel];
+    dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
+    UiMenuNavigate(m, down);
+    if ((down & XINPUT_GAMEPAD_B) || (item == C_BACK && (down & XINPUT_GAMEPAD_A)))
+    {
+        settings_main(m, c);
+        m->sel = S_CONTROLS;
+        return SET_NONE;
+    }
+    if (down & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER))
+    {
+        s_ctl.player = (s_ctl.player + ((down & XINPUT_GAMEPAD_RIGHT_SHOULDER) ? 1 : 3)) % 4;
+        return SET_NONE;
+    }
+    if (item < H64_N64_COUNT)
+    {
+        if (down & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_Y))
+        {
+            s_ctl.capturing = 1;
+            s_ctl.capItem = item;
+            s_ctl.capAdd = (down & XINPUT_GAMEPAD_A) ? 0 : 1;
+            s_ctl.capReleased = 0;
+            s_ctl.capStart = GetTickCount();
+            return SET_NONE;
+        }
+        if (down & XINPUT_GAMEPAD_X)
+        {
+            map->src[item] = 0;
+            return SET_CHANGED;
+        }
+    }
+    if (item == C_RESET && (down & XINPUT_GAMEPAD_A))
+    {
+        h64_padmap_default(map);
+        ctl_note("Default controls");
+        return SET_CHANGED;
+    }
+    if (item >= C_STICK && item <= C_RANGE && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        if (!dir) dir = 1;
+        if (item == C_STICK) map->stick = (map->stick + dir + H64_STICK_COUNT) % H64_STICK_COUNT;
+        else if (item == C_DEAD)
+        {
+            map->deadzone += dir * 1000;
+            if (map->deadzone < 0) map->deadzone = 0;
+            if (map->deadzone > 16000) map->deadzone = 16000;
+        }
+        else
+        {
+            map->range += dir * 10;
+            if (map->range < 50) map->range = 50;
+            if (map->range > 150) map->range = 150;
+        }
+        return SET_CHANGED;
+    }
+    if (dir && (item < C_STICK || item >= C_RESET))
+    {
+        // Left/right on a button row: the next column, on the row nearest the same height.
+        int best = m->sel;
+        float bestD = 1e9f;
+        ctl_place(item, &col, &row);
+        col = (col + dir + 3) % 3;
+        for (i = 0; i < C_COUNT; i++)
+        {
+            int c2;
+            float r2, d;
+            ctl_place(s_ctlOrder[i], &c2, &r2);
+            d = r2 > row ? r2 - row : row - r2;
+            if (c2 == col && d < bestD) { bestD = d; best = i; }
+        }
+        m->sel = best;
+    }
+    return SET_NONE;
+}
+
+// The inputs of a mask as button prompts ("X/Y/LT/RT|DPAD:Up"), or "" when none.
+static void ctl_hints(u32 mask, char *out, size_t size)
+{
+    static const char *glyph[H64_SRC_COUNT] = {
+        "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "START", "DPAD:Up", "DPAD:Down", "DPAD:Left", "DPAD:Right",
+        "LS:Click", "RS:Click", "LS:Up", "LS:Down", "LS:Left", "LS:Right", "RS:Up", "RS:Down", "RS:Left", "RS:Right",
+    };
+    int pass, i;
+    out[0] = 0;
+    // Plain glyphs first, sharing one prompt ("X/Y/LT"), then the labelled ones.
+    for (pass = 0; pass < 2; pass++)
+        for (i = 0; i < H64_SRC_COUNT; i++)
+        {
+            size_t len = strlen(out);
+            int labelled = strchr(glyph[i], ':') != NULL;
+            if (!(mask & (1u << i)) || labelled != pass) continue;
+            if (len + strlen(glyph[i]) + 2 > size) return;
+            if (len) strcat(out, pass ? "|" : "/");
+            strcat(out, glyph[i]);
+        }
+}
+
+static void ctl_value_text(int item, const H64PadMap *map, char *out)
+{
+    static const char *sticks[H64_STICK_COUNT] = { "Left stick", "Right stick", "Off" };
+    if (item == C_STICK) sprintf(out, "< %s >", sticks[map->stick >= 0 && map->stick < H64_STICK_COUNT ? map->stick : 0]);
+    else if (item == C_DEAD) sprintf(out, "< %d%% >", (map->deadzone * 100 + 16383) / 32767);
+    else if (item == C_RANGE) sprintf(out, "< %d%% >", map->range);
+    else out[0] = 0;
+}
+
+// ---- The N64 controller drawn on the Controls page ----
+// A plain drawing of the controller in units (100 x 56, scaled by `s`): the
+// control being edited is outlined, and blinks while it waits for an input.
+static D3DCOLOR pad_rgb(int r, int g, int b) { return D3DCOLOR_ARGB(255, r, g, b); }
+
+// Where `item` is on the drawing (a box in units, its corner radius); 0: not on it.
+static int pad_shape(int item, float *x, float *y, float *w, float *h, float *r)
+{
+    static const float circles[][4] = {   // item, centre x, y, radius
+        { H64_N64_A, 78.5f, 30.0f, 3.6f }, { H64_N64_B, 73.0f, 23.0f, 3.0f }, { H64_N64_START, 50.0f, 13.5f, 2.6f },
+        { H64_N64_CUP, 86.0f, 12.5f, 2.1f }, { H64_N64_CDOWN, 86.0f, 21.5f, 2.1f },
+        { H64_N64_CLEFT, 81.5f, 17.0f, 2.1f }, { H64_N64_CRIGHT, 90.5f, 17.0f, 2.1f },
+        { C_STICK, 50.0f, 30.0f, 6.0f }, { C_DEAD, 50.0f, 30.0f, 6.0f }, { C_RANGE, 50.0f, 30.0f, 6.0f },
+    };
+    static const float boxes[][6] = {     // item, x, y, w, h, radius
+        { H64_N64_DUP, 13.8f, 10.7f, 4.4f, 4.3f, 1.0f }, { H64_N64_DDOWN, 13.8f, 19.4f, 4.4f, 4.3f, 1.0f },
+        { H64_N64_DLEFT, 9.5f, 15.0f, 4.3f, 4.4f, 1.0f }, { H64_N64_DRIGHT, 18.2f, 15.0f, 4.3f, 4.4f, 1.0f },
+        { H64_N64_L, 8.0f, 1.0f, 22.0f, 5.5f, 2.5f }, { H64_N64_R, 70.0f, 1.0f, 22.0f, 5.5f, 2.5f },   // the part above the body
+        { H64_N64_Z, 45.5f, 45.0f, 9.0f, 7.0f, 2.0f },
+    };
+    int i;
+    for (i = 0; i < (int)(sizeof(circles) / sizeof(circles[0])); i++)
+        if ((int)circles[i][0] == item)
+        {
+            *x = circles[i][1] - circles[i][3]; *y = circles[i][2] - circles[i][3];
+            *w = *h = circles[i][3] * 2; *r = circles[i][3];
+            return 1;
+        }
+    for (i = 0; i < (int)(sizeof(boxes) / sizeof(boxes[0])); i++)
+        if ((int)boxes[i][0] == item)
+        {
+            *x = boxes[i][1]; *y = boxes[i][2]; *w = boxes[i][3]; *h = boxes[i][4]; *r = boxes[i][5];
+            return 1;
+        }
+    return 0;
+}
+
+static void draw_n64_pad(float ox, float oy, float s, int hiItem, int blink)
+{
+    const D3DCOLOR dark = pad_rgb(54, 56, 64), shoulder = pad_rgb(78, 80, 90);
+    float x, y, w, h, r;
+    int i;
+#define PU(v) ((v) * s)
+    // Shoulder buttons behind the body, then the body: three handles and the top bar.
+    UiRoundRect(ox + PU(8), oy + PU(1), PU(22), PU(8), PU(2.5f), shoulder, shoulder);
+    UiRoundRect(ox + PU(70), oy + PU(1), PU(22), PU(8), PU(2.5f), shoulder, shoulder);
+    UiShadow(ox + PU(4), oy + PU(6), PU(92), PU(50), PU(9), 18, UI_COL_SHADOW);
+    UiRoundRect(ox + PU(6), oy + PU(12), PU(20), PU(40), PU(10), pad_rgb(152, 154, 164), pad_rgb(112, 114, 124));
+    UiRoundRect(ox + PU(74), oy + PU(12), PU(20), PU(40), PU(10), pad_rgb(152, 154, 164), pad_rgb(112, 114, 124));
+    UiRoundRect(ox + PU(41), oy + PU(12), PU(18), PU(44), PU(9), pad_rgb(152, 154, 164), pad_rgb(108, 110, 120));
+    UiRoundRect(ox + PU(4), oy + PU(6), PU(92), PU(20), PU(9), pad_rgb(178, 180, 190), pad_rgb(146, 148, 158));
+    // D-pad, Start, the stick, Z (under the middle handle on the real one).
+    UiRoundRect(ox + PU(9.5f), oy + PU(15), PU(13), PU(4.4f), PU(1), dark, dark);
+    UiRoundRect(ox + PU(13.8f), oy + PU(10.7f), PU(4.4f), PU(13), PU(1), dark, dark);
+    UiCircle(ox + PU(50), oy + PU(13.5f), PU(2.6f), pad_rgb(206, 44, 44));
+    UiCircle(ox + PU(50), oy + PU(30), PU(6), pad_rgb(66, 68, 78));
+    UiCircle(ox + PU(50), oy + PU(30), PU(4), pad_rgb(196, 198, 206));
+    UiRoundRect(ox + PU(45.5f), oy + PU(45), PU(9), PU(7), PU(2), dark, dark);
+    UiText(UI_BOLD, PU(4.5f), ox + PU(50), oy + PU(48.5f), UI_COL_TEXT2, "Z", UI_CENTER);
+    // A, B and the four C buttons.
+    UiCircle(ox + PU(78.5f), oy + PU(30), PU(3.6f), pad_rgb(52, 92, 214));
+    UiText(UI_BOLD, PU(4.2f), ox + PU(78.5f), oy + PU(30), UI_COL_TEXT, "A", UI_CENTER);
+    UiCircle(ox + PU(73), oy + PU(23), PU(3), pad_rgb(40, 164, 72));
+    UiText(UI_BOLD, PU(3.6f), ox + PU(73), oy + PU(23), UI_COL_TEXT, "B", UI_CENTER);
+    for (i = H64_N64_CUP; i <= H64_N64_CRIGHT; i++)
+        if (pad_shape(i, &x, &y, &w, &h, &r))
+            UiCircle(ox + PU(x + r), oy + PU(y + r), PU(r), pad_rgb(232, 192, 40));
+    // The control being edited: outlined; blinking while an input is awaited.
+    if (pad_shape(hiItem, &x, &y, &w, &h, &r))
+    {
+        float on = blink ? 0.5f + 0.5f * sinf(UiTime() * 12.566f) : 1.0f, pad = 3.0f;
+        int a = (int)(255 * on);
+        x = ox + PU(x); y = oy + PU(y); w = PU(w); h = PU(h); r = PU(r);
+        if (blink)
+        {
+            UiShadow(x - 2, y - 2, w + 4, h + 4, r + 2, 16, D3DCOLOR_ARGB((int)(200 * on), 255, 112, 84));
+            UiRoundRect(x, y, w, h, r, D3DCOLOR_ARGB((int)(190 * on), 255, 112, 84), D3DCOLOR_ARGB((int)(190 * on), 234, 76, 58));
+        }
+        UiRoundRing(x - pad, y - pad, w + pad * 2, h + pad * 2, r + pad, 2.5f, D3DCOLOR_ARGB(a, 255, 112, 84));
+    }
+#undef PU
+}
+
+static void controls_draw(const UiMenu *m)
+{
+    static UiAnim selX, selY;
+    static int lastCol = -1;
+    const H64PadMap *map;
+    H64PadMap def;
+    int i, col, selItem = s_ctlOrder[m->sel < 0 || m->sel >= C_COUNT ? 0 : m->sel];
+    float row, x = CTL_X, y = CTL_Y, sx, sy;
+    char buf[320];
+    if (s_ctl.c) map = &s_ctl.c->padMap[s_ctl.player];
+    else { h64_padmap_default(&def); map = &def; }
+
+    UiDim();
+    UiPanel(x, y, CTL_W, CTL_H, 22);
+    UiText(UI_BOLD, 30, x + 40, y + 50, UI_COL_TEXT, "Controls", UI_LEFT);
+    UiRoundRect(x + 40, y + 74, 30, 4, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    {
+        // Player selector: "LB  Player 1  RB" at the top right.
+        float r = x + CTL_W - 40, w;
+        sprintf(buf, "Player %d", s_ctl.player + 1);
+        r -= UiFooterWidth("RB");
+        UiFooter(r, y + 50, "RB");
+        w = UiTextWidth(UI_BOLD, 22, buf);
+        UiText(UI_BOLD, 22, r - 16, y + 50, UI_COL_TEXT, buf, UI_RIGHT);
+        r -= 16 + w + 16 + UiFooterWidth("LB");
+        UiFooter(r, y + 50, "LB");
+        if (s_ctl.player)
+        {
+            sprintf(buf, "Used when controller %d is connected", s_ctl.player + 1);
+            UiText(UI_REGULAR, 16, x + CTL_W - 40, y + 82, UI_COL_TEXT3, buf, UI_RIGHT);
+        }
+    }
+
+    heading(ctl_col_x(0) + 20, y + CTL_TOP - 22, "BUTTONS");
+    heading(ctl_col_x(1) + 20, y + CTL_TOP - 22, "D-PAD");
+    heading(ctl_col_x(1) + 20, ctl_row_y(5) - 16, "C BUTTONS");
+    heading(ctl_col_x(2) + 20, y + CTL_TOP - 22, "ANALOG STICK");
+
+    ctl_place(selItem, &col, &row);
+    sx = anim_step(&selX, ctl_col_x(col), col != lastCol);
+    sy = anim_step(&selY, ctl_row_y(row), col != lastCol);
+    lastCol = col;
+    selection_bar(sx, sy + 3, CTL_COLW, CTL_ROW - 6);
+
+    for (i = 0; i < C_COUNT; i++)
+    {
+        int item = s_ctlOrder[i], s = i == m->sel;
+        float cx, cy;
+        ctl_place(item, &col, &row);
+        cx = ctl_col_x(col);
+        cy = ctl_row_y(row) + CTL_ROW * 0.5f;
+        if (item < H64_N64_COUNT)
+        {
+            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, h64_padmap_n64_label(item), UI_LEFT);
+            if (s_ctl.capturing && item == s_ctl.capItem)
+                UiText(UI_BOLD, 18, cx + CTL_COLW - 18, cy, UI_COL_ACCENT_HI, "Press an input...", UI_RIGHT);
+            else
+            {
+                ctl_hints(map->src[item], buf, sizeof(buf));
+                if (!buf[0]) UiText(UI_REGULAR, 18, cx + CTL_COLW - 18, cy, UI_COL_TEXT3, "None", UI_RIGHT);
+                else
+                {
+                    float w = UiFooterWidth(buf), maxW = CTL_COLW - 130;
+                    if (w <= maxW) UiFooter(cx + CTL_COLW - 18 - w, cy, buf);
+                    else
+                    {
+                        char n[24];
+                        int k, cnt = 0;
+                        for (k = 0; k < H64_SRC_COUNT; k++) cnt += (map->src[item] >> k) & 1;
+                        sprintf(n, "%d inputs", cnt);
+                        UiText(UI_REGULAR, 18, cx + CTL_COLW - 18, cy, UI_COL_TEXT2, n, UI_RIGHT);
+                    }
+                }
+            }
+        }
+        else
+        {
+            static const char *labels[] = { "Analog stick", "Dead zone", "Sensitivity", "Reset to default", "Back" };
+            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, labels[item - C_STICK], UI_LEFT);
+            ctl_value_text(item, map, buf);
+            if (buf[0]) draw_value(cx + CTL_COLW - 18, cy, buf, s);
+        }
+    }
+
+    // The controller under the stick settings, with the control being edited.
+    {
+        float s = CTL_COLW / 100.0f, top = ctl_row_y(3) + 8, bottom = y + CTL_H - 86;
+        draw_n64_pad(ctl_col_x(2), top + (bottom - top - 56 * s) * 0.5f, s,
+                     s_ctl.capturing ? s_ctl.capItem : selItem, s_ctl.capturing);
+    }
+
+    UiRect(x + 24, y + CTL_H - 78, CTL_W - 48, 1, UI_COL_LINE);
+    if (s_ctl.capturing)
+    {
+        DWORD age = s_ctl.capReleased ? GetTickCount() - s_ctl.capStart : 0;
+        float left = age >= CAPTURE_MS ? 0.0f : (CAPTURE_MS - age) / (float)CAPTURE_MS, bw = 220;
+        sprintf(buf, "Press the input for %s", h64_padmap_n64_label(s_ctl.capItem));
+        UiText(UI_BOLD, 20, x + 40, y + CTL_H - 39, UI_COL_TEXT, buf, UI_LEFT);
+        UiFooter(x + CTL_W - 40 - UiFooterWidth("BACK:Cancel"), y + CTL_H - 39, "BACK:Cancel");
+        {
+            float bx = x + CTL_W - 80 - UiFooterWidth("BACK:Cancel") - bw;
+            UiRoundRect(bx, y + CTL_H - 42, bw, 6, 3, D3DCOLOR_ARGB(30, 255, 255, 255), D3DCOLOR_ARGB(30, 255, 255, 255));
+            if (left > 0) UiRoundRect(bx, y + CTL_H - 42, bw * left, 6, 3, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+        }
+    }
+    else
+    {
+        // The last change, or a word of help, on the right.
+        DWORD age = GetTickCount() - s_ctl.msgAt;
+        if (selItem < H64_N64_COUNT) UiFooter(x + 40, y + CTL_H - 39, "A:Set|Y:Add|X:Clear|LB/RB:Player|B:Back");
+        else UiFooter(x + 40, y + CTL_H - 39, "A:Select|DPAD:Change|LB/RB:Player|B:Back");
+        if (s_ctl.msg[0] && age < 3000) UiText(UI_BOLD, 18, x + CTL_W - 40, y + CTL_H - 39, UI_COL_ACCENT_HI, s_ctl.msg, UI_RIGHT);
+        else UiText(UI_REGULAR, 16, x + CTL_W - 40, y + CTL_H - 39, UI_COL_TEXT3, "BACK stays reserved for the emulator's menu", UI_RIGHT);
+    }
+}
+
 void SettingsBuild(UiMenu *m, const Config *c, int perGame)
 {
     s_perGame = perGame;
+    s_browser = 0;
+    s_ctl.capturing = 0;
     settings_main(m, c);
 }
 
@@ -269,13 +751,13 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
             c->screen = p->screen;
             break;
         }
-        case G_RES: c->resScale = (c->resScale - 1 + dir + 3) % 3 + 1; break;
-        case G_ASPECT: c->aspect = (c->aspect + dir + 3) % 3; break;
+        case G_RES: c->resScale = (c->resScale - 1 + dir + 4) % 4 + 1; break;
         case G_FILTER: c->texFilter = (c->texFilter + dir + 3) % 3; break;
         case G_SMOOTH: c->smooth = !c->smooth; break;
         case G_SHARPEN: c->sharpen = (c->sharpen + dir + 3) % 3; if (c->sharpen) c->blur = 0; break;
         case G_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;
         case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
+        case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
         }
         settings_values(m, c);
         return SET_CHANGED;
@@ -288,12 +770,18 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
     int dir, changed = 0;
     s_perGame = perGame;
     if (s_graphicsPage) return graphics_input(m, c, down);
+    if (m->page == UI_PAGE_CONTROLS) return controls_input(m, c, down);
     dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
     UiMenuNavigate(m, down);
     if (down & XINPUT_GAMEPAD_B) return SET_BACK;
     if (m->sel == S_GRAPHICS && (down & XINPUT_GAMEPAD_A))
     {
         settings_graphics(m, c);
+        return SET_NONE;
+    }
+    if (m->sel == S_CONTROLS && (down & XINPUT_GAMEPAD_A))
+    {
+        controls_open(m, c);
         return SET_NONE;
     }
     if (m->sel <= S_FPS && (dir || (down & XINPUT_GAMEPAD_A)))
@@ -312,14 +800,20 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
         }
         changed = 1;
     }
+    if (s_browser && m->sel == S_ART && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        c->artDownload = !c->artDownload;
+        changed = 1;
+    }
     settings_values(m, c);
     if (changed) return SET_CHANGED;
     if (down & XINPUT_GAMEPAD_A)
     {
         int last = m->count - 1;
         if (m->sel == last) return SET_BACK;
-        if (m->sel == S_GRAPHICS + 1) return SET_SAVE_ALL;
-        if (perGame && m->sel == S_GRAPHICS + 2) return SET_SAVE_GAME;
+        if (s_browser && m->sel == S_ART_ALL) return SET_ART_ALL;
+        if (m->sel == S_SAVE_ALL) return SET_SAVE_ALL;
+        if (perGame && m->sel == S_SAVE_ALL + 1) return SET_SAVE_GAME;
     }
     return SET_NONE;
 }
@@ -375,7 +869,8 @@ void AboutDraw(void)
     heading(col2, ty, "ACKNOWLEDGEMENTS");
     ty += 16 + paragraph(UI_REGULAR, 19, col2, ty + 16, 368, 6, UI_COL_TEXT2,
                          "Thanks to the ares, ParaLLEl-RDP, mupen64plus, GLideN64, libdragon and zlib projects, "
-                         "and to Timothy Lottes and AMD for their display filters.");
+                         "and to Timothy Lottes and AMD for their display filters. Box art and game "
+                         "information: libretro, GameDB-N64, Wikipedia.");
     UiText(UI_REGULAR, 17, col2, ty + 18, UI_COL_TEXT3, "Details and licences: THIRD_PARTY.md", UI_LEFT);
 
     ty = y + 474;
@@ -479,10 +974,11 @@ u8 *RomFileLoad(const char *path, u32 *size)
 }
 
 // Reads the first 4 KB of a ROM (any dump order, plain or zipped) into *rom.
-// Returns the ROM size, or 0 when it is not an N64 ROM.
+// Returns the ROM size, or 0 when it is not an N64 ROM. Any thread.
 static u32 read_header(const char *path, H64Rom *rom)
 {
-    static u8 head[0x1000];
+    const u32 headSize = 0x1000;
+    u8 *head;
     H64ZipReader r;
     H64ZipEntry e;
     int zip, ok;
@@ -490,11 +986,15 @@ static u32 read_header(const char *path, H64Rom *rom)
     HANDLE h = rom_open(path, &r, &e, &zip, &len);
     memset(rom, 0, sizeof(*rom));
     if (h == INVALID_HANDLE_VALUE) return 0;
-    ok = len >= sizeof(head) && (zip ? h64_zip_extract(&r, &e, head, sizeof(head)) == 0 : handle_read(h, 0, head, sizeof(head)) == sizeof(head));
+    head = (u8 *)malloc(headSize);
+    ok = head && len >= headSize && (zip ? h64_zip_extract(&r, &e, head, headSize) == 0 : handle_read(h, 0, head, headSize) == headSize);
     CloseHandle(h);
-    if (!ok || h64_rom_load(rom, head, sizeof(head))) return 0;
+    if (!ok || h64_rom_load(rom, head, headSize)) { free(head); return 0; }
+    free(head);
     return len;
 }
+
+u32 RomReadHeader(const char *path, H64Rom *rom) { return read_header(path, rom); }
 
 int RomFolderName(const char *path, char *out, size_t size)
 {
@@ -509,7 +1009,7 @@ int RomFolderName(const char *path, char *out, size_t size)
 struct RomInfo
 {
     int ok;
-    char name[24], code[8], size[16], save[48], folder[64];
+    char name[24], code[8], size[16], save[48], folder[64], region[32];
 };
 
 static void rom_details(const char *path, RomInfo *info)
@@ -527,6 +1027,7 @@ static void rom_details(const char *path, RomInfo *info)
     else _snprintf(info->size, sizeof(info->size), "%u KB", len >> 10);
     _snprintf(info->save, sizeof(info->save), "%s%s", h64_save_type_name(type), pak ? " + Controller Pak" : "");
     h64_save_folder_name(&rom, info->folder, (int)sizeof(info->folder));
+    strncpy(info->region, h64_gameinfo_region_name(rom.gameCode[3]), sizeof(info->region) - 1);
     info->size[sizeof(info->size) - 1] = 0;
     info->save[sizeof(info->save) - 1] = 0;
     h64_rom_free(&rom);
@@ -548,42 +1049,44 @@ static void initials(const char *name, char *out)
     out[n] = 0;
 }
 
-// The tile above the details: a gradient picked from the name, with its initials.
-static void game_tile(float x, float y, float w, float h, const char *name)
-{
-    static const D3DCOLOR tops[6] = { D3DCOLOR_ARGB(255, 240, 92, 66), D3DCOLOR_ARGB(255, 245, 150, 60), D3DCOLOR_ARGB(255, 150, 100, 235),
-                                      D3DCOLOR_ARGB(255, 70, 140, 240), D3DCOLOR_ARGB(255, 40, 180, 170), D3DCOLOR_ARGB(255, 110, 190, 80) };
-    static const D3DCOLOR bottoms[6] = { D3DCOLOR_ARGB(255, 150, 28, 30), D3DCOLOR_ARGB(255, 180, 70, 20), D3DCOLOR_ARGB(255, 80, 40, 150),
-                                         D3DCOLOR_ARGB(255, 30, 70, 160), D3DCOLOR_ARGB(255, 16, 100, 110), D3DCOLOR_ARGB(255, 40, 110, 50) };
-    char ini[4];
-    u32 hsh = 2166136261u;
-    const char *p;
-    int k;
-    for (p = name; *p; p++) hsh = (hsh ^ (u8)*p) * 16777619u;
-    k = (int)(hsh % 6);
-    initials(name, ini);
-    UiShadow(x, y + 6, w, h, 16, 20, D3DCOLOR_ARGB(110, 0, 0, 0));
-    UiRoundRect(x, y, w, h, 16, tops[k], bottoms[k]);
-    UiRoundRing(x, y, w, h, 16, 1.0f, D3DCOLOR_ARGB(50, 255, 255, 255));
-    // A soft sheen along the top half.
-    UiRoundRect(x + 2, y + 2, w - 4, h * 0.5f, 14, D3DCOLOR_ARGB(34, 255, 255, 255), D3DCOLOR_ARGB(0, 255, 255, 255));
-    UiTextShadowed(UI_BOLD, h * 0.46f, x + 28, y + h * 0.5f, D3DCOLOR_ARGB(240, 255, 255, 255), ini, UI_LEFT);
-}
-
-static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsPath)
+// The settings for all games, from the ROM list. Returns 1 when the user
+// asked for the box art of all games.
+static int settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, int ctlTest)
 {
     UiMenu m;
     UiInput in;
     UiInputInit(&in);
     SettingsBuild(&m, c, 0);
+    s_browser = 1;
+    settings_main(&m, c);
+    if (ctlTest >= 200)
+        m.sel = (ctlTest - 200) % m.count;   // controlstest=200+N: this page, on item N
+    else if (ctlTest >= 0)
+    {
+        // controlstest=N: the Controls page on item N; 100+N: also waiting
+        // for an input, again and again (captures of the blinking control).
+        controls_open(&m, c);
+        m.sel = (ctlTest % 100) % C_COUNT;
+    }
     for (;;)
     {
-        int r = SettingsInput(&m, c, 0, UiInputPoll(&in));
-        if (r == SET_BACK) return;
+        int r;
+        if (ctlTest >= 100 && ctlTest < 200 && !s_ctl.capturing && s_ctlOrder[m.sel] < H64_N64_COUNT)
+        {
+            s_ctl.capturing = 1;
+            s_ctl.capItem = s_ctlOrder[m.sel];
+            s_ctl.capAdd = 0;
+            s_ctl.capReleased = 0;
+            s_ctl.capStart = GetTickCount();
+        }
+        r = SettingsInput(&m, c, 0, UiInputPoll(&in));
+        if (r == SET_BACK) { s_browser = 0; return 0; }
+        if (r == SET_ART_ALL) { s_browser = 0; return 1; }
         if (r == SET_SAVE_ALL)
         {
             H64_INFO("[menu] settings for all games %s", ConfigWriteMenuKeys(c, settingsPath, 1) ? "saved" : "NOT saved");
-            return;
+            s_browser = 0;
+            return 0;
         }
         dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
         UiBegin(dev);
@@ -595,29 +1098,307 @@ static void settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settings
     }
 }
 
-// One label / value pair of the details card.
-static void detail(float x, float y, float w, const char *label, const char *value)
+// ---- Box art in the browser ----
+// The browser's copies of what xb_art.cpp sends (textures and text), by ROM
+// file; the least recently shown is dropped when the table is full.
+#define ART_VIEWS 24
+struct ArtView
 {
-    char fit[96];
-    UiText(UI_BOLD, 14, x, y, UI_COL_TEXT3, label, UI_LEFT);
-    UiTextFit(UI_REGULAR, 20, w, value, fit, sizeof(fit));
-    UiText(UI_REGULAR, 20, x, y + 26, UI_COL_TEXT, fit, UI_LEFT);
+    int used;
+    char path[256];
+    int hasInfo;
+    H64GameInfo info;
+    IDirect3DTexture9 *cover, *glow;
+    int coverW, coverH;
+    float coverAt;      // UiTime() when the cover arrived (its fade-in)
+    DWORD lastUse;
+};
+static ArtView s_views[ART_VIEWS];
+static DWORD s_viewClock;
+
+static void view_free(IDirect3DDevice9 *dev, ArtView *v)
+{
+    if (v->cover) UiImageRelease(dev, v->cover);
+    if (v->glow) UiImageRelease(dev, v->glow);
+    memset(v, 0, sizeof(*v));
 }
 
-static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, int rows, const RomInfo *info)
+static ArtView *view_find(const char *path)
+{
+    int i;
+    for (i = 0; i < ART_VIEWS; i++)
+        if (s_views[i].used && !_stricmp(s_views[i].path, path))
+        {
+            s_views[i].lastUse = ++s_viewClock;
+            return &s_views[i];
+        }
+    return NULL;
+}
+
+// Turns the worker's results into textures.
+static void views_take(IDirect3DDevice9 *dev)
+{
+    ArtResult r;
+    while (ArtTake(&r))
+    {
+        ArtView *v = view_find(r.path);
+        float coverAt = UiTime();
+        if (v)
+        {
+            // Newer files for a ROM already shown (a download finished): a cover it had does not fade in again.
+            if (v->cover && r.cover) coverAt = v->coverAt;
+            view_free(dev, v);
+        }
+        else
+        {
+            int i, best = 0;
+            for (i = 0; i < ART_VIEWS; i++)
+            {
+                if (!s_views[i].used) { best = i; break; }
+                if (s_views[i].lastUse < s_views[best].lastUse) best = i;
+            }
+            v = &s_views[best];
+            if (v->used)
+            {
+                ArtForget(v->path);   // sent again if the user comes back to it
+                view_free(dev, v);
+            }
+        }
+        v->used = 1;
+        strncpy(v->path, r.path, sizeof(v->path) - 1);
+        v->hasInfo = r.hasInfo;
+        v->info = r.info;
+        if (r.cover)
+        {
+            v->cover = UiImageCreate(dev, r.cover, r.coverW, r.coverH);
+            v->coverW = r.coverW;
+            v->coverH = r.coverH;
+        }
+        if (r.glow) v->glow = UiImageCreate(dev, r.glow, ART_GLOW_W, ART_GLOW_H);
+        v->coverAt = coverAt;
+        v->lastUse = ++s_viewClock;
+        ArtResultFree(&r);
+    }
+}
+
+static void views_clear(IDirect3DDevice9 *dev)
+{
+    int i;
+    for (i = 0; i < ART_VIEWS; i++)
+        if (s_views[i].used) view_free(dev, &s_views[i]);
+    ArtForgetAll();
+}
+
+// ---- Browser layout (UI pixels) ----
+#define LIST_W 556.0f
+#define LIST_Y 128.0f
+#define ROW_H 36.0f
+#define CARD_X 644.0f
+#define CARD_Y 44.0f
+#define CARD_W ((float)UI_WIDTH - UI_SAFE_X - CARD_X)
+#define CARD_B 620.0f            // bottom of the list and the card
+#define STAGE_H 240.0f
+
+static float smooth01(float t)
+{
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// A colour pair picked from a game's name (the placeholder's gradient).
+static void name_colors(const char *name, D3DCOLOR *top, D3DCOLOR *bottom)
+{
+    static const D3DCOLOR tops[6] = { D3DCOLOR_ARGB(255, 240, 92, 66), D3DCOLOR_ARGB(255, 245, 150, 60), D3DCOLOR_ARGB(255, 150, 100, 235),
+                                      D3DCOLOR_ARGB(255, 70, 140, 240), D3DCOLOR_ARGB(255, 40, 180, 170), D3DCOLOR_ARGB(255, 110, 190, 80) };
+    static const D3DCOLOR bottoms[6] = { D3DCOLOR_ARGB(255, 150, 28, 30), D3DCOLOR_ARGB(255, 180, 70, 20), D3DCOLOR_ARGB(255, 80, 40, 150),
+                                         D3DCOLOR_ARGB(255, 30, 70, 160), D3DCOLOR_ARGB(255, 16, 100, 110), D3DCOLOR_ARGB(255, 40, 110, 50) };
+    u32 hsh = 2166136261u;
+    const char *p;
+    for (p = name; *p; p++) hsh = (hsh ^ (u8)*p) * 16777619u;
+    *top = tops[hsh % 6];
+    *bottom = bottoms[hsh % 6];
+}
+
+// The picture area when there is no box art: the name's gradient and its initials.
+static void stage_placeholder(float x, float y, float w, float h, const char *name, float a)
+{
+    D3DCOLOR top, bottom;
+    char ini[4];
+    if (a <= 0.01f) return;
+    name_colors(name, &top, &bottom);
+    initials(name, ini);
+    UiRoundRect(x, y, w, h, 16, UiAlpha(top, a * 0.85f), UiAlpha(bottom, a * 0.85f));
+    UiRoundRect(x + 2, y + 2, w - 4, h * 0.5f, 14, UiAlpha(D3DCOLOR_ARGB(30, 255, 255, 255), a), D3DCOLOR_ARGB(0, 255, 255, 255));
+    UiTextShadowed(UI_BOLD, 92, x + w * 0.5f, y + h * 0.5f, UiAlpha(D3DCOLOR_ARGB(235, 255, 255, 255), a), ini, UI_CENTER);
+}
+
+// A small rounded label ("Platform", "1-4 players"); returns its width.
+static float chip(float x, float cy, const char *text, float a)
+{
+    float w = UiTextWidth(UI_BOLD, 15, text) + 26, h = 28;
+    UiRoundRect(x, cy - h * 0.5f, w, h, h * 0.5f, UiAlpha(D3DCOLOR_ARGB(255, 50, 53, 68), a), UiAlpha(D3DCOLOR_ARGB(255, 42, 45, 58), a));
+    UiRoundRing(x, cy - h * 0.5f, w, h, h * 0.5f, 1.0f, UiAlpha(D3DCOLOR_ARGB(34, 255, 255, 255), a));
+    UiText(UI_BOLD, 15, x + w * 0.5f, cy, UiAlpha(UI_COL_TEXT2, a), text, UI_CENTER);
+    return w;
+}
+
+// One label / value pair of the card's last row.
+static void detail(float x, float y, float w, const char *label, const char *value, float a)
+{
+    char fit[96];
+    UiText(UI_BOLD, 13, x, y, UiAlpha(UI_COL_TEXT3, a), label, UI_LEFT);
+    UiTextFit(UI_REGULAR, 19, w, value, fit, sizeof(fit));
+    UiText(UI_REGULAR, 19, x, y + 25, UiAlpha(UI_COL_TEXT, a), fit, UI_LEFT);
+}
+
+// The card on the right: box art, title, facts. `selAt`: when the selection
+// changed (the card fades and slides in).
+static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, int busy, float selAt)
+{
+    const float x = CARD_X, y = CARD_Y, w = CARD_W, h = CARD_B - CARD_Y, ix = x + 22, iw = w - 44;
+    const float sx = ix, sy = y + 22, sw = iw, sh = STAGE_H;
+    const H64GameInfo *gi = v && v->hasInfo && v->info.found ? &v->info : NULL;
+    float now = UiTime(), a = 0.3f + 0.7f * smooth01((now - selAt) / 0.2f), slide = (1.0f - smooth01((now - selAt) / 0.2f)) * 10.0f;
+    float ca = 0, ty, divY = CARD_B - 76;
+    char buf[1024];
+
+    UiPanel(x, y, w, h, 22);
+
+    // ---- The picture: the box art over a glow of its own colours, else the placeholder.
+    if (v && v->cover)
+        ca = smooth01((now - (v->coverAt > selAt ? v->coverAt : selAt)) / 0.25f);
+    UiRoundRect(sx, sy, sw, sh, 16, D3DCOLOR_ARGB(255, 22, 23, 31), D3DCOLOR_ARGB(255, 16, 17, 23));
+    {
+        // The initials only when no picture is on its way: the worker sends a game
+        // with its picture already decoded, so before its answer, wait a moment.
+        float pa = v ? 1.0f : smooth01((now - selAt - 0.3f) / 0.2f);
+        stage_placeholder(sx, sy, sw, sh, shown, a * pa * (1.0f - ca));
+    }
+    if (ca > 0)
+    {
+        float maxW = sw - 56, maxH = sh - 36, cw = (float)v->coverW, chh = (float)v->coverH, k, cx, cy;
+        if (v->glow) UiImage(v->glow, sx, sy, sw, sh, 16, UiAlpha(D3DCOLOR_ARGB(255, 255, 255, 255), ca * a));
+        // A veil keeps the glow behind the box (and the edges dark).
+        UiRoundRect(sx, sy, sw, sh, 16, UiAlpha(D3DCOLOR_ARGB(120, 12, 13, 18), ca * a), UiAlpha(D3DCOLOR_ARGB(185, 12, 13, 18), ca * a));
+        k = maxW / cw < maxH / chh ? maxW / cw : maxH / chh;
+        if (k > 1.15f) k = 1.15f;
+        cw *= k;
+        chh *= k;
+        cx = sx + (sw - cw) * 0.5f;
+        cy = sy + (sh - chh) * 0.5f + (1.0f - ca) * 6.0f;
+        UiShadow(cx, cy + 8, cw, chh, 8, 26, UiAlpha(D3DCOLOR_ARGB(170, 0, 0, 0), ca * a));
+        UiImage(v->cover, cx, cy, cw, chh, 7, UiAlpha(D3DCOLOR_ARGB(255, 255, 255, 255), ca * a));
+        UiRoundRing(cx, cy, cw, chh, 7, 1.0f, UiAlpha(D3DCOLOR_ARGB(40, 255, 255, 255), ca * a));
+    }
+    UiRoundRing(sx, sy, sw, sh, 16, 1.0f, UiAlpha(UI_COL_LINE, a));
+    if (busy && ca <= 0)
+    {
+        // Downloading: a pill with three pulsing dots at the bottom right of the picture.
+        float pw = UiTextWidth(UI_REGULAR, 15, "Downloading") + 64, ph = 30, px = sx + sw - pw - 12, py = sy + sh - ph - 12;
+        int d;
+        UiRoundRect(px, py, pw, ph, ph * 0.5f, D3DCOLOR_ARGB(200, 16, 17, 23), D3DCOLOR_ARGB(200, 16, 17, 23));
+        UiText(UI_REGULAR, 15, px + 14, py + ph * 0.5f, UI_COL_TEXT2, "Downloading", UI_LEFT);
+        for (d = 0; d < 3; d++)
+        {
+            float on = 0.5f + 0.5f * sinf(now * 6.0f - d * 0.9f);
+            UiCircle(px + pw - 38 + d * 11, py + ph * 0.5f, 3.0f, UiAlpha(UI_COL_ACCENT_HI, 0.35f + 0.65f * on));
+        }
+    }
+
+    // ---- Title, then year, developer, publisher.
+    ty = sy + sh + 32 + slide;
+    {
+        int lines = UiTextWrap(UI_BOLD, 26, iw, 2, gi && gi->title[0] ? gi->title : shown, buf, sizeof(buf));
+        UiText(UI_BOLD, 26, ix, ty, UiAlpha(UI_COL_TEXT, a), buf, UI_LEFT);
+        ty += (lines - 1) * 26 * 1.35f + 32;
+    }
+    buf[0] = 0;
+    if (gi)
+    {
+        const char *parts[3];
+        int k, np = 0;
+        parts[np++] = gi->year[0] ? gi->year : NULL;
+        parts[np++] = gi->developer[0] ? gi->developer : NULL;
+        parts[np++] = gi->publisher[0] && _stricmp(gi->publisher, gi->developer) ? gi->publisher : NULL;
+        for (k = 0; k < np; k++)
+        {
+            if (!parts[k]) continue;
+            if (buf[0]) strcat(buf, "  " UI_CH_MIDDOT "  ");
+            strncat(buf, parts[k], sizeof(buf) - strlen(buf) - 8);
+        }
+    }
+    if (!buf[0] && ri->ok) strncpy(buf, ri->name, sizeof(buf) - 1);   // the header's own name
+    if (buf[0])
+    {
+        char fit[256];
+        UiTextFit(UI_REGULAR, 18, iw, buf, fit, sizeof(fit));
+        UiText(UI_REGULAR, 18, ix, ty, UiAlpha(gi ? UI_COL_TEXT2 : UI_COL_TEXT3, a), fit, UI_LEFT);
+        ty += 36;
+    }
+
+    // ---- Genre, players, region.
+    {
+        float cxp = ix;
+        const char *region = gi && gi->region[0] ? gi->region : ri->region;
+        char players[24];
+        int any = 0;
+        if (gi && gi->genre[0]) { cxp += chip(cxp, ty, gi->genre, a) + 8; any = 1; }
+        if (gi && gi->players[0])
+        {
+            _snprintf(players, sizeof(players) - 1, "%s player%s", gi->players, strcmp(gi->players, "1") ? "s" : "");
+            players[sizeof(players) - 1] = 0;
+            cxp += chip(cxp, ty, players, a) + 8;
+            any = 1;
+        }
+        if (region[0] && cxp + UiTextWidth(UI_BOLD, 15, region) + 26 <= ix + iw) { cxp += chip(cxp, ty, region, a) + 8; any = 1; }
+        if (any) ty += 30;
+    }
+
+    // ---- A few lines about the game (Wikipedia), as many as fit above the last row.
+    if (gi && gi->description[0])
+    {
+        float lineH = 17 * 1.35f, room = divY - 20 - (ty + 4);
+        int maxLines = (int)(room / lineH);
+        if (maxLines > 0)
+        {
+            int lines = UiTextWrap(UI_REGULAR, 17, iw, maxLines, gi->description, buf, sizeof(buf));
+            UiText(UI_REGULAR, 17, ix, ty + 4 + lineH * 0.5f, UiAlpha(UI_COL_TEXT2, a), buf, UI_LEFT);
+            UiText(UI_REGULAR, 13, ix, ty + 4 + lines * lineH + 9, UiAlpha(UI_COL_TEXT3, a), "Text: Wikipedia (CC BY-SA)", UI_LEFT);
+        }
+    }
+
+    // ---- What the emulator knows from the file.
+    UiRect(ix, divY, iw, 1, UI_COL_LINE);
+    if (!ri->ok)
+        UiText(UI_REGULAR, 19, ix, divY + 36, UI_COL_ACCENT_HI, "Not an N64 ROM", UI_LEFT);
+    else
+    {
+        detail(ix, divY + 22, 110, "GAME CODE", ri->code, 1.0f);
+        detail(ix + 128, divY + 22, 90, "SIZE", ri->size, 1.0f);
+        detail(ix + 236, divY + 22, iw - 236, "SAVE", ri->save, 1.0f);
+    }
+}
+
+static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, int rows, const RomInfo *info, const ArtView *view,
+                         int busy, float selAt, const ArtStatus *st)
 {
     static UiAnim selAnim;
-    const float listX = UI_SAFE_X, listY = 128, listW = 700, rowH = 36, pad = 12;
-    const float listH = rows * rowH + 2 * pad, cardX = 788, cardW = UI_WIDTH - UI_SAFE_X - cardX;
+    const float listX = UI_SAFE_X, listY = LIST_Y, listW = LIST_W, rowH = ROW_H, pad = 12;
+    const float listH = rows * rowH + 2 * pad;
     int n = (int)roms.size(), i;
     char buf[160];
     UiBackdrop();
-    UiBrand(UI_SAFE_X, 72, 34);
+    {
+        // The version beside the name, small (the About page has it too).
+        float bw = UiBrand(UI_SAFE_X, 72, 34);
+        UiText(UI_REGULAR, 18, UI_SAFE_X + bw + 14, 74, UI_COL_TEXT2, "v" H64_VERSION_STRING, UI_LEFT);
+    }
     if (n)
     {
         sprintf(buf, "%d / %d", sel + 1, n);
-        UiText(UI_REGULAR, 19, UI_WIDTH - UI_SAFE_X, 64, UI_COL_TEXT2, buf, UI_RIGHT);
-        UiText(UI_REGULAR, 15, UI_WIDTH - UI_SAFE_X, 88, UI_COL_TEXT3, "game:\\roms\\", UI_RIGHT);
+        UiText(UI_REGULAR, 19, listX + listW, 64, UI_COL_TEXT2, buf, UI_RIGHT);
+        UiText(UI_REGULAR, 15, listX + listW, 88, UI_COL_TEXT3, "game:\\roms\\", UI_RIGHT);
     }
     UiPanel(listX, listY, listW, listH, 20);
     if (!n)
@@ -629,7 +1410,7 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     }
     else
     {
-        float sy = anim_step(&selAnim, listY + pad + (sel - top) * rowH, 0), textW = listW - 72;
+        float sy = anim_step(&selAnim, listY + pad + (sel - top) * rowH, 0), textW = listW - 64;
         selection_bar(listX + 10, sy + 1, listW - (n > rows ? 36 : 20), rowH - 2);
         for (i = 0; i < rows && top + i < n; i++)
         {
@@ -648,42 +1429,56 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
             UiRoundRect(tx, ty, 4, th, 2, D3DCOLOR_ARGB(20, 255, 255, 255), D3DCOLOR_ARGB(20, 255, 255, 255));
             UiRoundRect(tx, yy, 4, hh, 2, D3DCOLOR_ARGB(150, 255, 255, 255), D3DCOLOR_ARGB(110, 255, 255, 255));
         }
-
-        // Details card.
-        UiPanel(cardX, listY, cardW, listH, 20);
-        game_tile(cardX + 20, listY + 20, cardW - 40, 118, roms[sel].shown.c_str());
-        {
-            float ty = listY + 162;
-            int lines = UiTextWrap(UI_BOLD, 25, cardW - 40, 2, roms[sel].shown.c_str(), buf, sizeof(buf));
-            UiText(UI_BOLD, 25, cardX + 20, ty + 17, UI_COL_TEXT, buf, UI_LEFT);
-            ty += lines * 25 * 1.35f + 6;
-            if (!info->ok)
-                UiText(UI_REGULAR, 19, cardX + 20, ty + 12, UI_COL_ACCENT_HI, "Not an N64 ROM", UI_LEFT);
-            else
-            {
-                float half = (cardW - 40) * 0.5f, gy = listY + listH - 186;
-                UiText(UI_REGULAR, 18, cardX + 20, ty + 12, UI_COL_TEXT2, info->name, UI_LEFT);
-                UiRect(cardX + 20, gy - 24, cardW - 40, 1, UI_COL_LINE);
-                detail(cardX + 20, gy, half - 12, "GAME CODE", info->code);
-                detail(cardX + 20 + half, gy, half - 12, "SIZE", info->size);
-                detail(cardX + 20, gy + 62, cardW - 40, "SAVE", info->save);
-                detail(cardX + 20, gy + 124, cardW - 40, "SAVE FOLDER", info->folder);
-            }
-        }
+        card_draw(roms[sel].shown.c_str(), info, view, busy, selAt);
     }
     UiScreenFooter(n ? "A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard" : "Y:Settings|X:About|BACK:Dashboard");
+    if (st->bulk)
+    {
+        // "Download all" progress at the right end of the footer.
+        const float bw = 150, right = UI_WIDTH - UI_SAFE_X, cy = 664;
+        float frac = st->total ? (float)st->done / st->total : 0;
+        if (st->done) sprintf(buf, "Box art %d / %d", st->done, st->total);
+        else strcpy(buf, "Box art: connecting" UI_CH_ELLIPSIS);
+        UiText(UI_REGULAR, 17, right - bw - 16, cy, UI_COL_TEXT2, buf, UI_RIGHT);
+        UiRoundRect(right - bw, cy - 3, bw, 6, 3, D3DCOLOR_ARGB(30, 255, 255, 255), D3DCOLOR_ARGB(30, 255, 255, 255));
+        if (frac > 0) UiRoundRect(right - bw, cy - 3, bw * frac, 6, 3, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    }
 }
+
+#define MSG_MS 6000   // how long a message (new version, box art) stays
+
+// Box art may be downloaded here (the settings allow it; not in Xenia, whose
+// network is not the console's, unless artdownload=2).
+static int art_net_possible(const Config *c) { return (!c->xenia && h64_fenv_reliable()) || c->artDownload == 2; }
 
 int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char *path, size_t pathSize)
 {
     std::vector<RomEntry> roms;
+    std::vector<const char *> paths;
     UiInput in;
-    int sel = 0, top = 0, detailsFor = -1, i;
+    int sel = 0, top = 0, detailsFor = -1, i, lastSel = -1;
     RomInfo details;
     const int rows = 13;
+    char newVersion[32], msg[128], drive[16];
+    DWORD msgAt = 0, demoAt = GetTickCount();
+    float selAt = 0;
+    msg[0] = 0;
     scan_roms(&roms);
     for (i = 0; i < (int)roms.size(); i++)
+    {
+        paths.push_back(roms[i].file.c_str());
         if (!_stricmp(roms[i].file.c_str(), c->lastRom)) sel = i;
+    }
+    if (c->browserSel[0])
+    {
+        // browsersel=FILE (console checks): start on that ROM, whatever the
+        // last game played was.
+        for (i = 0; i < (int)roms.size(); i++)
+        {
+            const char *f = roms[i].file.c_str(), *base = strrchr(f, '\\');
+            if (!_stricmp(base ? base + 1 : f, c->browserSel)) sel = i;
+        }
+    }
     if (c->autoStart > 0 && !roms.empty())
     {
         // Remote checks: the last selection, then the next ROMs in the list.
@@ -693,15 +1488,49 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         H64_INFO("[menu] autostart %d: %s", c->autoIndex + 1, path);
         return 1;
     }
+    // Box art: in the folder of the settings' drive ("game:\config\settings.ini" -> game).
+    for (i = 0; settingsPath[i] && settingsPath[i] != ':' && i < (int)sizeof(drive) - 1; i++) drive[i] = settingsPath[i];
+    drive[i] = 0;
+    if (!settingsPath[i] || !i) strcpy(drive, "game");
+    ArtStart(drive);
+    ArtSetNetwork(c->artDownload && art_net_possible(c));
+    ArtPause(0);
+
     UiInputInit(&in);
     memset(&details, 0, sizeof(details));
+    if (c->controlsTest >= 0) settings_loop(dev, c, settingsPath, c->controlsTest);
+    if (c->artAll && !roms.empty() && art_net_possible(c)) ArtBulkStart(&paths[0], (int)paths.size());   // artall=1 (checks)
+    // A newer release on GitHub: a message for a few seconds (the check runs
+    // in the background and may answer later, or never without a network).
+    // updatecheck=2 (testing): as if this were version 0.0.0, so any release is newer.
+    if (c->updateCheck && !c->xenia && h64_fenv_reliable()) UpdateCheckStart(c->updateCheck == 2 ? "0.0.0" : H64_VERSION_STRING);
     for (;;)
     {
         WORD down = UiInputPoll(&in);
+        ArtStatus st;
         int n = (int)roms.size();
-        if ((down & XINPUT_GAMEPAD_BACK) && confirm_quit(dev)) return 0;
+        if (UpdateCheckTake(newVersion, sizeof(newVersion)))
+        {
+            _snprintf(msg, sizeof(msg) - 1, "Harissa64 %s is available on GitHub", newVersion);
+            msg[sizeof(msg) - 1] = 0;
+            msgAt = GetTickCount();
+            H64_INFO("[update] %s", msg);
+        }
+        if (ArtTakeNote(msg, sizeof(msg))) msgAt = GetTickCount();
+        if ((down & XINPUT_GAMEPAD_BACK) && confirm_quit(dev))
+        {
+            views_clear(dev);
+            ArtPause(1);
+            return 0;
+        }
         if (n)
         {
+            if (c->browserDemo > 0 && GetTickCount() - demoAt >= (DWORD)c->browserDemo)
+            {
+                // browserdemo=N: walk the list by itself (captures).
+                sel = (sel + 1) % n;
+                demoAt = GetTickCount();
+            }
             if (down & XINPUT_GAMEPAD_DPAD_UP) sel = (sel + n - 1) % n;
             if (down & XINPUT_GAMEPAD_DPAD_DOWN) sel = (sel + 1) % n;
             if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) sel = sel > rows ? sel - rows : 0;
@@ -712,15 +1541,40 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
                 path[pathSize - 1] = 0;
                 strncpy(c->lastRom, path, sizeof(c->lastRom) - 1);
                 ConfigWriteMenuKeys(c, settingsPath, 1);
+                // The game needs the memory and the GPU: the pictures go, the worker waits.
+                views_clear(dev);
+                ArtPause(1);
                 return 1;
             }
             if (sel < top) top = sel;
             if (sel >= top + rows) top = sel - rows + 1;
             if (detailsFor != sel) { rom_details(roms[sel].file.c_str(), &details); detailsFor = sel; }
+            if (sel != lastSel)
+            {
+                // The selection first, then its neighbours (read ahead from the files already there).
+                const char *want[5];
+                int k, cnt = 0;
+                static const int order[5] = { 0, 1, -1, 2, -2 };
+                for (k = 0; k < 5 && k < n; k++) want[cnt++] = paths[(sel + order[k] + n * 2) % n];
+                ArtWant(want, cnt);
+                selAt = UiTime();
+                lastSel = sel;
+            }
         }
         if (down & XINPUT_GAMEPAD_Y)
         {
-            settings_loop(dev, c, settingsPath);
+            int all = settings_loop(dev, c, settingsPath, -1);
+            ArtSetNetwork(c->artDownload && art_net_possible(c));
+            if (all && n)
+            {
+                if (!art_net_possible(c)) strcpy(msg, "Downloads are not available here");
+                else
+                {
+                    ArtBulkStart(&paths[0], n);
+                    strcpy(msg, "Getting box art for all games" UI_CH_ELLIPSIS);
+                }
+                msgAt = GetTickCount();
+            }
             UiInputInit(&in);
         }
         if (down & XINPUT_GAMEPAD_X)
@@ -728,10 +1582,19 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             AboutScreen(dev);
             UiInputInit(&in);
         }
+        views_take(dev);
+        ArtGetStatus(&st);
 
         dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
         UiBegin(dev);
-        browser_draw(roms, sel, top, rows, &details);
+        browser_draw(roms, sel, top, rows, &details, n ? view_find(roms[sel].file.c_str()) : NULL,
+                     n && !_stricmp(st.busyPath, roms[sel].file.c_str()), selAt, &st);
+        if (msg[0])
+        {
+            DWORD age = GetTickCount() - msgAt;
+            if (age < MSG_MS) UiToast(msg, (float)age, (float)MSG_MS);
+            else msg[0] = 0;
+        }
         UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);

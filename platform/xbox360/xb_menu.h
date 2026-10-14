@@ -16,7 +16,9 @@ struct UiMenu
     char value[UI_MENU_MAX][32];   // shown right-aligned ("< 250 ms >"), empty for actions
     int count, sel;
     char footer[96];
+    int page;                      // UI_PAGE_*: how UiMenuDraw shows it
 };
+enum { UI_PAGE_LIST = 0, UI_PAGE_CONTROLS };
 
 void UiMenuClear(UiMenu *m, const char *title, const char *footer);
 int UiMenuAdd(UiMenu *m, const char *label, const char *value);   // returns the item's index
@@ -25,8 +27,8 @@ void UiMenuDraw(const UiMenu *m);   // between UiBegin and UiEnd
 // Up/down move the selection (wrapping).
 void UiMenuNavigate(UiMenu *m, WORD down);
 
-// ---- Settings (cpu, hle, audio margin, smoothing, FPS display) ----
-enum { SET_NONE = 0, SET_CHANGED, SET_BACK, SET_SAVE_ALL, SET_SAVE_GAME };
+// ---- Settings (cpu, hle, audio margin, FPS display, the Graphics and Controls pages) ----
+enum { SET_NONE = 0, SET_CHANGED, SET_BACK, SET_SAVE_ALL, SET_SAVE_GAME, SET_ART_ALL };
 // Fills the menu from *c; `perGame` adds "Save for this game".
 void SettingsBuild(UiMenu *m, const Config *c, int perGame);
 // Applies one input to *c and the menu; returns SET_*.
@@ -35,6 +37,11 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down);
 // Reads a ROM file, or the first N64 ROM inside a .zip. Returns a malloc'd
 // buffer, or NULL.
 u8 *RomFileLoad(const char *path, u32 *size);
+
+// The header of a ROM file (plain or zipped) in *rom (free with h64_rom_free).
+// Returns the ROM size, 0 when it is not an N64 ROM. Any thread.
+struct H64Rom;
+u32 RomReadHeader(const char *path, H64Rom *rom);
 
 // The game's save/profile folder name (h64_save_folder_name) from the ROM
 // file's header. Returns 0 when the file is not an N64 ROM.

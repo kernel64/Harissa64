@@ -354,6 +354,18 @@ void h64_sp_write(H64System *sys, u32 reg, u32 v)
         }
 #undef SP_PAIR
         rsp->status = s;
+        if (rsp->hleWait)
+        {
+            // A Boss ZSort task waiting for a signal: on with its display list.
+            int dp = 0;
+            if (h64_hle_resume(sys, &dp))
+            {
+                rsp->hleWait = 0;
+                rsp->hleDpInterrupt = dp;
+                h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_HLE_GFX_CYCLES);
+            }
+            return;
+        }
         if (rsp->hleBusy && rsp->hleExtended && (v & 0x0400))
         {
             // osSpTaskYield during a graphics task lengthened to its real
@@ -605,6 +617,8 @@ void h64_rsp_sync(H64System *sys)
 void h64_rsp_slice_event(H64System *sys)
 {
     H64Rsp *rsp = &sys->rsp;
+    if (rsp->hleBusy && rsp->hleWait)
+        return;   // ends when the CPU's signal lets the task finish (h64_sp_write)
     if (rsp->hleBusy)
     {
         int ran, fullSync, kind;
@@ -636,6 +650,17 @@ void h64_rsp_slice_event(H64System *sys)
                     return;
                 }
             }
+        }
+        {
+            // A streamed display list still waiting for the CPU: look again later.
+            u32 busy = 0;
+            int dp = 0;
+            if (h64_hle_stream_poll(sys, &busy, &dp))
+            {
+                h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + busy);
+                return;
+            }
+            if (dp) rsp->hleDpInterrupt = 1;
         }
         // End of an HLE task: halt with the bits the microcode would set.
         rsp->hleBusy = 0;

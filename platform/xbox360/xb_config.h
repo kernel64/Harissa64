@@ -8,6 +8,7 @@
 
 #include "../../core/common/h64_types.h"
 #include "../../core/pif/h64_input_script.h"
+#include "../../core/pif/h64_padmap.h"
 
 struct Config
 {
@@ -37,8 +38,16 @@ struct Config
     int sharpen;        // sharpen=0|1|2: contrast-adaptive sharpening (off, low, high)
     int blur;           // blur=0|1|2: blur (off, soft, strong)
     int screen;         // screen=0..4: none, scanlines, CRT, curved CRT, LCD grid (crt=1: curved CRT)
-    int aspect;         // aspect=0|1|2: 4:3, 16:9 widescreen (wider 3D), 16:9 stretched
+    int brightness;     // brightness=0|1|2: as the console, lighter, much lighter
     int showFps;        // showfps=1: frames shown per second in a corner
+    int logCpu;         // logcpu=N: hardware thread of the log writer (5)
+    int gameFlags;      // gameflags=HEX: the game's profile flags instead of the table's (checks; -1: the table)
+    int updateCheck;    // updatecheck=0: do not ask GitHub for a newer release (xb_update.cpp); 2: as if running 0.0.0 (testing)
+    int artDownload;    // artdownload=0: the ROM browser uses only the box art and game information already in
+                        // <drive>:\art\games\ (xb_art.cpp); 1 (default): it downloads what is missing; 2: also in Xenia
+    int browserDemo;    // browserdemo=N: the ROM browser moves its selection down every N ms (captures in Xenia)
+    char browserSel[128]; // browsersel=FILE: the ROM browser starts on that file name (console checks), over lastrom=
+    int artAll;         // artall=1: the ROM browser starts "Get box art for all games" by itself (checks)
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
     int parseWorker;    // parseworker=0: display lists parsed on the graphics worker too (no second worker)
     int asyncAudio;     // asyncaudio=0: audio HLE tasks on the CPU thread
@@ -53,18 +62,22 @@ struct Config
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
     u32 menuAt;         // menuat=N: open the in-game menu at VI N (remote checks; does not skip the ROM browser)
     u32 aboutAt;        // aboutat=N: the same, showing the About panel
+    int controlsTest;   // controlstest=N: the ROM list opens Settings > Controls on item N; 100+N: also
+                        // waiting for an input, again and again; 200+N: the Settings page on item N
+                        // (remote checks of the drawing; -1: off)
     int autoStart;      // autostart=N: the ROM browser starts N games by itself, the last selection then the
                         // next ones in the list (remote checks of game changes)
     int autoIndex;      // games the browser started by itself so far
     u32 browserAt;      // browserat=N: back to the ROM list at VI N (as the menu's "Back to the ROM list")
     int xenia;          // xenia=1: running in Xenia (no FPSCR access, no return to the dashboard)
+    H64PadMap padMap[4];    // controls of N64 ports 1-4 (map_a=xa,... ; p2_map_a=... for port 2; core/pif/h64_padmap.h)
 };
 
 void ConfigDefaults(Config *c);
 // Applies the key=value lines of a file over *c. Returns 0 when the file is missing.
 int ConfigParseFile(Config *c, const char *path);
 // Writes the keys the menu edits (cpu, hle, audioms, showfps, the graphics
-// keys, and lastrom when `withLastRom`). Returns 0 on failure.
+// keys, the controls, and lastrom when `withLastRom`). Returns 0 on failure.
 int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom);
 
 #endif

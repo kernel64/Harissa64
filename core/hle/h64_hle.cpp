@@ -33,6 +33,7 @@
 #include "h64_hle.h"
 #include "h64_gfx.h"
 #include "../common/h64_log.h"
+#include "../rdp/h64_rdp.h"
 #include "../system/h64_system.h"
 
 #if defined(_MSC_VER) && _MSC_VER < 1900
@@ -220,10 +221,38 @@ static ucode_func_t try_audio_task_detection(struct hle_t *hle)
     return NULL;
 }
 
+static void task_done(struct hle_t *hle)
+{
+    rsp_break(hle, SP_STATUS_TASKDONE);
+}
+
+// Other tasks by the byte sum of their microcode (hle.c's
+// try_normal_task_detection): the JPEG decoders, and OoT's StoreVe12, which
+// has nothing to emulate. Graphics tasks never get here.
+static ucode_func_t try_normal_task_detection(struct hle_t *hle)
+{
+    uint32_t uc = *dmem_u32(hle, TASK_UCODE), size = *dmem_u32(hle, TASK_UCODE_SIZE), n, i, sum = 0;
+    n = (size < 0xf80 ? size : 0xf80) >> 1;
+    for (i = 0; i < n; i++) sum += hle->dram[(uc + i) & HLE_DRAM_MASK];
+    switch (sum)
+    {
+    case 0x278: return &task_done;           // StoreVe12 (Ocarina of Time)
+    case 0x2c85a: return &jpeg_decode_PS0;   // Pokemon Stadium (J)
+    case 0x2caa6: return &jpeg_decode_PS;    // Ocarina of Time, Pokemon Stadium 1 and 2
+    case 0x130de: case 0x278b0: return &jpeg_decode_OB;   // Ogre Battle 64, Bottom of the 9th
+    }
+    return NULL;
+}
+
 static ucode_func_t task_detection(struct hle_t *hle)
 {
     if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) == 2) {
         ucode_func_t f = try_audio_task_detection(hle);
+        if (f)
+            return f;
+    }
+    if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) != 1) {
+        ucode_func_t f = try_normal_task_detection(hle);
         if (f)
             return f;
     }
@@ -409,6 +438,59 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
     return 1;
 }
 
+// A streamed task's part parsed on the CPU thread (Gauntlet Legends, profile
+// gfxStream): with the graphics worker its lists and the snapshot their loads
+// read go to a slot rendered there, in order, while the CPU goes on.
+static void stream_submit(H64System *sys)
+{
+    struct hle_t *hle = sys->hle;
+    struct hle_t::HleGfxSlot *s = &hle->gfxSlot[hle->gfxSlotNext];
+    int mustSync;
+    hle->gfxSlotNext ^= 1;
+    if (!s->out) s->out = h64_gfx_out_create();
+    if (s->used)
+    {
+        // Its part from two submits ago must be drawn: its buffers are reused.
+        u64 t0 = h64_prof_now(sys);
+        sys->asyncWaitTicket(sys->asyncUser, s->renderTicket);
+        sys->prof[H64_PROF_WAIT_START] += h64_prof_now(sys) - t0;
+    }
+    s->sys = sys;
+    s->used = 1;
+    s->ran = 1;
+    s->fullSync = s->mustSync = 0;
+    s->parseOnSecond = 0;
+    mustSync = h64_gfx_package(sys, hle->gfx, s->out);
+    s->renderTicket = sys->asyncStart(sys->asyncUser, gfx_render_job, s);
+    if (mustSync) h64_hle_async_wait(sys);
+}
+
+int h64_hle_stream_poll(H64System *sys, u32 *busyCycles, int *dpInterrupt)
+{
+    struct hle_t *hle = sys->hle;
+    int fullSync = 0, r;
+    u64 t0;
+    if (!hle || !hle->gfx || !h64_gfx_stream_waiting(hle->gfx)) return 0;
+    t0 = h64_prof_now(sys);
+    if (sys->asyncStart) h64_gfx_set_no_flush(hle->gfx, 1);
+    r = h64_gfx_stream_resume(sys, hle->gfx, &fullSync);
+    if (sys->asyncStart)
+    {
+        h64_gfx_set_no_flush(hle->gfx, 0);
+        if (r > 0) stream_submit(sys);
+    }
+    sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+    hle->streamFullSync |= fullSync;
+    if (r < 0 || (r > 0 && h64_gfx_stream_waiting(hle->gfx)))
+    {
+        *busyCycles = H64_HLE_STREAM_POLL;
+        return 1;
+    }
+    *dpInterrupt = hle->streamFullSync;
+    hle->streamFullSync = 0;
+    return 0;
+}
+
 u32 h64_hle_gfx_cost(H64System *sys)
 {
     struct hle_t *hle = sys->hle;
@@ -423,6 +505,24 @@ int h64_hle_gfx_measure(H64System *sys, u32 *verts, u32 *tris, u32 *commands)
     if (!hle->gfx) hle->gfx = h64_gfx_create(sys);
     if (!h64_gfx_task_known(sys, hle->gfx)) return 0;
     return h64_gfx_measure(sys, hle->gfx, verts, tris, commands);
+}
+
+int h64_hle_resume(H64System *sys, int *dpInterrupt)
+{
+    struct hle_t *hle = sys->hle;
+    int fullSync = 0;
+    u64 t0 = h64_prof_now(sys);
+    *dpInterrupt = 0;
+    if (!hle || !hle->gfx) return 1;
+    h64_gfx_resume(sys, hle->gfx, &fullSync);
+    sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+    if (h64_gfx_waiting(hle->gfx))
+    {
+        if (fullSync) h64_rdp_hle_full_sync(sys);
+        return 0;
+    }
+    *dpInterrupt = fullSync;
+    return 1;
 }
 
 int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpInterrupt)
@@ -440,13 +540,46 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
     if (sys->rsp.pc != 0)
         return 0;
 
+    if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) == 1 && sys->options.hleGfx)
+    {
+        // Resident Evil 2's picture and movie tasks (graphics type, no
+        // display list): run here, as mupen64plus-rsp-hle does.
+        hle->dirtyLo = hle->dirtyHi = 0;
+        if (h64_hle_re2_task(hle, *dmem_u32(hle, TASK_UCODE), *dmem_u32(hle, TASK_UCODE_DATA)))
+        {
+            if (hle->dirtyHi > hle->dirtyLo)
+                h64_jit_notify_write(sys, hle->dirtyLo, hle->dirtyHi - hle->dirtyLo);
+            *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
+            *busyCycles = H64_HLE_GFX_CYCLES;
+            return 1;
+        }
+    }
     if (is_task(hle) && *dmem_u32(hle, TASK_TYPE) == 1)
     {
         int fullSync = 0;
         if (!sys->options.hleGfx)
             return 0;
         if (!hle->gfx) hle->gfx = h64_gfx_create(sys);
-        if (sys->asyncStart)
+        if (h64_gfx_task_sync(sys, hle->gfx))
+        {
+            // Boss's ZSort waits for the CPU inside its tasks: run here, on the
+            // CPU thread (after the workers), in parts.
+            u64 t0;
+            h64_hle_async_wait(sys);
+            t0 = h64_prof_now(sys);
+            if (!h64_gfx_run_task(sys, hle->gfx, &fullSync)) return 0;
+            sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
+            *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
+            *busyCycles = H64_HLE_GFX_CYCLES;
+            if (h64_gfx_waiting(hle->gfx))
+            {
+                sys->rsp.hleWait = 1;
+                if (fullSync) h64_rdp_hle_full_sync(sys);
+            }
+            else *dpInterrupt = fullSync;
+            return 1;
+        }
+        if (sys->asyncStart && !sys->options.gfxStream)
         {
             // On the worker: the CPU goes on; the task ends (or falls back
             // to LLE) after asyncGfxCycles, where the CPU waits for it.
@@ -494,10 +627,20 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             s->renderTicket = sys->asyncStart(sys->asyncUser, gfx_render_job, s);
             *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
             *busyCycles = sys->asyncGfxCycles ? sys->asyncGfxCycles : H64_HLE_GFX_CYCLES;
+            if (sys->options.gfxShortTask && *busyCycles > H64_HLE_GFX_CYCLES) *busyCycles = H64_HLE_GFX_CYCLES;
             return 1;
         }
         u64 t0 = h64_prof_now(sys);
-        int ran = h64_gfx_run_task(sys, hle->gfx, &fullSync);
+        int ran, deferred = sys->asyncStart && sys->options.gfxStream;
+        // Profile gfxStream with the graphics worker: parsed here (the list is
+        // written while it runs), drawn there (stream_submit).
+        if (deferred) h64_gfx_set_no_flush(hle->gfx, 1);
+        ran = h64_gfx_run_task(sys, hle->gfx, &fullSync);
+        if (deferred)
+        {
+            h64_gfx_set_no_flush(hle->gfx, 0);
+            if (ran) stream_submit(sys);
+        }
         sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
         if (!ran)
             return 0;
@@ -505,6 +648,13 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
         *busyCycles = H64_HLE_GFX_CYCLES;
         if (h64_hle_gfx_cost(sys) > *busyCycles) *busyCycles = h64_hle_gfx_cost(sys);
         *dpInterrupt = fullSync;
+        if (h64_gfx_stream_waiting(hle->gfx))
+        {
+            // Waits for the CPU to write more of the list (h64_hle_stream_poll).
+            hle->streamFullSync = fullSync;
+            *dpInterrupt = 0;
+            *busyCycles = H64_HLE_STREAM_POLL;
+        }
         return 1;
     }
     if (!(sys->options.hleAudio || sys->options.hleAudioCheck))

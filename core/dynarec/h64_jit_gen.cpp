@@ -1905,7 +1905,7 @@ static int emit_ovf(Gen *g, u32 op, u32 pc)
 // routines (rtFpCheck, rtFpFinish in h64_jit_emit_runtime). Anything else
 // (NaN, denormal, overflow, an enabled Inexact trap...) goes to the slow path,
 // the interpreter, before anything is written. Host FPU flags must be
-// readable (not in Xenia: h64_fenv_reliable).
+// readable (not in Xenia: h64_fenv_reliable), except with fastFpu.
 static void fp_call(Gen *g, const u32 *routine, u32 *slow, u32 *nSlow)
 {
     ppc_branch_to(&g->c, routine, 1);
@@ -2740,7 +2740,10 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     g.paddr0 = paddr;
     g.cpi = sys->cpu.cpi ? sys->cpu.cpi : 1;
     g.native = h64_jit_kernel_mode(&sys->cpu) && !j->noNative;
-    g.fpu = g.native && !j->noFpu && h64_fenv_reliable();
+    // The checked FPU reads the host FPSCR flags; the fast FPU never does, so
+    // it also runs where they are not emulated (Xenia: Conker sent ~56000
+    // COP1 instructions a frame to the interpreter, 23 ms of helpers).
+    g.fpu = g.native && !j->noFpu && (j->fastFpu || h64_fenv_reliable());
     g.cacheOn = g.native && !j->noRegCache;
     rc_reset(&g.rc);
     g.pre = g.rc;

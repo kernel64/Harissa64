@@ -20,8 +20,16 @@ void ConfigDefaults(Config *c)
     c->rom[0] = 0;
     c->lastRom[0] = 0;
     c->showFps = 0;
+    c->updateCheck = 1;
+    c->artDownload = 1;
+    c->browserDemo = 0;
+    c->browserSel[0] = 0;
+    c->artAll = 0;
+    c->gameFlags = -1;
+    c->logCpu = 5;
     c->menuAt = 0;
     c->aboutAt = 0;
+    c->controlsTest = -1;
     c->autoStart = 0;
     c->autoIndex = 0;
     c->browserAt = 0;
@@ -46,7 +54,7 @@ void ConfigDefaults(Config *c)
     c->sharpen = 0;
     c->blur = 0;
     c->screen = 0;
-    c->aspect = 0;
+    c->brightness = 0;
     c->asyncGfx = 1;
     c->parseWorker = 1;
     c->asyncAudio = 1;
@@ -60,6 +68,10 @@ void ConfigDefaults(Config *c)
     c->stateSlot = 1;
     c->loadState = 0;
     c->saveStateAt = 0;
+    {
+        int i;
+        for (i = 0; i < 4; i++) h64_padmap_default(&c->padMap[i]);
+    }
 }
 
 int ConfigParseFile(Config *c, const char *path)
@@ -78,8 +90,16 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "rom")) { strncpy(c->rom, eq + 1, sizeof(c->rom) - 1); c->rom[sizeof(c->rom) - 1] = 0; }
         else if (!strcmp(line, "lastrom")) { strncpy(c->lastRom, eq + 1, sizeof(c->lastRom) - 1); c->lastRom[sizeof(c->lastRom) - 1] = 0; }
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
+        else if (!strcmp(line, "updatecheck")) c->updateCheck = atoi(eq + 1);
+        else if (!strcmp(line, "artdownload")) c->artDownload = atoi(eq + 1);
+        else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);
+        else if (!strcmp(line, "browsersel")) { strncpy(c->browserSel, eq + 1, sizeof(c->browserSel) - 1); c->browserSel[sizeof(c->browserSel) - 1] = 0; }
+        else if (!strcmp(line, "artall")) c->artAll = atoi(eq + 1);
+        else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtol(eq + 1, NULL, 16);
+        else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "aboutat")) c->aboutAt = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "controlstest")) c->controlsTest = atoi(eq + 1);
         else if (!strcmp(line, "autostart")) c->autoStart = atoi(eq + 1);
         else if (!strcmp(line, "browserat")) c->browserAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "hle")) c->hle = atoi(eq + 1);
@@ -104,8 +124,8 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "sharpen")) c->sharpen = atoi(eq + 1);
         else if (!strcmp(line, "crt")) c->screen = atoi(eq + 1) ? 3 : 0;
         else if (!strcmp(line, "screen")) c->screen = atoi(eq + 1);
+        else if (!strcmp(line, "brightness")) c->brightness = atoi(eq + 1);
         else if (!strcmp(line, "blur")) c->blur = atoi(eq + 1);
-        else if (!strcmp(line, "aspect")) c->aspect = atoi(eq + 1);
         else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
         else if (!strcmp(line, "parseworker")) c->parseWorker = atoi(eq + 1);
         else if (!strcmp(line, "asyncaudio")) c->asyncAudio = atoi(eq + 1);
@@ -118,6 +138,9 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
         else if (!strcmp(line, "tracestep")) c->traceStep = (u32)strtoul(eq + 1, NULL, 10);
+        else if (!strncmp(line, "map", 3)) h64_padmap_parse_key(&c->padMap[0], line, eq + 1);
+        else if (line[0] == 'p' && line[1] >= '2' && line[1] <= '4' && line[2] == '_' && !strncmp(line + 3, "map", 3))
+            h64_padmap_parse_key(&c->padMap[line[1] - '1'], line + 3, eq + 1);
         else if (!strcmp(line, "shots"))
         {
             char *p = eq + 1;
@@ -135,11 +158,34 @@ int ConfigParseFile(Config *c, const char *path)
 int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
 {
     FILE *f = fopen(path, "w");
+    int i;
     if (!f) return 0;
     fprintf(f, "# Written by the Harissa64 V2 menu\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
             c->smooth, c->showFps);
-    fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\naspect=%d\n", c->resScale, c->texFilter, c->sharpen,
-            c->blur, c->screen, c->aspect);
+    fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\n", c->resScale, c->texFilter,
+            c->sharpen, c->blur, c->screen, c->brightness);
+    if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
+    // Controls: "map=default" first (a game's profile then undoes custom
+    // controls of settings.ini), then every key of a changed mapping.
+    for (i = 0; i < 4; i++)
+    {
+        const H64PadMap *m = &c->padMap[i];
+        char pre[8];
+        int k;
+        pre[0] = 0;
+        if (i) sprintf(pre, "p%d_", i + 1);
+        fprintf(f, "%smap=default\n", pre);
+        if (h64_padmap_is_default(m)) continue;
+        for (k = 0; k < H64_N64_COUNT; k++)
+        {
+            char src[256];
+            h64_padmap_format_sources(m->src[k], src, sizeof(src));
+            fprintf(f, "%smap_%s=%s\n", pre, h64_padmap_n64_name(k), src);
+        }
+        fprintf(f, "%smap_stick=%s\n%smap_deadzone=%d\n%smap_range=%d\n", pre,
+                m->stick == H64_STICK_RIGHT ? "right" : m->stick == H64_STICK_NONE ? "none" : "left", pre, m->deadzone, pre,
+                m->range);
+    }
     if (withLastRom && c->lastRom[0]) fprintf(f, "lastrom=%s\n", c->lastRom);
     fclose(f);
     return 1;
