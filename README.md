@@ -2,7 +2,7 @@
 
 Harissa64 is a Nintendo 64 emulator for the Xbox 360. It runs on modded consoles (RGH or JTAG) and starts like any other homebrew, from Aurora, FreeStyle Dash or another dashboard. The name comes from harissa, the Tunisian chili paste.
 
-It's a hobby project, written from scratch. A lot of games already run at full speed, a few are still slow in busy scenes, and most of the library hasn't been tried yet. The [games list](docs/games.md) shows what we tested and how fast it runs.
+It's a hobby project, written from scratch. A lot of games already run at full speed, a few are still slow in busy scenes, and most of the library hasn't been tried yet. The [games list](docs/games.md) shows how games run, with the version they were tested on. Add your own results there.
 
 Use it only with games you own. No ROMs are included, and none will be.
 
