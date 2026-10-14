@@ -1463,6 +1463,16 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         paths.push_back(roms[i].file.c_str());
         if (!_stricmp(roms[i].file.c_str(), c->lastRom)) sel = i;
     }
+    if (c->browserSel[0])
+    {
+        // browsersel=FILE (console checks): start on that ROM, whatever the
+        // last game played was.
+        for (i = 0; i < (int)roms.size(); i++)
+        {
+            const char *f = roms[i].file.c_str(), *base = strrchr(f, '\\');
+            if (!_stricmp(base ? base + 1 : f, c->browserSel)) sel = i;
+        }
+    }
     if (c->autoStart > 0 && !roms.empty())
     {
         // Remote checks: the last selection, then the next ROMs in the list.

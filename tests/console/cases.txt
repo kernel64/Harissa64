@@ -11,3 +11,6 @@ re2_street|Resident Evil 2 (U) (V1.1).zip|re2_street.h64s|6590||60|
 drmario|Dr. Mario 64 (U).zip|drmario.h64s|2650||40|
 golf_hole|Mario Golf (U).zip|golf_hole1.h64s|860|A@200-204|300|
 pm_house|Paper Mario (U).zip|pm_house.h64s|6000||60|
+lod_walls|Castlevania - Legacy of Darkness (U).zip|lod_user1.h64s|2300||1080|
+dk64_camera|Donkey Kong 64 (U).zip|dk64_user1.h64s|7451||760|
+browser_art|-|-|0||0|browsersel=Madden NFL 2001 (U).zip
