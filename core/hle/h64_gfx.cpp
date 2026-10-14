@@ -242,6 +242,9 @@ struct H64Gfx
     // the task waits for the CPU (signals) between its main and sub display
     // lists and inside the sub list (bossWait: the parse stopped there).
     int bossWait, bossMain, bossSub, bossWaiting;
+    // Streamed lists rendered on the graphics worker (h64_gfx_package): the
+    // parse keeps its output instead of drawing it on the CPU thread.
+    int noFlush;
     u32 bossRdp[3], bossMask[2];
     float bossVS[2], bossVT[2], bossInvw, bossFogM, bossFogO, bossLookat[2][3];
     u8 bossFog[256];
@@ -3717,6 +3720,7 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->sys = sys;
     g->ucodeCount = g->ucodeNext = 0;
     g->uc = 0;
+    g->noFlush = 0;
     memset(g->segments, 0, sizeof(g->segments));
     g->dmaIo = 0;
     for (i = 0; i < GFX_STACK_MAX; i++) mat_identity(g->mv[i]);
@@ -3869,8 +3873,15 @@ int h64_gfx_run_task(H64System *sys, H64Gfx *g, int *fullSync)
 {
     if (!parse_task(sys, g, fullSync)) return 0;
     if (g->bossWait) g->fullSync = 0;   // the caller raises it now
-    flush_output(g);
+    if (!g->noFlush) flush_output(g);
     return 1;
+}
+
+void h64_gfx_set_no_flush(H64Gfx *g, int on)
+{
+    // A part packaged by h64_gfx_package starts with no loads of its own.
+    if (on) g->loadRanges.clear();
+    g->noFlush = on;
 }
 
 int h64_gfx_stream_waiting(const H64Gfx *g)
@@ -3890,16 +3901,23 @@ int h64_gfx_stream_resume(H64System *sys, H64Gfx *g, int *fullSync)
     g->tris.clear();
     g->ops.clear();
     if (!gfx_loop(sys, g, fullSync)) { g->streamWait = 0; return 0; }   // cannot go back to the LLE RSP now: ends
-    flush_output(g);
+    if (!g->noFlush) flush_output(g);
     return 1;
 }
 
 int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync, int *mustSync)
 {
-    size_t k;
     g->loadRanges.clear();
     g->texFromCimg = 0;
     if (!parse_task(sys, g, fullSync)) return 0;
+    *mustSync = h64_gfx_package(sys, g, out);
+    return 1;
+}
+
+int h64_gfx_package(H64System *sys, H64Gfx *g, H64GfxOut *out)
+{
+    size_t k;
+    int mustSync;
     // The lists go to `out` (O(1) swaps: g keeps out's old buffers for the next task).
     g->words.swap(out->words);
     g->tris.swap(out->tris);
@@ -3908,10 +3926,10 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync,
     // too: the renderer copies the image back into both (h64_gfx_render).
     // Profile gfxFrameToRdram: the renderer writes the frame into RDRAM at the
     // full sync; the task ends only once that is done.
-    *mustSync = sys->options.gfxFrameToRdram != 0;
+    mustSync = sys->options.gfxFrameToRdram != 0;
     out->cpuRanges.clear();
     if (!out->snapshot) out->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
-    if (!out->snapshot) { *mustSync = 1; return 1; }
+    if (!out->snapshot) { g->loadRanges.clear(); return 1; }
     {
         // Ranges sorted and merged first: a display list loads the same
         // texels many times (Conker's cutscenes: thousands of loads a frame).
@@ -3932,7 +3950,8 @@ int h64_gfx_parse_task(H64System *sys, H64Gfx *g, H64GfxOut *out, int *fullSync,
         }
         sys->prof[H64_PROF_GFX_SNAPSHOT] += h64_prof_now(sys) - t0;
     }
-    return 1;
+    g->loadRanges.clear();   // a streamed task's next part starts its own
+    return mustSync;
 }
 
 void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
