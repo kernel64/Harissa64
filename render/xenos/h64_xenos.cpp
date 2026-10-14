@@ -214,6 +214,8 @@ struct Xenos
     u32 useCounter;
     int debug;
     u32 debugFrom;
+    u32 dzPrim, dzHigh, dzTris, dzLastPrim;   // xenosdebug=15: triangles with prim depth / a vertex z >= 32767 / all, last prim depth
+    float dzMin, dzMax;                        // xenosdebug=15: vertex z range (N64 units, 32767 = far)
     u32 debugLines;    // xenosdebug=9: lines logged so far     // xenosdebug=8: the first of the two presents logged (xenosdebug=8000+N: present N)
     IDirect3DTexture9 *shown;   // texture shown at the last present
     int shownSlot;              // frame slot the VI showed at the last present (-1: none)
@@ -306,7 +308,7 @@ static const char s_vsSource[] =
     "  o.pos = float4((i.pos.x * scale.x - 1.0) * w, (i.pos.y * scale.y + 1.0) * w, 0.0, w);\n"
     "  o.pos.z = saturate(i.pos.z) * w;\n"
     "  float4 c = saturate(i.col);\n"
-    "  o.col = c; o.tc = i.tc; o.lcol = c * w; o.lw = float4(w, i.pos.z * w, 0.0, 0.0); return o; }\n";
+    "  o.col = c; o.tc = i.tc; o.lcol = c * w; o.lw = float4(w, i.pos.z * w, o.pos.z, 0.0); return o; }\n";
 
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
@@ -438,7 +440,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
 {
     u64 key = (x->combineRaw & 0x00FFFFFFFFFFFFFFull) | ((u64)flags << 56);
     std::map<u64, IDirect3DPixelShader9 *>::iterator it = x->shaders.find(key);
-    char src[4096], c0[512], c1[512];
+    char src[4096], c0[512], c1[512], dbg[256];
     IDirect3DPixelShader9 *ps;
     if (it != x->shaders.end())
     {
@@ -453,6 +455,14 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
     if (x->debug == 1) { strcpy(c0, "  comb = float4(1.0, 0.0, 0.0, 1.0);\n"); c1[0] = 0; }
     if (x->debug == 2) { strcpy(c0, "  comb = float4(shade.rgb, 1.0);\n"); c1[0] = 0; }
     if (x->debug == 3) { strcpy(c0, "  comb = float4(t0.rgb, 1.0);\n"); c1[0] = 0; }
+    // xenosdebug=13/14 (measuring tool): each pixel shows its depth, red the
+    // value, green the value * 64 (fraction), blue 1 when the shader writes
+    // the depth itself (KEY_DEPTH); 13 the N64 depth (screen-linear z), 14
+    // the depth the GPU interpolates from the clamped vertex z.
+    dbg[0] = 0;
+    if (x->debug == 13 || x->debug == 14)
+        sprintf_s(dbg, sizeof(dbg), "  { float zz = %s; o.c = float4(zz, frac(zz * 64.0), %s, 1.0) + t0 * zbias.w; }\n",
+                  x->debug == 13 ? "lw.y / lw.x" : "lw.z / lw.x", (flags & KEY_DEPTH) ? "1.0" : "0.0");
     sprintf_s(src, sizeof(src),
               "sampler s0 : register(s0);\n"
               "sampler s1 : register(s1);\n"
@@ -477,7 +487,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "  float4 comb = float4(0.0, 0.0, 0.0, 0.0);\n"
               "%s%s%s"
               "  o.c = comb;\n"
-              "%s"
+              "%s%s"
               "  return o;\n"
               "}\n",
               (flags & KEY_3POINT) ? s_ps3PointSource : "",
@@ -490,7 +500,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               // compile (X3602, Banjo-Kazooie); t0 * zbias.w (always 0) keeps s0.
               (flags & KEY_DEPTH) ? "  float z = lw.y / lw.x;\n"
                                     "  o.d = saturate(z + zbias.x + zbias.y * max(abs(ddx(z)), abs(ddy(z))));\n"
-                                    "  o.c += t0 * zbias.w;\n" : "");
+                                    "  o.c += t0 * zbias.w;\n" : "", dbg);
     ps = compile_ps(x->dev, src);
     x->shaders[key] = ps;
     x->stats.shaderCompiles++;
@@ -2080,6 +2090,25 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
             const H64RenderVertex *vv = i == 0 ? a : i == 1 ? b : c;
             if (vv->z < 0.0f || vv->z > 32767.0f) flags |= TRI_ZOUT;
         }
+    if (x->debug == 15)
+    {
+        // xenosdebug=15 (measuring tool): the depths the triangles bring.
+        x->dzTris++;
+        if (st->usePrimDepth) { x->dzPrim++; x->dzLastPrim = st->primDepth; }
+        else
+            for (i = 0; i < 3; i++)
+            {
+                const H64RenderVertex *vv = i == 0 ? a : i == 1 ? b : c;
+                if (vv->z >= 32767.0f) { x->dzHigh++; break; }
+            }
+        for (i = 0; i < 3 && !st->usePrimDepth; i++)
+        {
+            float vz = (i == 0 ? a : i == 1 ? b : c)->z;
+            if (x->dzTris == 1 && i == 0) x->dzMin = x->dzMax = vz;
+            if (vz < x->dzMin) x->dzMin = vz;
+            if (vz > x->dzMax) x->dzMax = vz;
+        }
+    }
     if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || x->batchN + 3 > BATCH_VERTICES)
     {
         flush_batch(x);
@@ -2731,6 +2760,13 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
                  x->presentCount, origin, found, found >= 0 ? x->fb[found].addr : 0, found >= 0 ? x->fb[found].drawnAt : 0,
                  found >= 0 ? x->fb[found].lastUse : 0, x->curSlot);
     }
+    if (x->debug == 15 && (x->presentCount % 60) == 0)
+    {
+        H64_INFO("[xenos] depth: %u triangles, %u with prim depth (last %08X), %u with a vertex at z >= 32767, vertex z %.1f..%.1f, "
+                 "z source prim %d, z image %06X",
+                 x->dzTris, x->dzPrim, x->dzLastPrim, x->dzHigh, x->dzMin, x->dzMax, x->st->usePrimDepth, x->st->depthAddr & 0xFFFFFF);
+        x->dzTris = x->dzPrim = x->dzHigh = 0;
+    }
     if (x->debug == 6 && (x->presentCount % 60) == 0)
     {
         // xenosdebug=6: what the VI shows, once a second.
@@ -3169,6 +3205,8 @@ void h64_xenos_set_debug(H64Renderer *r, int mode)
     Xenos *x = X(r);
     x->debugFrom = 2500;
     x->debugLines = 0;
+    x->dzPrim = x->dzHigh = x->dzTris = x->dzLastPrim = 0;
+    x->dzMin = x->dzMax = 0.0f;
     if (mode >= 9000) { x->debugFrom = (u32)(mode - 9000); mode = 9; }   // 9000 + N: copy-backs from present N
     else if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
     else if (mode == 9) x->debugFrom = 0;
