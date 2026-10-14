@@ -148,7 +148,9 @@ static const GameProfile s_profiles[] = {
     { "NCS", "S.C.A.R.S.", H64_GP_SHORT_GFX_TASK },
     // Writes its display list while the RSP runs it: the list branches to
     // itself until the CPU writes more. The HLE ran into it and left every
-    // such task to the LLE RSP (~12 M RSP instructions a second).
+    // such task to the LLE RSP (~12 M RSP instructions a second). The lists
+    // are parsed on the CPU thread (~31 waits a frame in game) and each part
+    // is drawn on the graphics worker (h64_hle.cpp stream_submit).
     { "NGX", "Gauntlet Legends", H64_GP_GFX_STREAM },
     // S2DEX 1.07 for its pictures and pieces (LLE before: garbled on the
     // console's renderer), tasks from the default other modes.

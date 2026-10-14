@@ -438,6 +438,33 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
     return 1;
 }
 
+// A streamed task's part parsed on the CPU thread (Gauntlet Legends, profile
+// gfxStream): with the graphics worker its lists and the snapshot their loads
+// read go to a slot rendered there, in order, while the CPU goes on.
+static void stream_submit(H64System *sys)
+{
+    struct hle_t *hle = sys->hle;
+    struct hle_t::HleGfxSlot *s = &hle->gfxSlot[hle->gfxSlotNext];
+    int mustSync;
+    hle->gfxSlotNext ^= 1;
+    if (!s->out) s->out = h64_gfx_out_create();
+    if (s->used)
+    {
+        // Its part from two submits ago must be drawn: its buffers are reused.
+        u64 t0 = h64_prof_now(sys);
+        sys->asyncWaitTicket(sys->asyncUser, s->renderTicket);
+        sys->prof[H64_PROF_WAIT_START] += h64_prof_now(sys) - t0;
+    }
+    s->sys = sys;
+    s->used = 1;
+    s->ran = 1;
+    s->fullSync = s->mustSync = 0;
+    s->parseOnSecond = 0;
+    mustSync = h64_gfx_package(sys, hle->gfx, s->out);
+    s->renderTicket = sys->asyncStart(sys->asyncUser, gfx_render_job, s);
+    if (mustSync) h64_hle_async_wait(sys);
+}
+
 int h64_hle_stream_poll(H64System *sys, u32 *busyCycles, int *dpInterrupt)
 {
     struct hle_t *hle = sys->hle;
@@ -445,7 +472,13 @@ int h64_hle_stream_poll(H64System *sys, u32 *busyCycles, int *dpInterrupt)
     u64 t0;
     if (!hle || !hle->gfx || !h64_gfx_stream_waiting(hle->gfx)) return 0;
     t0 = h64_prof_now(sys);
+    if (sys->asyncStart) h64_gfx_set_no_flush(hle->gfx, 1);
     r = h64_gfx_stream_resume(sys, hle->gfx, &fullSync);
+    if (sys->asyncStart)
+    {
+        h64_gfx_set_no_flush(hle->gfx, 0);
+        if (r > 0) stream_submit(sys);
+    }
     sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
     hle->streamFullSync |= fullSync;
     if (r < 0 || (r > 0 && h64_gfx_stream_waiting(hle->gfx)))
@@ -598,7 +631,16 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
             return 1;
         }
         u64 t0 = h64_prof_now(sys);
-        int ran = h64_gfx_run_task(sys, hle->gfx, &fullSync);
+        int ran, deferred = sys->asyncStart && sys->options.gfxStream;
+        // Profile gfxStream with the graphics worker: parsed here (the list is
+        // written while it runs), drawn there (stream_submit).
+        if (deferred) h64_gfx_set_no_flush(hle->gfx, 1);
+        ran = h64_gfx_run_task(sys, hle->gfx, &fullSync);
+        if (deferred)
+        {
+            h64_gfx_set_no_flush(hle->gfx, 0);
+            if (ran) stream_submit(sys);
+        }
         sys->prof[H64_PROF_GFX_HLE] += h64_prof_now(sys) - t0;
         if (!ran)
             return 0;

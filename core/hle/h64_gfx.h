@@ -55,6 +55,12 @@ struct H64GfxOut;
 H64GfxOut *h64_gfx_out_create(void);
 void h64_gfx_out_free(H64GfxOut *out);
 int h64_gfx_parse_task(H64System *sys, H64Gfx *gfx, H64GfxOut *out, int *fullSync, int *mustSync);
+// The lists parsed so far (h64_gfx_run_task or h64_gfx_stream_resume with
+// h64_gfx_set_no_flush on) into `out`, with the snapshot of the RDRAM their
+// loads read, for h64_gfx_render on the worker; 1 when the task must be
+// rendered before it ends (profile gfxFrameToRdram, or no snapshot memory).
+int h64_gfx_package(H64System *sys, H64Gfx *gfx, H64GfxOut *out);
+void h64_gfx_set_no_flush(H64Gfx *gfx, int on);
 void h64_gfx_render(H64System *sys, H64Gfx *gfx, H64GfxOut *out);
 
 // Whether the HLE knows the microcode the task in DMEM starts with (it may
