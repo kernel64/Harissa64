@@ -85,3 +85,6 @@ docs-local/
 # console regression data (game memory and pictures) and console settings: local only
 /tests/console/data/
 /tests/console/console.local
+
+# Box art and game info fetched by tools/fetch_game_art.py (copyrighted pictures: never committed)
+art/games/
