@@ -153,7 +153,7 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
 enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
-enum { G_PRESET = 0, G_RES, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+enum { G_PRESET = 0, G_RES, G_BRIGHT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
@@ -204,6 +204,10 @@ static void settings_values(UiMenu *m, const Config *c)
         sprintf(m->value[G_SHARPEN], "< %s >", lvl[c->sharpen < 0 || c->sharpen > 2 ? 0 : c->sharpen]);
         sprintf(m->value[G_BLUR], "< %s >", blr[c->blur < 0 || c->blur > 2 ? 0 : c->blur]);
         sprintf(m->value[G_SCREEN], "< %s >", scr[c->screen < 0 || c->screen > 5 ? 0 : c->screen]);
+        {
+            static const char *br[3] = { "Normal", "Lighter", "Much lighter" };
+            sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
+        }
         return;
     }
     sprintf(m->value[S_CPU], "< %s >", strcmp(c->cpu, "interp") ? "Recompiler" : "Interpreter");
@@ -245,6 +249,7 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuClear(m, "Graphics", "A:Select|DPAD:Change|B:Back");
     UiMenuAdd(m, "Preset", "");
     UiMenuAdd(m, "Resolution", "");
+    UiMenuAdd(m, "Brightness", "");
     UiMenuAdd(m, "Texture filter", "");
     UiMenuAdd(m, "Edge smoothing (FXAA)", "");
     UiMenuAdd(m, "Sharpen", "");
@@ -752,6 +757,7 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         case G_SHARPEN: c->sharpen = (c->sharpen + dir + 3) % 3; if (c->sharpen) c->blur = 0; break;
         case G_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;
         case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
+        case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
         }
         settings_values(m, c);
         return SET_CHANGED;

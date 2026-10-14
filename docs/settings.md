@@ -43,7 +43,7 @@ Keeps your changes for next time. If you leave without saving, they last until y
 ## Graphics
 
 **Preset**
-A quick way to set the look in one go. It changes the texture filter, smoothing, sharpening, blur and screen effect, but leaves the resolution alone.
+A quick way to set the look in one go. It changes the texture filter, smoothing, sharpening, blur and screen effect, but leaves the resolution and brightness alone.
 - *Original*: the plain N64 picture, with crisp pixels.
 - *N64 Enhanced*: smoother textures and a touch of sharpening. A good everyday choice.
 - *N64 Smooth*: the same, with light scanlines.
@@ -59,6 +59,14 @@ How many pixels the games are drawn with. More pixels give a sharper picture but
 - *HD 1280x720 (16:9)*: the sharpest, in widescreen. A very busy game may run slower with it. If so, go back to x3.
 
 With the 4:3 resolutions you get the original shape, with black bars on the sides of a wide TV. With HD 1280x720 the picture fills a wide TV and shows more of the scene on the left and right, without stretching anything. The menus and the on-screen info stay in the middle, where the game expects them. Widescreen works better in some games than others: N64 games were made for 4:3, so some don't draw what's at the far edges, and you may see things pop in or empty strips there. If a game looks wrong in HD, pick x3.
+
+**Brightness**
+Some games are very dark on a modern TV (Doom 64, for example). This lifts the dark parts of the picture without washing out the bright ones.
+- *Normal*: the picture as the console sends it.
+- *Lighter*: a bit brighter in the shadows.
+- *Much lighter*: for very dark games.
+
+Like the other settings, you can keep it for one game only.
 
 **Texture filter**
 How textures look up close.

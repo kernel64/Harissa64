@@ -86,6 +86,7 @@ struct H64XenosOptions
     int blur;        // blur at display: 0 off, 1 soft, 2 strong (instead of sharpening)
     int screen;      // screen effect: 0 none, 1 scanlines, 2 CRT, 3 curved CRT, 4 LCD grid, 5 light scanlines
     int aspect;      // 0 4:3, 1 16:9 widescreen (3D drawn wider, no distortion), 2 16:9 stretched
+    int brightness;  // 0 as the console, 1 lighter, 2 much lighter (dark tones lifted, white kept)
 };
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);
