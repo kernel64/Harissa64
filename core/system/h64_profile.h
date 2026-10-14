@@ -35,6 +35,7 @@ enum
     H64_GP_BIG_TEX_POOL = 1 << 24,   // options.gfxBigTexPool
     H64_GP_GFX_STREAM = 1 << 21,     // options.gfxStream
     H64_GP_NO_OLD_FRAME = 1 << 26,   // options.gfxNoOldFrame
+    H64_GP_SOFT_8BIT = 1 << 28,      // options.gfxSoft8bit
     H64_GP_DEPTH_FILL_RDRAM = 1 << 27 // options.gfxDepthFillToRdram
 };
 

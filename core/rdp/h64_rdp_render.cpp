@@ -154,7 +154,7 @@ static int fb_size_of(int fmt)
 // ---- Framebuffer access (memory_interfacing.h) ----
 static void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
 {
-    u8 *r = sys->rdram, *hid = sys->rdramHidden;
+    u8 *r = st->drawRam ? st->drawRam : sys->rdram, *hid = sys->rdramHidden;
     u32 w = st->colorWidth, idx, word;
     p->colorDirty = p->depthDirty = 0;
     switch (st->colorFmt)
@@ -189,16 +189,25 @@ static void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
     p->depthIndex = idx;
 }
 
+static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r);
 static void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
 {
-    u8 *r = sys->rdram, *hid = sys->rdramHidden;
-    u32 idx = p->colorIndex;
-    if (sys->jit)
+    // A GPU renderer's hand-over (softDraw) may run on its worker: the
+    // recompiler is told by the renderer, not from here.
+    if (sys->jit && !st->softDraw)
     {
         u32 shift = st->colorFmt == FB_RGBA8888 ? 2 : (st->colorFmt == FB_I4 || st->colorFmt == FB_I8) ? 0 : 1;
-        if (p->colorDirty) h64_jit_notify_write(sys, idx << shift, 4);
+        if (p->colorDirty) h64_jit_notify_write(sys, p->colorIndex << shift, 4);
         if (p->depthDirty) h64_jit_notify_write(sys, p->depthIndex << 1, 2);
     }
+    store_pixel_to(sys, st, p, st->drawRam ? st->drawRam : sys->rdram);
+    if (st->drawRam2) store_pixel_to(sys, st, p, st->drawRam2);
+}
+
+static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r)
+{
+    u8 *hid = sys->rdramHidden;
+    u32 idx = p->colorIndex;
     if (p->colorDirty)
     {
         switch (st->colorFmt)
@@ -1299,12 +1308,12 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
         if (op & 4) { decode_rgba(p, &a); p += 16; }
         if (op & 2) { decode_tex(p, &a); p += 16; }
         if (op & 1) decode_z(p, &a);
-        if (!sys->options.rdpStateOnly) draw(sys, st, &ts, &a);
+        if (!sys->options.rdpStateOnly || st->softDraw) draw(sys, st, &ts, &a);
         return;
     }
-    case 0x24: if (!sys->options.rdpStateOnly) rectangle(sys, st, w, 1, 0); return;
-    case 0x25: if (!sys->options.rdpStateOnly) rectangle(sys, st, w, 1, 1); return;
-    case 0x36: if (!sys->options.rdpStateOnly) rectangle(sys, st, w, 0, 0); return;
+    case 0x24: if (!sys->options.rdpStateOnly || st->softDraw) rectangle(sys, st, w, 1, 0); return;
+    case 0x25: if (!sys->options.rdpStateOnly || st->softDraw) rectangle(sys, st, w, 1, 1); return;
+    case 0x36: if (!sys->options.rdpStateOnly || st->softDraw) rectangle(sys, st, w, 0, 0); return;
     case 0x26: case 0x27: case 0x28: case 0x29: return;   // syncs (SYNC_FULL handled by the interface)
     case 0x2A:
         st->keyWidth[1] = (w[0] >> 12) & 0xFFF; st->keyWidth[2] = w[0] & 0xFFF;

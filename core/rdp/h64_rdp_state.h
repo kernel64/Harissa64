@@ -76,6 +76,9 @@ struct H64RdpState
     u32 loadRamGen;              // changes each time a deferred job sets loadRam (one per task or DPC batch)
     const u32 *cpuRanges;        // with loadRam: start, end pairs of colour images the CPU wrote over since
     u32 cpuRangeCount;           // the GPU drew them (loads there read the snapshot, see h64_gfx.cpp)
+    int softDraw;                // 1: this command draws even with options.rdpStateOnly (a GPU renderer hands it over)
+    u8 *drawRam;                 // where drawing reads and writes (NULL: RDRAM), e.g. a deferred job's snapshot
+    u8 *drawRam2;                // also written (NULL: none), e.g. RDRAM beside the snapshot
     H64RdpTile tiles[8];
 
     u32 rasterFlags;             // RS_*

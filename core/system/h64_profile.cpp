@@ -25,7 +25,12 @@ static const GameProfile s_profiles[] = {
     // A null pointer read at boot with the HLE boot: the game stopped. Its
     // sprites and backgrounds use S2DEX 1.06 (LLE: ~11 VI/s on the console),
     // whose tasks start from the default other modes.
-    { "NYS", "Yoshi's Story", H64_GP_IPL3_BOOT | H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
+    // Also: when Yoshi moves, the scenery is redrawn every frame into three
+    // 336-wide 8-bit images (16x16 texture tiles) then loaded ~200 times as
+    // textures: drawn by the GPU, each load copied a piece back (~120 copy
+    // backs a frame, 12-23 VI/s). The software RDP draws them in memory
+    // instead (~38000 pixels a frame), nothing to copy back.
+    { "NYS", "Yoshi's Story", H64_GP_IPL3_BOOT | H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT | H64_GP_SOFT_8BIT },
     // Relies on the microcode's default other modes (texture conversion):
     // grey courses. Keeps its course picture in a full-size image and copies the
     // frame into narrow strips: copying those strips back garbled the HUD,
@@ -208,5 +213,6 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxBigTexPool = (f & H64_GP_BIG_TEX_POOL) != 0;
     sys->options.gfxStream = (f & H64_GP_GFX_STREAM) != 0;
     sys->options.gfxNoOldFrame = (f & H64_GP_NO_OLD_FRAME) != 0;
+    sys->options.gfxSoft8bit = (f & H64_GP_SOFT_8BIT) != 0;
     sys->options.gfxDepthFillToRdram = (f & H64_GP_DEPTH_FILL_RDRAM) != 0;
 }
