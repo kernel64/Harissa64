@@ -112,6 +112,12 @@ static const GameProfile s_profiles[] = {
     { "NBX", "BattleTanx", H64_GP_BOOT_TIME },
     // 6106: with the HLE boot only its sound ran, never a graphics task.
     { "NCW", "Cruis'n World", H64_GP_IPL3_BOOT },
+    // With the HLE boot, whole parts of rooms were missing depending on the
+    // camera (Banjo's house: rug, floor, bed and armchair gone towards the
+    // fireplace; the LLE microcode drew the same, so the game chose them):
+    // it relies on something the real IPL3 leaves behind. V1 (mupen64plus)
+    // and the real IPL3 boot draw the whole room.
+    { "NBK", "Banjo-Kazooie", H64_GP_IPL3_BOOT },
     // S2DEX2 2D objects (rectangles, sprites, texture loads) in the graphics
     // HLE with the S2DEX 1.x code; those tasks ran on the LLE RSP.
     { "NBV", "Bomberman 64: The Second Attack!", H64_GP_S2DEX1 },
