@@ -294,7 +294,9 @@ static u32 hex32(const std::string &s)
 
 static void merge(std::string *dst, const std::string &src)
 {
-    if (dst->empty()) *dst = src;
+    // libretro-database marks unknown parts with "???" ("EA ???" for
+    // Madden NFL 2001's developer, 245 entries): left out, as unknown.
+    if (dst->empty() && src.find("???") == std::string::npos) *dst = src;
 }
 
 int h64_gamedb_add_dat(H64GameDb *db, const char *text, u32 len)
