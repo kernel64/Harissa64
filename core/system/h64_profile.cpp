@@ -92,8 +92,12 @@ static const GameProfile s_profiles[] = {
     // Swaps the VI to a buffer before the deferred renderer has drawn its
     // new frame there: every other VI showed that buffer's frame from two
     // frames before (shown order 600, 598, 602, 600...), the picture
-    // jerking back while moving.
-    { "NDO", "Donkey Kong 64", H64_GP_WS_BORDER | H64_GP_NO_OLD_FRAME },
+    // jerking back while moving. Its camera reads the depth image with the
+    // CPU (pc 80700BB8, around Kong) to tell whether he is hidden: the GPU
+    // keeps the depth, RDRAM held stale values and the camera moved in and
+    // out in a loop, even with Kong standing still; its depth clears now
+    // fill RDRAM too.
+    { "NDO", "Donkey Kong 64", H64_GP_WS_BORDER | H64_GP_NO_OLD_FRAME | H64_GP_DEPTH_FILL_RDRAM },
     // Its intro draws 560-wide 32-bit frames at 0x234A00 and 0x31A500; the
     // game then keeps textures there. Loads of them (1 texel wide) copied the
     // stale intro frame back over them: ~400 copy backs a frame in the attract
@@ -198,4 +202,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxBigTexPool = (f & H64_GP_BIG_TEX_POOL) != 0;
     sys->options.gfxStream = (f & H64_GP_GFX_STREAM) != 0;
     sys->options.gfxNoOldFrame = (f & H64_GP_NO_OLD_FRAME) != 0;
+    sys->options.gfxDepthFillToRdram = (f & H64_GP_DEPTH_FILL_RDRAM) != 0;
 }
