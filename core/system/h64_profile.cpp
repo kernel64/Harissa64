@@ -60,9 +60,14 @@ static const GameProfile s_profiles[] = {
     { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE },
     // The magnifying glass on the character select enlarges what is on
     // screen: it reads the frame shown with the CPU (empty without).
-    { "ND3", "Castlevania", H64_GP_FRAME_TO_RDRAM },
+    // Both also need each task to start from the microcode's default other
+    // modes: a 2D title card sets the depth source to the primitive's, the
+    // real microcode drops it at the next task and the HLE kept it, so the
+    // whole 3D was drawn at one depth (0x7FFF), a mesh of triangles through
+    // the walls on the console until a state load reset the modes.
+    { "ND3", "Castlevania", H64_GP_FRAME_TO_RDRAM | H64_GP_OTHERMODE_INIT },
     // Its intro fades compose the frame with the CPU in another image.
-    { "ND4", "Castlevania: Legacy of Darkness", H64_GP_FRAME_TO_RDRAM },
+    { "ND4", "Castlevania: Legacy of Darkness", H64_GP_FRAME_TO_RDRAM | H64_GP_OTHERMODE_INIT },
     // Draws Link into a 64-pixel image at the start of its 320-pixel frame on
     // the pause screens and copies his pixels with the CPU (noise without;
     // one slot for both widths showed the pause screens small in a corner).
