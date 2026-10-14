@@ -45,6 +45,7 @@ struct Config
     int artDownload;    // artdownload=0: the ROM browser uses only the box art and game information already in
                         // <drive>:\art\games\ (xb_art.cpp); 1 (default): it downloads what is missing; 2: also in Xenia
     int browserDemo;    // browserdemo=N: the ROM browser moves its selection down every N ms (captures in Xenia)
+    char browserSel[128]; // browsersel=FILE: the ROM browser starts on that file name (console checks), over lastrom=
     int artAll;         // artall=1: the ROM browser starts "Get box art for all games" by itself (checks)
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
     int parseWorker;    // parseworker=0: display lists parsed on the graphics worker too (no second worker)

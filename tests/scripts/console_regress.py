@@ -211,13 +211,14 @@ def save_folder(rom):
 
 def run_case(con, c, update, log):
     name = c['name']
+    browser = c['rom'] == '-'  # no game: the ROM browser (browsersel= in the extra keys picks the line)
     boot = c['state'] == '-'   # no state: the game starts from its boot, input frames are absolute
     boot_mode = boot
     st = os.path.join(DATA, c['state'])
     if not boot and not os.path.isfile(st):
         log('%-24s SKIP (no state %s)' % (name, c['state']))
         return None
-    if not boot:
+    if not boot and not browser:
         folder = save_folder(c['rom'])
         con.put(open(st, 'rb').read(), 'saves/%s/state%d.h64s' % (folder, SLOT))
     inp = c['input'].replace('{F}+', '').strip()
@@ -226,9 +227,12 @@ def run_case(con, c, update, log):
         k, rng = ev.split('@')
         lo, _, hi = rng.partition('-')
         events.append('%s@%d%s' % (k, c['frame'] + int(lo), ('-%d' % (c['frame'] + int(hi))) if hi else ''))
-    ini = ['mode=play', 'cpu=dynarec', 'hle=1', 'rom=game:\\roms\\' + c['rom'],
-           'pauseat=%d' % c['pauseat'], 'exitafter=%d' % (c['pauseat'] + 10)]
-    if not boot:
+    if browser:
+        ini = ['mode=play', 'cpu=dynarec', 'hle=1']
+    else:
+        ini = ['mode=play', 'cpu=dynarec', 'hle=1', 'rom=game:\\roms\\' + c['rom'],
+               'pauseat=%d' % c['pauseat'], 'exitafter=%d' % (c['pauseat'] + 10)]
+    if not boot and not browser:
         ini += ['stateslot=%d' % SLOT, 'loadstate=1']
     if events:
         ini.append('input=' + ','.join(events))
@@ -248,6 +252,8 @@ def run_case(con, c, update, log):
     # log cannot tell: the FTP answers too slowly while a title runs.)
     boot = 16.0 if not boot_mode else 8.0
     wait = boot + c['pauseat'] / 60.0 * 1.15 + 2.0
+    if browser:
+        wait = 15.0   # the list, the cover and the card's fade are in place by then
     time.sleep(wait)
     caps = []
     t0 = time.time()
@@ -281,7 +287,7 @@ def run_case(con, c, update, log):
         time.sleep(5)
         logtxt = con.get('harissa64v2.log') or b''
     open(os.path.join(OUT, name + '.log'), 'wb').write(logtxt)
-    if best < 0 or bestLen < 2 or b'paused at VI' not in logtxt:
+    if best < 0 or bestLen < 2 or (not browser and b'paused at VI' not in logtxt):
         log('%-24s FAIL (no frozen frame captured)' % name)
         return False
     shot = os.path.join(OUT, name + '.png')

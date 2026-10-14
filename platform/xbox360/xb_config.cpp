@@ -23,6 +23,7 @@ void ConfigDefaults(Config *c)
     c->updateCheck = 1;
     c->artDownload = 1;
     c->browserDemo = 0;
+    c->browserSel[0] = 0;
     c->artAll = 0;
     c->gameFlags = -1;
     c->logCpu = 5;
@@ -91,6 +92,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "updatecheck")) c->updateCheck = atoi(eq + 1);
         else if (!strcmp(line, "artdownload")) c->artDownload = atoi(eq + 1);
         else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);
+        else if (!strcmp(line, "browsersel")) { strncpy(c->browserSel, eq + 1, sizeof(c->browserSel) - 1); c->browserSel[sizeof(c->browserSel) - 1] = 0; }
         else if (!strcmp(line, "artall")) c->artAll = atoi(eq + 1);
         else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtol(eq + 1, NULL, 16);
         else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
