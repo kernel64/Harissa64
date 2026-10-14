@@ -2665,6 +2665,34 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
             }
         }
     }
+    if (x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8 && (op == 0x24 || op == 0x25 || op == 0x36 || (op >= 0x08 && op <= 0x0F)))
+    {
+        // Profile gfxSoft8bit: drawing into an 8-bit colour image is done by
+        // the software RDP, in the job's snapshot (where this job's loads
+        // read) and in RDRAM (later jobs); the GPU never holds the image, so
+        // loads of it copy nothing back. Yoshi's Story redraws its scenery
+        // tiles so each frame while Yoshi moves.
+        H64RdpState *st = x->sys->rdpState;
+        u32 lo = st->colorAddr & 0xFFFFFF, hi = lo + (st->colorWidth ? st->colorWidth : 320) * 240;
+        t0 = h64_prof_now(x->sys);
+        st->softDraw = 1;
+        st->drawRam = (u8 *)st->loadRam;
+        st->drawRam2 = st->loadRam ? x->sys->rdram : NULL;
+        h64_rdp_command(x->sys, words, count);
+        st->softDraw = 0;
+        st->drawRam = st->drawRam2 = NULL;
+        if (hi > H64_RDRAM_SIZE) hi = H64_RDRAM_SIZE;
+        if (x->deferNotify)
+        {
+            if (x->pendingHi <= x->pendingLo) { x->pendingLo = lo; x->pendingHi = hi; }
+            else { if (lo < x->pendingLo) x->pendingLo = lo; if (hi > x->pendingHi) x->pendingHi = hi; }
+        }
+        else
+            h64_jit_notify_write(x->sys, lo, hi - lo);
+        x->stats.tState += h64_prof_now(x->sys) - t0;
+        x->stats.tRdp += h64_prof_now(x->sys) - tStart;
+        return;
+    }
     // State and TMEM: the software RDP (state only).
     t0 = h64_prof_now(x->sys);
     h64_rdp_command(x->sys, words, count);

@@ -121,6 +121,7 @@ struct H64Options
                             // old PC emulators did (the PI ignores bit 0); SM64 ROM hacks rely on it
     int gfxShortTask;       // graphics worker (game profile): a task keeps the RSP busy H64_HLE_GFX_CYCLES at most
     int gfxNoOldFrame;      // GPU renderer (game profile): never show a frame older than the one on screen
+    int gfxSoft8bit;        // GPU renderer (game profile): drawing into 8-bit colour images done by the software RDP
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
     int gfxStream;          // graphics HLE (game profile): a display list may branch to itself until the CPU
                             // writes more of it; tasks run on the CPU thread (no graphics worker)
