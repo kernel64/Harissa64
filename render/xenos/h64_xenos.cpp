@@ -2753,7 +2753,19 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             if (s->valid && s->tex && s->addr == x->fb[found].addr && s->width == width) { found = (int)i; break; }
         }
     }
-    if (x->debug == 7 && x->presentCount >= 600 && x->presentCount < 624)
+    if (x->sys->options.gfxNoOldFrame && found >= 0 && x->shownSlot >= 0 && found != x->shownSlot &&
+        x->fb[x->shownSlot].valid && x->fb[x->shownSlot].tex &&
+        x->fb[found].drawnAt < x->fb[x->shownSlot].drawnAt && x->fb[x->shownSlot].drawnAt - x->fb[found].drawnAt <= 8)
+    {
+        // Profile gfxNoOldFrame: the VI went to a buffer whose new frame the
+        // graphics worker has not drawn yet (it renders a little after the
+        // CPU): its content is older than the frame on screen. The frame on
+        // screen stays one more VI, as a 30 FPS game shows each frame twice.
+        // A frame drawn long ago (a still menu) is shown as asked.
+        origin = x->fb[x->shownSlot].addr + (origin - x->fb[found].addr);
+        found = x->shownSlot;
+    }
+    if (x->debug == 7 && x->presentCount >= 600 && x->presentCount < 1000)
     {
         // xenosdebug=7: every present for a moment (frames shown out of order).
         H64_INFO("[xenos] present %u: origin %06X -> slot %d (addr %06X, last drawn at present %u, use %u), cur slot %d",

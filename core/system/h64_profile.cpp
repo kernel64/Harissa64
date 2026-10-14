@@ -89,7 +89,11 @@ static const GameProfile s_profiles[] = {
     // A 10-pixel border around the picture: scissor x 10-309, the border
     // painted by fills from the edges. In 16:9 widescreen both moved towards
     // the centre and the scene stayed boxed at 4:3 (GitHub issue #2).
-    { "NDO", "Donkey Kong 64", H64_GP_WS_BORDER },
+    // Swaps the VI to a buffer before the deferred renderer has drawn its
+    // new frame there: every other VI showed that buffer's frame from two
+    // frames before (shown order 600, 598, 602, 600...), the picture
+    // jerking back while moving.
+    { "NDO", "Donkey Kong 64", H64_GP_WS_BORDER | H64_GP_NO_OLD_FRAME },
     // Its intro draws 560-wide 32-bit frames at 0x234A00 and 0x31A500; the
     // game then keeps textures there. Loads of them (1 texel wide) copied the
     // stale intro frame back over them: ~400 copy backs a frame in the attract
@@ -193,4 +197,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxShortTask = (f & H64_GP_SHORT_GFX_TASK) != 0;
     sys->options.gfxBigTexPool = (f & H64_GP_BIG_TEX_POOL) != 0;
     sys->options.gfxStream = (f & H64_GP_GFX_STREAM) != 0;
+    sys->options.gfxNoOldFrame = (f & H64_GP_NO_OLD_FRAME) != 0;
 }

@@ -33,7 +33,8 @@ enum
     H64_GP_BOOT_TIME = 65536,     // Count starts one second in (h64_hle_boot)
     H64_GP_SHORT_GFX_TASK = 1 << 20, // options.gfxShortTask
     H64_GP_BIG_TEX_POOL = 1 << 24,   // options.gfxBigTexPool
-    H64_GP_GFX_STREAM = 1 << 21      // options.gfxStream
+    H64_GP_GFX_STREAM = 1 << 21,     // options.gfxStream
+    H64_GP_NO_OLD_FRAME = 1 << 26    // options.gfxNoOldFrame
 };
 
 // The flags for a game code (4 characters, the region ignored); *name gets
