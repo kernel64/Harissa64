@@ -129,6 +129,8 @@ struct Xenos
     float uMax, vMax;   // rtW / RT_WIDTH, rtH / RT_HEIGHT: that part in a frame texture
     int texFilter;      // 0 the N64's 3-point filter, 1 bilinear, 2 nearest
     int sharpen, blur, screen;  // display: sharpening 0-2, blur 0-2, screen effect (H64XenosOptions)
+    int brightness;             // display: 0-2 (H64XenosOptions)
+    int viGamma;                // the VI's gamma bit at this present (VI_CONTROL bit 3)
     int aspect;                 // 0 4:3, 1 16:9 widescreen (wider 3D), 2 16:9 stretched
     int wsMain;                 // 16:9 widescreen applies to the current colour image (select_framebuffer)
     std::map<int, IDirect3DPixelShader9 *> psDisplay;   // display pass variants, compiled on use
@@ -1203,7 +1205,10 @@ static IDirect3DPixelShader9 *display_shader(Xenos *x)
         "#else\n"
         "  float3 c = picture(uv);\n"
         "#endif\n"
-        "  return float4(saturate(c), 1.0);\n"
+        // The VI's gamma (the N64 output brightens dark tones when the game
+        // sets VI_CONTROL bit 3: square root, h64_vi_gamma_table) and the
+        // Brightness setting, as one power: prm2.y.
+        "  return float4(pow(saturate(c), prm2.yyy), 1.0);\n"
         "}\n";
     x->psDisplay[key] = compile_ps(x->dev, src.c_str());
     return x->psDisplay[key];
@@ -1288,7 +1293,12 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, floa
     x->dev->SetPixelShaderConstantF(0, c, 1);
     c[0] = u1; c[1] = v1; c[2] = (float)width; c[3] = (float)lines;
     x->dev->SetPixelShaderConstantF(1, c, 1);
-    c[0] = (float)(lines > 300 ? lines / 2 : lines); c[1] = c[2] = c[3] = 0;
+    c[0] = (float)(lines > 300 ? lines / 2 : lines);
+    {
+        static const float bright[3] = { 1.0f, 0.8f, 0.65f };
+        c[1] = (x->viGamma ? 0.5f : 1.0f) * bright[x->brightness];
+    }
+    c[2] = c[3] = 0;
     x->dev->SetPixelShaderConstantF(2, c, 1);
     c[0] = u0; c[1] = v0; c[2] = c[3] = 0;
     x->dev->SetPixelShaderConstantF(3, c, 1);
@@ -2787,6 +2797,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     flush_batch(x);
     x->stateDirty = 1;
     u32 origin = vi[1] & 0xFFFFFF, width = vi[2] & 0xFFF, type = vi[0] & 3, i;
+    x->viGamma = (vi[0] & 8) != 0;
     int found = -1;
     if (x->curSlot >= 0 && x->targetBound) resolve_current(x);
     // The image holding the origin that starts closest to it (the most recently
@@ -3044,6 +3055,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->vMax = (float)x->rtH / RT_HEIGHT;
     x->texFilter = 1;
     x->sharpen = x->blur = x->screen = x->aspect = x->wsMain = 0;
+    x->brightness = x->viGamma = 0;
     x->deferNotify = 0;
     x->pendingLo = x->pendingHi = 0;
     x->psFill = compile_ps(dev, s_psFillSource);
@@ -3253,6 +3265,7 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     x->sharpen = o->sharpen < 0 || o->sharpen > 2 ? 0 : o->sharpen;
     x->blur = o->blur < 0 || o->blur > 2 ? 0 : o->blur;
     x->screen = o->screen < 0 || o->screen > 5 ? 0 : o->screen;
+    x->brightness = o->brightness < 0 || o->brightness > 2 ? 0 : o->brightness;
     if (o->aspect != x->aspect) x->stateDirty = 1;   // the scissor moves in widescreen
     x->aspect = o->aspect < 0 || o->aspect > 2 ? 0 : o->aspect;
     if (o->texFilter != x->texFilter)
