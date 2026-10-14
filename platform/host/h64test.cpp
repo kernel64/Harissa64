@@ -7,6 +7,7 @@
 //     --dillon            stop when r30 becomes non-zero (Dillonb/n64-tests: -1 = pass)
 //     --until TEXT        stop when an ISViewer line contains TEXT
 //     --info              print the ROM header and exit
+//     --game-db DIR       with --info: the ROM browser's game information from the database files in DIR
 //     --state             print the CPU state at the end
 //     --trace-exc N       print the first N exceptions (not interrupts)
 //     --fb-png FILE       write the framebuffer the VI shows at the end (raw, no VI filtering)
@@ -19,6 +20,7 @@
 #include "../../core/common/h64_types.h"
 #include "../../core/common/h64_endian.h"
 #include "../../core/cart/h64_zip.h"
+#include "../../core/cart/h64_gameinfo.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "../../core/system/h64_system.h"
@@ -255,6 +257,45 @@ static void nop_hook(void *user)
     c->nopHook = 0;
 }
 
+static u8 *read_file(const char *path, u32 *size);
+
+// --game-db DIR: what the ROM browser would show for this ROM, from the
+// database files in DIR (the console's art\games\db\ folder, or the one
+// tools/fetch_game_art.py fills).
+static void print_game_info(const char *dir, const H64Rom *rom, const char *romPath)
+{
+    H64GameDb *db = h64_gamedb_new();
+    H64GameInfo gi;
+    char covers[8][128], stem[256], key[16], text[4096];
+    const char *base = romPath, *p;
+    int i, n = 0;
+    for (p = romPath; *p; p++)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    strncpy(stem, base, sizeof(stem) - 1);
+    stem[sizeof(stem) - 1] = 0;
+    if (strrchr(stem, '.')) *strrchr(stem, '.') = 0;
+    for (i = 0; i < H64_GAMEDB_FILE_COUNT; i++)
+    {
+        char path[1024];
+        u32 len;
+        u8 *data;
+        snprintf(path, sizeof(path), "%s/%s", dir, h64_gamedb_files[i].file);
+        data = read_file(path, &len);
+        if (!data) { printf("[gameinfo] missing %s\n", path); continue; }
+        printf("[gameinfo] %s: %d games\n", h64_gamedb_files[i].file,
+               h64_gamedb_files[i].json ? h64_gamedb_add_gamedb_json(db, (const char *)data, len) : h64_gamedb_add_dat(db, (const char *)data, len));
+        free(data);
+    }
+    h64_gameinfo_key(rom->gameCode, rom->crc1, key);
+    h64_gameinfo_clear(&gi);
+    printf("[gameinfo] key %s, code %s, version %d: %s\n", key, rom->gameCode, rom->version,
+           h64_gamedb_lookup(db, rom->gameCode, rom->version, stem, &gi, covers, 8, &n) ? "found" : "NOT FOUND");
+    for (i = 0; i < n; i++) printf("[gameinfo] box art %d: %s\n", i + 1, covers[i]);
+    h64_gameinfo_format(&gi, text, sizeof(text));
+    printf("%s", text);
+    h64_gamedb_free(db);
+}
+
 static u8 *read_file(const char *path, u32 *size)
 {
     FILE *f = fopen(path, "rb");
@@ -381,7 +422,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 rdpLogFrame = 0, peekVa = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
-    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0, *jitProf = 0;
+    const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0, *jitProf = 0, *gameDb = 0;
     int useJit = 0, lockstep = 0, noRdp = 0, hleAudio = 0, hleGfx = 0, nullRenderer = 0;
     u32 asyncCycles = 0;
     u32 traceFrames = 0, traceStep = 0;
@@ -398,6 +439,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--dillon")) dillon = 1;
         else if (!strcmp(argv[i], "--until") && i + 1 < argc) s_untilText = argv[++i];
         else if (!strcmp(argv[i], "--info")) info = 1;
+        else if (!strcmp(argv[i], "--game-db") && i + 1 < argc) { gameDb = argv[++i]; info = 1; }
         else if (!strcmp(argv[i], "--state")) state = 1;
         else if (!strcmp(argv[i], "--trace-exc") && i + 1 < argc) s_traceExc = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--watch-pc") && i + 1 < argc) watchPc = (u32)strtoul(argv[++i], 0, 16);
@@ -522,6 +564,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         char folder[64];
         h64_save_folder_name(&sys->rom, folder, sizeof(folder));
         printf("[info] save folder name: %s\n", folder);
+        if (gameDb) print_game_info(gameDb, &sys->rom, path);
         h64_system_free(sys);
         free(sys);
         return 0;
