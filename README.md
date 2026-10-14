@@ -43,6 +43,22 @@ While playing:
 
 In the game list, X shows the About page.
 
+## Box art and game info
+
+When you move through the game list, the right side shows the game's box art, its real title, year, developer, genre, number of players and a few lines about it.
+
+If your console is online, Harissa64 downloads these by itself the first time you select a game, and keeps them in the `art\games` folder next to the `.xex`. After that they show up straight away, even offline. To get everything in one go, open **Settings** from the game list (Y) and pick **Get box art for all games**. You can turn the downloads off in the same place.
+
+No internet on the console? Run the script on a PC instead (you need [Python 3](https://www.python.org)):
+
+```
+python tools/fetch_game_art.py "C:\path\to\your\roms"
+```
+
+It fills an `art\games` folder: copy it to the console, into the Harissa64 folder. Games it can't find just show their initials.
+
+The pictures and the text come from [libretro-thumbnails](https://github.com/libretro-thumbnails/Nintendo_-_Nintendo_64), [libretro-database](https://github.com/libretro/libretro-database), [GameDB-N64](https://github.com/niemasd/GameDB-N64) and Wikipedia. They are not part of Harissa64.
+
 ## Saves
 
 Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. Copy that folder somewhere if you want a backup.

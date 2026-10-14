@@ -697,7 +697,7 @@ int h64_gamedb_lookup(const H64GameDb *db, const char *gameCode, int version, co
             if (!m->users.empty())
             {
                 int u = atoi(m->users.c_str());
-                if (u > 1) sprintf(info->players, "1-%d", u);
+                if (u > 1 && u < 100) sprintf(info->players, "1-%d", u);
                 else if (u == 1) strcpy(info->players, "1");
             }
         }

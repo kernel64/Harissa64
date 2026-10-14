@@ -16,6 +16,8 @@
         default.xex           the emulator (dashboards scan for default.xex)
         roms\                 put your games here
         art\                  cover, background and icon for the dashboard
+                              (art\games\ is made on the console: box art)
+        tools\                fetch_game_art.py (box art from a PC)
         README.md, LICENSE, THIRD_PARTY.md, INSTALL.txt
 
     Saves and settings are created by the emulator on the console. No ROMs,
@@ -86,6 +88,9 @@ Copy-Item (Join-Path $repo 'README.md'), (Join-Path $repo 'LICENSE'), (Join-Path
 New-Item -ItemType Directory -Force (Join-Path $stage 'roms') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $stage 'art') | Out-Null
 foreach ($f in 'cover.png', 'background.png', 'icon.png') { Copy-Item (Join-Path $art $f) (Join-Path $stage 'art') }
+# The PC script that fills art\games\ (box art, game information) for consoles without internet.
+New-Item -ItemType Directory -Force (Join-Path $stage 'tools') | Out-Null
+Copy-Item (Join-Path $repo 'tools\fetch_game_art.py') (Join-Path $stage 'tools')
 
 $install = @"
 Harissa64 $version - Nintendo 64 emulator for Xbox 360 (RGH/JTAG)
@@ -102,6 +107,11 @@ Harissa64 $version - Nintendo 64 emulator for Xbox 360 (RGH/JTAG)
    paths, or browse to Harissa64 and launch default.xex. It shows up as
    "Harissa64". The art folder has a cover and a background you can load
    from the game's asset menu in Aurora.
+
+Box art: when the console is online, the game list downloads the box art
+and information of the games you select into Harissa64\art\games\. Without
+internet, run tools\fetch_game_art.py on a PC (Python 3) and copy the
+art\games folder it makes into Harissa64\.
 
 In a game: a short press on BACK opens the menu (save and load states,
 settings, back to the game list). BACK + RB saves a state, BACK + LB loads it.
