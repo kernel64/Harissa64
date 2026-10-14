@@ -211,7 +211,8 @@ class GameDb:
                 for c in crcs:
                     m = self.meta.setdefault(c, {})
                     for k in ('comment', 'developer', 'publisher', 'releaseyear', 'genre', 'users'):
-                        if k in fields and not m.get(k):
+                        # "???" marks an unknown part ("EA ???"): left out.
+                        if k in fields and not m.get(k) and '???' not in fields[k]:
                             m[k] = fields[k]
 
     def add_gamedb(self, data):
