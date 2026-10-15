@@ -31,6 +31,7 @@ enum
     H64_GP_WS_BORDER = 16384,     // options.gfxWsBorder
     H64_GP_COPY_BACK_SAME_WIDTH = 32768, // options.gfxCopyBackSameWidth
     H64_GP_BOOT_TIME = 65536,     // Count starts one second in (h64_hle_boot)
+    H64_GP_ALPHA_REF0_PASS = 1 << 17, // options.gfxAlphaRef0Pass
     H64_GP_SHORT_GFX_TASK = 1 << 20, // options.gfxShortTask
     H64_GP_BIG_TEX_POOL = 1 << 24,   // options.gfxBigTexPool
     H64_GP_GFX_STREAM = 1 << 21,     // options.gfxStream
