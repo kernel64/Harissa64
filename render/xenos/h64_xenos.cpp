@@ -130,6 +130,7 @@ struct Xenos
     int texFilter;      // 0 the N64's 3-point filter, 1 bilinear, 2 nearest
     int sharpen, blur, screen;  // display: sharpening 0-2, blur 0-2, screen effect (H64XenosOptions)
     int brightness;             // display: 0-2 (H64XenosOptions)
+    int vsync, vsyncSet;        // display: V-Sync wanted (H64XenosOptions), and what the device has (-1: unknown)
     int viGamma;                // the VI's gamma bit at this present (VI_CONTROL bit 3)
     int aspect;                 // 0 4:3, 1 16:9 widescreen (wider 3D), 2 16:9 stretched
     int wsMain;                 // 16:9 widescreen applies to the current colour image (select_framebuffer)
@@ -212,10 +213,15 @@ struct Xenos
     IDirect3DSurface9 *rbSurf;     // EDRAM target at EDRAM_READBACK
     IDirect3DTexture9 *rbTex;      // its resolve, in CPU-cached memory (D3DUSAGE_CPU_CACHED_MEMORY)
     IDirect3DTexture9 *shotTex;    // screenshots: the shown frame resolved into CPU-cached memory (made on first use)
+    int deflicker;                 // option: pictures mixed with the previous one (deflicker_pass)
+    IDirect3DTexture9 *dfTex[2];   // the last two pictures shown, before the mix (made on first use)
+    int dfCur, dfValid;
+    IDirect3DPixelShader9 *psMix;
     u32 copyBacks;
     u32 useCounter;
     int debug;
     u32 debugFrom;
+    u32 tallW, tallH;   // profile gfxTallFrame: an image this wide is this tall (from the game's scissor)
     u32 dzPrim, dzHigh, dzTris, dzLastPrim;   // xenosdebug=15: triangles with prim depth / a vertex z >= 32767 / all, last prim depth
     float dzMin, dzMax;                        // xenosdebug=15: vertex z range (N64 units, 32767 = far)
     u64 dbgPresentT;   // xenosdebug=7: clock at the previous present
@@ -312,6 +318,12 @@ static const char s_vsSource[] =
     "  o.pos.z = saturate(i.pos.z) * w;\n"
     "  float4 c = saturate(i.col);\n"
     "  o.col = c; o.tc = i.tc; o.lcol = c * w; o.lw = float4(w, i.pos.z * w, o.pos.z, 0.0); return o; }\n";
+
+// Anti-flicker: the average of two pictures.
+static const char s_psMixSource[] =
+    "sampler t0 : register(s0);\n"
+    "sampler t1 : register(s1);\n"
+    "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0) : COLOR { return (tex2D(t0, tc.xy) + tex2D(t1, tc.xy)) * 0.5; }\n";
 
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
@@ -783,8 +795,11 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         // windowed rectangle cost GoldenEye ~30 ms per frame.
         u32 firstRow = 0;
         u64 h0 = h64_prof_now(x->sys);
+        // A clamped axis never samples row h: hashing it made the key change
+        // with whatever an earlier load left there (Quake II's paused frame,
+        // 80 strips of 320x3: every strip decoded again every frame).
         if (t->maskT) rows = 1u << t->maskT;
-        else { firstRow = b->oy; rows = b->h + 1; }
+        else { firstRow = b->oy; rows = b->h + (b->clampT ? 0 : 1); }
         if (rowBytes * rows > 4096) { rows = 4096 / rowBytes; firstRow = 0; }
         {
             // The rows are contiguous in TMEM (wrapping at 4 KB): one or two ranges.
@@ -1001,7 +1016,14 @@ static void tc_affine(u32 shift, s32 lo, u32 size, float *a, float *b)
 }
 
 // ---------------------------------------------------------------- framebuffers
-static u32 fb_height(u32 width) { return width <= 320 ? 240 : width * 3 / 4; }
+// The height of a colour image, guessed from its width (4:3); profile
+// gfxTallFrame: the height the game's scissor gave an image of that width
+// (Indiana Jones: 400 x 448, shown as its top 300 lines, zoomed in).
+static u32 fb_height(const Xenos *x, u32 width)
+{
+    if (x->tallH && width == x->tallW) return x->tallH;
+    return width <= 320 ? 240 : width * 3 / 4;
+}
 
 static void bind_n64_target(Xenos *x)
 {
@@ -1069,6 +1091,71 @@ static void draw_textured_uv(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTextu
     x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
     x->dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
+}
+
+// Anti-flicker (option): the picture just drawn on the back buffer is kept
+// (resolved), then the back buffer becomes its average with the previous
+// one. Games that draw an effect every other frame (Smash Remix's disc under
+// the character being looked at, shadows) looked translucent on a CRT, whose
+// glow lasts; on a modern screen they flicker. Before the menus and the FPS.
+static void deflicker_pass(Xenos *x)
+{
+    D3DSURFACE_DESC d;
+    IDirect3DTexture9 *cur, *prev;
+    XVtx q[4];
+    float c[4], bw, bh;
+    int i;
+    if (!x->deflicker || !x->psMix) return;
+    x->backBuffer->GetDesc(&d);
+    if (d.Width > RT_WIDTH || d.Height > RT_HEIGHT) return;
+    for (i = 0; i < 2; i++)
+        if (!x->dfTex[i] && FAILED(x->dev->CreateTexture(RT_WIDTH, RT_HEIGHT, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &x->dfTex[i], NULL)))
+        {
+            x->dfTex[i] = NULL;
+            return;
+        }
+    cur = x->dfTex[x->dfCur];
+    prev = x->dfTex[x->dfCur ^ 1];
+    x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, NULL, cur, NULL, 0, 0, NULL, 0.0f, 0, NULL);
+    x->dfCur ^= 1;
+    if (!x->dfValid) { x->dfValid = 1; return; }
+    bw = (float)d.Width;
+    bh = (float)d.Height;
+    c[0] = 2.0f / bw; c[1] = -2.0f / bh; c[2] = 0; c[3] = 0;
+    for (i = 0; i < 4; i++)
+    {
+        q[i].x = (i & 1) ? bw : 0.0f;
+        q[i].y = (i & 2) ? bh : 0.0f;
+        q[i].z = 0;
+        q[i].w = 1;
+        q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
+        q[i].u0 = (i & 1) ? bw / RT_WIDTH : 0.0f;
+        q[i].v0 = (i & 2) ? bh / RT_HEIGHT : 0.0f;
+        q[i].u1 = q[i].v1 = 0;
+    }
+    x->dev->SetVertexShaderConstantF(0, c, 1);
+    x->dev->SetPixelShader(x->psMix);
+    x->dev->SetTexture(0, cur);
+    x->dev->SetTexture(1, prev);
+    for (i = 0; i < 2; i++)
+    {
+        x->dev->SetSamplerState(i, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        x->dev->SetSamplerState(i, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        x->dev->SetSamplerState(i, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        x->dev->SetSamplerState(i, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+    }
+    x->dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
+    // Both units back to the dummy: never leave one on a texture the next
+    // Resolve writes (and the renderer binds its own before drawing).
+    x->dev->SetTexture(0, x->dummy);
+    x->dev->SetTexture(1, x->dummy);
+    x->stateDirty = 1;
 }
 
 static void draw_fullscreen(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1)
@@ -1400,7 +1487,7 @@ static void select_framebuffer(Xenos *x)
     // frame's memory through a wider image, then draws in the frame: the
     // frame starts from that memory, not from what the GPU last drew there.
     {
-        u32 bytes = x->st->colorWidth * fb_height(x->st->colorWidth) * 2;
+        u32 bytes = x->st->colorWidth * fb_height(x, x->st->colorWidth) * 2;
         ramFresh = x->ramShadow && x->ramCopyHi > x->ramCopyLo && addr < x->ramCopyHi && addr + bytes > x->ramCopyLo;
     }
     if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound &&
@@ -1471,7 +1558,7 @@ static void select_framebuffer(Xenos *x)
         u32 wdt = x->st->colorWidth;
         IDirect3DTexture9 *t = upload_mem(x, x->ramShadow, addr, wdt, x->st->colorFmt == FB_RGBA8888);
         if (t)
-            draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(wdt) / RT_HEIGHT);
+            draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(x, wdt) / RT_HEIGHT);
         x->ramCopyLo = x->ramCopyHi = 0;
         x->stateDirty = 1;
     }
@@ -1480,7 +1567,7 @@ static void select_framebuffer(Xenos *x)
     s->cleanSnap = 0;
     s->drawnAt = x->presentCount;
     s->width = x->st->colorWidth;
-    s->height = fb_height(s->width);
+    s->height = fb_height(x, s->width);
     s->fmt = x->st->colorFmt;
     s->bytes = s->fmt == FB_RGBA8888 ? 4 : (s->fmt == FB_RGBA5551 || s->fmt == FB_IA88) ? 2 : 1;
     s->lastUse = ++x->useCounter;
@@ -1872,6 +1959,18 @@ static void set_scissor(Xenos *x, float sx, float sy)
     RECT r;
     float xlo = (float)(x->st->scissorXlo >> 2), xhi = (float)(x->st->scissorXhi >> 2);
     float fbw = (float)(x->st->colorWidth ? x->st->colorWidth : 320);
+    if (x->sys->options.gfxTallFrame && x->st->colorWidth > 320)
+    {
+        // A scissor taller than the 4:3 guess (up to 1.25 times the width):
+        // the image's real height, kept for that width.
+        u32 w = x->st->colorWidth, h = (x->st->scissorYhi + 3) >> 2;
+        if (h > fb_height(x, w) && h <= w * 5 / 4)
+        {
+            x->tallW = w;
+            x->tallH = h;
+            H64_INFO("[xenos] %u-wide images are %u lines tall (scissor)", w, h);
+        }
+    }
     note_drawn(x, (x->st->scissorYhi + 3) >> 2);
     if (!ws_wide(xhi - xlo, fbw) && !(x->sys->options.gfxWsBorder && xlo <= 16 && xhi >= fbw - 16))
     {
@@ -1976,9 +2075,13 @@ static void set_alpha_test(Xenos *x)
     const H64RdpState *st = x->st;
     if (st->rasterFlags & RS_ALPHA_TEST)
     {
+        // The RDP drops a pixel whose alpha is below the blend colour's
+        // alpha. Against 0 nothing is dropped; dropping alpha 0 there is the
+        // default, profile gfxAlphaRef0Pass keeps it (Hot Wheels Turbo Racing
+        // draws with alpha = texel alpha * fog factor: unfogged surfaces vanished).
         u32 ref = st->blendColor & 0xFF;
         x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
+        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref || x->sys->options.gfxAlphaRef0Pass ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
         x->dev->SetRenderState(D3DRS_ALPHAREF, ref);
     }
     else if (st->rasterFlags & RS_CVG_TIMES_ALPHA)
@@ -2023,7 +2126,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     const H64RdpState *st = x->st;
     int two = (st->rasterFlags & RS_MULTI_CYCLE) != 0;
     u32 flags = two ? KEY_TWO_CYCLE : 0;
-    float c[4], fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(st->colorWidth);
+    float c[4], fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(x, st->colorWidth);
     const u8 *b0 = st->blend[0];
     IDirect3DPixelShader9 *ps;
     if (two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
@@ -2210,7 +2313,7 @@ static void depth_fill_rdram(Xenos *x, u32 x0, u32 x1, u32 y0, u32 y1)
 static void fill_rect(Xenos *x, const u32 *w)
 {
     const H64RdpState *st = x->st;
-    float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(st->colorWidth);
+    float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(x, st->colorWidth);
     float sx = x->rtW / fbw, sy = x->rtH / fbh;
     u32 xh = (w[0] >> 12) & 0xFFF, yh = w[0] & 0xFFF, xl = (w[1] >> 12) & 0xFFF, yl = w[1] & 0xFFF;
     D3DRECT r;
@@ -2498,7 +2601,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     if (copy)
     {
         float c[4];
-        float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(st->colorWidth);
+        float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(x, st->colorWidth);
         x->dev->SetPixelShader(x->psCopy);
         bind_texture(x, 0, tile, &tb0);
         tb1 = tb0;
@@ -2744,7 +2847,7 @@ static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 wi
 {
     IDirect3DTexture9 *tex = x->cpuFb[x->cpuFbNext];
     D3DLOCKED_RECT lr;
-    u32 h = fb_height(width), y, xx;
+    u32 h = fb_height(x, width), y, xx;
     x->cpuFbNext ^= 1;
     if (!tex || width == 0 || width > RT_WIDTH) return NULL;
     tex->BlockUntilNotBusy();
@@ -2774,7 +2877,7 @@ static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 wi
 
 static void show_rdram_frame(Xenos *x, const u32 *vi, u32 origin, u32 width, int bpp32)
 {
-    u32 h = fb_height(width);
+    u32 h = fb_height(x, width);
     ViGeom g;
     IDirect3DTexture9 *tex = upload_rdram(x, origin, width, bpp32);
     if (!tex) return;
@@ -2806,10 +2909,14 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     // first match showed a black frame every other game frame. Conker's
     // buffers are closer than a guessed 240 lines: the most recently drawn
     // one, which covered the other, gave the same black frames.
+    // Only images of the VI's pixel size: Resident Evil 2's intro video, 32-bit
+    // pixels the CPU writes, lies where a 16-bit logo frame was drawn earlier,
+    // and the old frame (black) was shown instead of RDRAM.
     for (i = 0; i < FB_SLOTS; i++)
     {
         const FbSlot *s = &x->fb[i];
-        if (s->valid && s->tex && origin >= s->addr && origin < s->addr + s->width * s->height * s->bytes &&
+        if (s->valid && s->tex && s->bytes == (type == 3 ? 4u : 2u) && origin >= s->addr &&
+            origin < s->addr + s->width * s->height * s->bytes &&
             (found < 0 || s->addr > x->fb[found].addr ||
              (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;
@@ -2930,6 +3037,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             if ((int)k != found) x->fb[k].showFront = 0;
         x->shownSlot = found;
     }
+    deflicker_pass(x);
     if (x->overlay)
     {
         // The front end draws with its own shaders, declaration and texture:
@@ -2939,6 +3047,16 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->dev->SetVertexShader(x->vs);
         x->dev->SetTexture(0, x->dummy);
         x->dev->SetTexture(1, x->dummy);
+    }
+    if (x->vsyncSet != x->vsync)
+    {
+        // V-Sync: the frame waits for the TV's refresh (no tearing). One that
+        // comes late goes at once while the scan is in the top 10 % of the
+        // picture (a tear there, rarely seen), so a game a little under 60
+        // does not drop to 30.
+        x->dev->SetRenderState(D3DRS_PRESENTINTERVAL, x->vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE);
+        x->dev->SetRenderState(D3DRS_PRESENTIMMEDIATETHRESHOLD, x->vsync ? 10 : 100);
+        x->vsyncSet = x->vsync;
     }
     x->dev->Present(NULL, NULL, NULL, NULL);
     x->stats.presents++;
@@ -2993,6 +3111,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->poolBytes = 0;
     x->retires = 0;
     x->presentCount = 0;
+    x->tallW = x->tallH = 0;
     x->arenaHead = 0;
     x->arena = (u8 *)XPhysicalAlloc(ARENA_BYTES, MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
     if (!x->arena) H64_WARN("[xenos] no texture arena (%u MB): CreateTexture for every texture", ARENA_BYTES >> 20);
@@ -3046,6 +3165,9 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     dev->CreateVertexDeclaration(decl, &x->decl);
     x->vs = compile_vs(dev, s_vsSource);
     x->psCopy = compile_ps(dev, s_psCopySource);
+    x->psMix = compile_ps(dev, s_psMixSource);
+    x->deflicker = x->dfCur = x->dfValid = 0;
+    x->dfTex[0] = x->dfTex[1] = NULL;
     x->psSmooth = compile_ps(dev, s_psSmoothSource);
     x->smooth = 1;
     x->scale = 3;
@@ -3056,6 +3178,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->texFilter = 1;
     x->sharpen = x->blur = x->screen = x->aspect = x->wsMain = 0;
     x->brightness = x->viGamma = 0;
+    x->vsync = 1;
+    x->vsyncSet = -1;
     x->deferNotify = 0;
     x->pendingLo = x->pendingHi = 0;
     x->psFill = compile_ps(dev, s_psFillSource);
@@ -3144,6 +3268,9 @@ void h64_xenos_free(H64Renderer *r)
     if (x->rbSurf) x->rbSurf->Release();
     if (x->rbTex) x->rbTex->Release();
     if (x->shotTex) x->shotTex->Release();
+    if (x->dfTex[0]) x->dfTex[0]->Release();
+    if (x->dfTex[1]) x->dfTex[1]->Release();
+    if (x->psMix) x->psMix->Release();
     if (x->backBuffer) x->backBuffer->Release();
     x->sys->options.rdpStateOnly = 0;
     free(x->ramShadow);
@@ -3266,6 +3393,9 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     x->blur = o->blur < 0 || o->blur > 2 ? 0 : o->blur;
     x->screen = o->screen < 0 || o->screen > 5 ? 0 : o->screen;
     x->brightness = o->brightness < 0 || o->brightness > 2 ? 0 : o->brightness;
+    x->vsync = o->vsync != 0;
+    if (!o->deflicker) x->dfValid = 0;
+    x->deflicker = o->deflicker != 0;
     if (o->aspect != x->aspect) x->stateDirty = 1;   // the scissor moves in widescreen
     x->aspect = o->aspect < 0 || o->aspect > 2 ? 0 : o->aspect;
     if (o->texFilter != x->texFilter)

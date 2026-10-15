@@ -265,6 +265,27 @@ static void link_exit(H64Jit *j, u32 *patch, H64JitBlock *b, int tlb)
     if (j->flushIcache) j->flushIcache(patch, 4);
 }
 
+// libultra's run queue (options.idleRunQueue: __osRunQueue) holds no thread:
+// its head is __osThreadTail, priority -1. The head is followed only through
+// KSEG0 or the data TLB cache (H64Cpu.dtlbR); otherwise "not empty".
+static int run_queue_empty(H64System *sys)
+{
+    const H64Cpu *cpu = &sys->cpu;
+    u32 head, p, k, prio;
+    if (sys->options.idleRunQueue + 4 > H64_RDRAM_SIZE) return 0;
+    head = h64_load_be32(sys->rdram + sys->options.idleRunQueue);
+    if (head >= 0x80000000u && head < 0xA0000000u) p = head & 0x1FFFFFFFu;
+    else
+    {
+        k = (head >> 12) & 255;
+        if (cpu->dtlbR[k] != ((head & ~0xFFFu) | 1u)) return 0;
+        p = cpu->dtlbPhys[k] | (head & 0xFFFu);
+    }
+    if (p + 8 > H64_RDRAM_SIZE) return 0;
+    prio = h64_load_be32(sys->rdram + p + 4);
+    return prio == 0xFFFFFFFFu;
+}
+
 void h64_jit_run_one(H64System *sys)
 {
     H64Jit *j = sys->jit;
@@ -360,6 +381,18 @@ void h64_jit_run_one(H64System *sys)
             j->stats.interpSteps++;
             return;
         }
+    }
+    // An idle thread's osYieldThread loop (game profile): with no other
+    // thread ready and no interrupt pending, nothing but an event can give
+    // another thread the CPU, so the turns up to the next event are skipped.
+    if (b->idle == 3 && b->valid && !interrupt_pending(cpu) && sys->sched.next != H64_NEVER &&
+        sys->sched.next > cpu->cycles + cpu->cpi && run_queue_empty(sys))
+    {
+        u64 k = (sys->sched.next - cpu->cycles) / cpu->cpi - 1;
+        if (k > (1u << 24)) k = 1u << 24;
+        cpu->cycles += k * cpu->cpi;
+        cpu->instructions += k;
+        j->stats.idleSkipped += k;
     }
     // Run the block only if no event falls inside it; otherwise one step.
     if (sys->sched.next < cpu->cycles + (u64)b->insns * cpu->cpi)

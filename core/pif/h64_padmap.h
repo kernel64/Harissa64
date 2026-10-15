@@ -11,7 +11,8 @@
 // buttons, the left stick the analog stick.
 //
 // Settings keys (xb_config.cpp): map_a=xa,xb ... (one per N64 control,
-// sources by name, "none" for no source), map_stick=left|right|none,
+// sources by name, "none" for no source), map_stick=left|right|dpad|none
+// (dpad: the D-pad moves the stick and presses no button), map_invert=none|x|y|xy,
 // map_deadzone=N (0..32767 raw stick units, 7000 by default), map_range=N
 // (percent of the N64 stick's usual 80, 100 by default); map=default resets
 // the mapping first. Ports 2-4 use the same keys with a p2_ / p3_ / p4_ prefix.
@@ -63,7 +64,8 @@ enum
     H64_N64_COUNT
 };
 
-enum { H64_STICK_LEFT = 0, H64_STICK_RIGHT, H64_STICK_NONE, H64_STICK_COUNT };
+enum { H64_STICK_LEFT = 0, H64_STICK_RIGHT, H64_STICK_DPAD, H64_STICK_NONE, H64_STICK_COUNT };
+enum { H64_INVERT_X = 1, H64_INVERT_Y = 2 };
 
 #define H64_PAD_DEADZONE_DEFAULT 7000
 #define H64_PAD_RANGE_DEFAULT 100
@@ -76,6 +78,7 @@ struct H64PadMap
     int stick;                // H64_STICK_*
     int deadzone;             // raw stick units (0..32000)
     int range;                // percent of the usual full deflection (80), 50..150
+    int invert;               // H64_INVERT_X | H64_INVERT_Y
 };
 
 void h64_padmap_default(H64PadMap *m);

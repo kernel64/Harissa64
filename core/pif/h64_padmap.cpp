@@ -55,7 +55,7 @@ int h64_padmap_is_default(const H64PadMap *m)
     h64_padmap_default(&d);
     for (i = 0; i < H64_N64_COUNT; i++)
         if (m->src[i] != d.src[i]) return 0;
-    return m->stick == d.stick && m->deadzone == d.deadzone && m->range == d.range;
+    return m->stick == d.stick && m->deadzone == d.deadzone && m->range == d.range && m->invert == d.invert;
 }
 
 u32 h64_padmap_sources(const H64PadInput *in)
@@ -105,6 +105,8 @@ void h64_padmap_apply(const H64PadMap *m, const H64PadInput *in, H64Pad *out)
     u32 s = h64_padmap_sources(in);
     u16 b = 0;
     int i;
+    // The D-pad as the stick: its directions press no button.
+    if (m->stick == H64_STICK_DPAD) s &= ~(BIT(H64_SRC_DUP) | BIT(H64_SRC_DDOWN) | BIT(H64_SRC_DLEFT) | BIT(H64_SRC_DRIGHT));
     for (i = 0; i < H64_N64_COUNT; i++)
         if (s & m->src[i]) b |= s_n64[i].bit;
     out->buttons = b;
@@ -118,8 +120,24 @@ void h64_padmap_apply(const H64PadMap *m, const H64PadInput *in, H64Pad *out)
         out->x = stick_axis(in->rx, m->deadzone, m->range);
         out->y = stick_axis(in->ry, m->deadzone, m->range);
     }
+    else if (m->stick == H64_STICK_DPAD)
+    {
+        // Full deflection, about 70 % on each axis in a diagonal (the stick's
+        // circle, as a real stick's octagon gate).
+        int max = 80 * m->range / 100, dx = 0, dy = 0;
+        if (max > 127) max = 127;
+        if (in->buttons & H64_XB_DPAD_LEFT) dx--;
+        if (in->buttons & H64_XB_DPAD_RIGHT) dx++;
+        if (in->buttons & H64_XB_DPAD_DOWN) dy--;
+        if (in->buttons & H64_XB_DPAD_UP) dy++;
+        if (dx && dy) max = max * 7 / 10;
+        out->x = (s8)(dx * max);
+        out->y = (s8)(dy * max);
+    }
     else
         out->x = out->y = 0;
+    if (m->invert & H64_INVERT_X) out->x = (s8)-out->x;
+    if (m->invert & H64_INVERT_Y) out->y = (s8)-out->y;
 }
 
 const char *h64_padmap_source_name(int src) { return src >= 0 && src < H64_SRC_COUNT ? s_src[src].name : ""; }
@@ -199,7 +217,16 @@ int h64_padmap_parse_key(H64PadMap *m, const char *key, const char *value)
     {
         if (!strcmp(value, "left")) m->stick = H64_STICK_LEFT;
         else if (!strcmp(value, "right")) m->stick = H64_STICK_RIGHT;
+        else if (!strcmp(value, "dpad")) m->stick = H64_STICK_DPAD;
         else if (!strcmp(value, "none")) m->stick = H64_STICK_NONE;
+        return 1;
+    }
+    if (!strcmp(key, "invert"))
+    {
+        if (!strcmp(value, "none")) m->invert = 0;
+        else if (!strcmp(value, "x")) m->invert = H64_INVERT_X;
+        else if (!strcmp(value, "y")) m->invert = H64_INVERT_Y;
+        else if (!strcmp(value, "xy")) m->invert = H64_INVERT_X | H64_INVERT_Y;
         return 1;
     }
     if (!strcmp(key, "deadzone")) { parse_int(value, 0, 32000, &m->deadzone); return 1; }

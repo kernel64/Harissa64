@@ -118,7 +118,10 @@ void UiMenuDraw(const UiMenu *m)
     static UiAnim sel;
     static char lastTitle[64];
     static int lastCount;
-    const float w = 660, rowH = 48, head = 100, foot = 78;
+    const float w = 660, head = 100, foot = 78;
+    // Rows shrink a little when a page has many (the Graphics page: 11), so
+    // the panel stays on screen with a margin.
+    float rowH = m->count > 0 && (UI_HEIGHT - 40 - head - 18 - foot) / m->count < 48 ? (UI_HEIGHT - 40 - head - 18 - foot) / m->count : 48;
     float h = head + m->count * rowH + 18 + foot, x = (UI_WIDTH - w) * 0.5f, y = (UI_HEIGHT - h) * 0.5f, sy;
     int i, restart = strcmp(lastTitle, m->title) != 0 || lastCount != m->count;
     if (m->page == UI_PAGE_CONTROLS) { controls_draw(m); lastTitle[0] = 0; return; }
@@ -153,7 +156,7 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
 enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
-enum { G_PRESET = 0, G_RES, G_BRIGHT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+enum { G_PRESET = 0, G_RES, G_STRETCH, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
@@ -207,6 +210,9 @@ static void settings_values(UiMenu *m, const Config *c)
         {
             static const char *br[3] = { "Normal", "Lighter", "Much lighter" };
             sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
+            sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
+            sprintf(m->value[G_VSYNC], "< %s >", onoff(c->vsync));
+            sprintf(m->value[G_DEFLICKER], "< %s >", onoff(c->deflicker));
         }
         return;
     }
@@ -249,7 +255,10 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuClear(m, "Graphics", "A:Select|DPAD:Change|B:Back");
     UiMenuAdd(m, "Preset", "");
     UiMenuAdd(m, "Resolution", "");
+    UiMenuAdd(m, "Stretch to 16:9", "");
     UiMenuAdd(m, "Brightness", "");
+    UiMenuAdd(m, "V-Sync", "");
+    UiMenuAdd(m, "Anti-flicker", "");
     UiMenuAdd(m, "Texture filter", "");
     UiMenuAdd(m, "Edge smoothing (FXAA)", "");
     UiMenuAdd(m, "Sharpen", "");
@@ -261,10 +270,10 @@ static void settings_graphics(UiMenu *m, const Config *c)
 
 // ---- Controls page ----
 // Which Xbox 360 input drives each N64 control, per player (LB/RB), and the
-// analog stick's source, dead zone and sensitivity. A on a button waits for
+// analog stick's source (a stick or the D-pad), inverted axes, dead zone and sensitivity. A on a button waits for
 // an input to set it (Y adds one more, X clears); BACK or 5 s cancel.
 // Inputs are read from controller 1, whichever player is being edited.
-enum { C_STICK = H64_N64_COUNT, C_DEAD, C_RANGE, C_RESET, C_BACK, C_COUNT };
+enum { C_STICK = H64_N64_COUNT, C_INVERT, C_DEAD, C_RANGE, C_RESET, C_BACK, C_COUNT };
 #define CAPTURE_MS 5000
 
 struct ControlsState
@@ -283,7 +292,7 @@ static ControlsState s_ctl;
 static const int s_ctlOrder[C_COUNT] = {
     H64_N64_A, H64_N64_B, H64_N64_Z, H64_N64_START, H64_N64_L, H64_N64_R,
     H64_N64_DUP, H64_N64_DDOWN, H64_N64_DLEFT, H64_N64_DRIGHT, H64_N64_CUP, H64_N64_CDOWN, H64_N64_CLEFT, H64_N64_CRIGHT,
-    C_STICK, C_DEAD, C_RANGE, C_RESET, C_BACK,
+    C_STICK, C_INVERT, C_DEAD, C_RANGE, C_RESET, C_BACK,
 };
 
 #define CTL_X 70.0f
@@ -315,8 +324,9 @@ static void ctl_place(int item, int *col, float *row)
     case H64_N64_CLEFT: *col = 1; *row = 7; return;
     case H64_N64_CRIGHT: *col = 1; *row = 8; return;
     case C_STICK: *col = 2; *row = 0; return;
-    case C_DEAD: *col = 2; *row = 1; return;
-    case C_RANGE: *col = 2; *row = 2; return;
+    case C_INVERT: *col = 2; *row = 1; return;
+    case C_DEAD: *col = 2; *row = 2; return;
+    case C_RANGE: *col = 2; *row = 3; return;
     case C_RESET: *col = 0; *row = 7; return;
     default: *col = 0; *row = 8; return;
     }
@@ -451,6 +461,7 @@ static int controls_input(UiMenu *m, Config *c, WORD down)
     {
         if (!dir) dir = 1;
         if (item == C_STICK) map->stick = (map->stick + dir + H64_STICK_COUNT) % H64_STICK_COUNT;
+        else if (item == C_INVERT) map->invert = (map->invert + dir + 4) & 3;
         else if (item == C_DEAD)
         {
             map->deadzone += dir * 1000;
@@ -509,8 +520,10 @@ static void ctl_hints(u32 mask, char *out, size_t size)
 
 static void ctl_value_text(int item, const H64PadMap *map, char *out)
 {
-    static const char *sticks[H64_STICK_COUNT] = { "Left stick", "Right stick", "Off" };
+    static const char *sticks[H64_STICK_COUNT] = { "Left stick", "Right stick", "D-pad", "Off" };
+    static const char *inverts[4] = { "Off", "X", "Y", "X and Y" };
     if (item == C_STICK) sprintf(out, "< %s >", sticks[map->stick >= 0 && map->stick < H64_STICK_COUNT ? map->stick : 0]);
+    else if (item == C_INVERT) sprintf(out, "< %s >", inverts[map->invert & 3]);
     else if (item == C_DEAD) sprintf(out, "< %d%% >", (map->deadzone * 100 + 16383) / 32767);
     else if (item == C_RANGE) sprintf(out, "< %d%% >", map->range);
     else out[0] = 0;
@@ -528,7 +541,8 @@ static int pad_shape(int item, float *x, float *y, float *w, float *h, float *r)
         { H64_N64_A, 78.5f, 30.0f, 3.6f }, { H64_N64_B, 73.0f, 23.0f, 3.0f }, { H64_N64_START, 50.0f, 13.5f, 2.6f },
         { H64_N64_CUP, 86.0f, 12.5f, 2.1f }, { H64_N64_CDOWN, 86.0f, 21.5f, 2.1f },
         { H64_N64_CLEFT, 81.5f, 17.0f, 2.1f }, { H64_N64_CRIGHT, 90.5f, 17.0f, 2.1f },
-        { C_STICK, 50.0f, 30.0f, 6.0f }, { C_DEAD, 50.0f, 30.0f, 6.0f }, { C_RANGE, 50.0f, 30.0f, 6.0f },
+        { C_STICK, 50.0f, 30.0f, 6.0f }, { C_INVERT, 50.0f, 30.0f, 6.0f }, { C_DEAD, 50.0f, 30.0f, 6.0f },
+        { C_RANGE, 50.0f, 30.0f, 6.0f },
     };
     static const float boxes[][6] = {     // item, x, y, w, h, radius
         { H64_N64_DUP, 13.8f, 10.7f, 4.4f, 4.3f, 1.0f }, { H64_N64_DDOWN, 13.8f, 19.4f, 4.4f, 4.3f, 1.0f },
@@ -676,7 +690,7 @@ static void controls_draw(const UiMenu *m)
         }
         else
         {
-            static const char *labels[] = { "Analog stick", "Dead zone", "Sensitivity", "Reset to default", "Back" };
+            static const char *labels[] = { "Analog stick", "Invert", "Dead zone", "Sensitivity", "Reset to default", "Back" };
             UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, labels[item - C_STICK], UI_LEFT);
             ctl_value_text(item, map, buf);
             if (buf[0]) draw_value(cx + CTL_COLW - 18, cy, buf, s);
@@ -685,7 +699,7 @@ static void controls_draw(const UiMenu *m)
 
     // The controller under the stick settings, with the control being edited.
     {
-        float s = CTL_COLW / 100.0f, top = ctl_row_y(3) + 8, bottom = y + CTL_H - 86;
+        float s = CTL_COLW / 100.0f, top = ctl_row_y(4) + 8, bottom = y + CTL_H - 86;
         draw_n64_pad(ctl_col_x(2), top + (bottom - top - 56 * s) * 0.5f, s,
                      s_ctl.capturing ? s_ctl.capItem : selItem, s_ctl.capturing);
     }
@@ -758,6 +772,9 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         case G_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;
         case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
         case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
+        case G_STRETCH: c->stretch = !c->stretch; break;
+        case G_VSYNC: c->vsync = !c->vsync; break;
+        case G_DEFLICKER: c->deflicker = !c->deflicker; break;
         }
         settings_values(m, c);
         return SET_CHANGED;
@@ -1059,7 +1076,12 @@ static int settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsP
     SettingsBuild(&m, c, 0);
     s_browser = 1;
     settings_main(&m, c);
-    if (ctlTest >= 200)
+    if (ctlTest >= 300)
+    {
+        settings_graphics(&m, c);            // controlstest=300+N: the Graphics page, on item N
+        m.sel = (ctlTest - 300) % m.count;
+    }
+    else if (ctlTest >= 200)
         m.sel = (ctlTest - 200) % m.count;   // controlstest=200+N: this page, on item N
     else if (ctlTest >= 0)
     {

@@ -16,7 +16,8 @@ struct H64JitBlock
     int valid;
     int kernel;          // compiled in kernel mode (native code allowed)
     // Idle loop (a branch back to the block start with no side effects):
-    // 1 = pure loop, 2 = RDRAM poll (load from pollBase + pollOff, size pollSize).
+    // 1 = pure loop, 2 = RDRAM poll (load from pollBase + pollOff, size pollSize),
+    // 3 = the head of an idle thread's yield loop (options.idleYieldPc).
     int idle;
     u32 pollBase, pollSize;
     s32 pollOff;

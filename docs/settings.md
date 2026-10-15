@@ -58,7 +58,16 @@ How many pixels the games are drawn with. More pixels give a sharper picture but
 - *x3 960x720*: the default, a good balance. 4:3.
 - *HD 1280x720 (16:9)*: the sharpest, in widescreen. A very busy game may run slower with it. If so, go back to x3.
 
-With the 4:3 resolutions you get the original shape, with black bars on the sides of a wide TV. With HD 1280x720 the picture fills a wide TV and shows more of the scene on the left and right, without stretching anything. The menus and the on-screen info stay in the middle, where the game expects them. Widescreen works better in some games than others: N64 games were made for 4:3, so some don't draw what's at the far edges, and you may see things pop in or empty strips there. If a game looks wrong in HD, pick x3.
+With the 4:3 resolutions you get the original shape, with black bars on the sides of a wide TV. With HD 1280x720 the picture fills a wide TV and shows more of the scene on the left and right, without stretching anything. The menus and the on-screen info stay in the middle, where the game expects them. Widescreen works better in some games than others: N64 games were made for 4:3, so some don't draw what's at the far edges, and you may see things pop in or empty strips there. If a game looks wrong in HD, pick x3, or turn on *Stretch to 16:9*.
+
+**Stretch to 16:9**
+Pulls the 4:3 picture wider to fill a wide TV, at any resolution. Everything looks a bit wider, but nothing is missing. With HD 1280x720 it replaces the widescreen view, which helps games that look wrong in widescreen.
+
+**V-Sync**
+On by default. Each picture waits for the TV to be ready, so the image doesn't tear (a line cutting through the picture when the camera moves). When a game is a little late, the picture is shown at once if the TV is still at the very top of the screen, so slow games don't lose speed. Turn it off only if a game feels less smooth with it.
+
+**Anti-flicker**
+Off by default. Some N64 games make an effect see-through by drawing it only every other picture (a shadow, a glow, the disc under the character you're looking at in Smash Remix). On an old TV this looked like a soft, see-through effect; on a modern screen it flickers. With this on, each picture is mixed with the one before, so those effects look as they did on an old TV. Fast motion gets a little softer.
 
 **Brightness**
 Some games are very dark on a modern TV (Doom 64, for example). This lifts the dark parts of the picture without washing out the bright ones.
@@ -102,7 +111,8 @@ This page shows which Xbox 360 button does what on the N64 controller, for each 
 - **A** on an N64 button: press the Xbox button you want for it.
 - **Y**: add another button for the same N64 button (for example, two ways to fire).
 - **X**: clear it.
-- **Analog stick**: pick which Xbox stick moves the N64 stick, or turn it off.
+- **Analog stick**: pick what moves the N64 stick: the left stick, the right stick, or the D-pad, or turn it off. With the D-pad, its directions move the stick at full tilt and no longer press the N64 D-pad.
+- **Invert**: flips the stick left/right (X), up/down (Y), or both.
 - **Dead zone**: how far you need to push the stick before it reacts. Raise it if your character moves on their own.
 - **Sensitivity**: how far the N64 stick goes when you push yours all the way.
 - **Reset to default**: back to the usual layout.

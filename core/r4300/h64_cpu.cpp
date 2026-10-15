@@ -300,6 +300,7 @@ int h64_cpu_translate_debug(H64Cpu *cpu, u64 vaddr, u32 *paddr)
 {
     H64Cpu copy = *cpu;
     copy.exceptionRaised = 0;
+    copy.excHook = NULL;   // a miss here is no exception of the guest (h64test --trace-exc recursed on it)
     if (translate(&copy, vaddr, ACC_READ, paddr))
         return 0;
     return 1;

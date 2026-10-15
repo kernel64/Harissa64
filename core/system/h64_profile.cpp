@@ -81,8 +81,10 @@ static const GameProfile s_profiles[] = {
     // ROM hacks keep the game code. Some made on the old PC emulators DMA
     // from odd ROM addresses and expect the data from that byte (SM64 Last
     // Impact's MIO0 blocks: a black screen after the title). SM64 itself
-    // never does.
-    { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART },
+    // never does. Some also run into enabled FPU exceptions the old
+    // emulators never raised (Sunshine Secret Book 64: 0 times an infinite
+    // distance at its star doors, the game stopped); SM64 itself never traps.
+    { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART | H64_GP_FPU_NO_TRAPS },
     // Fonts and palettes live in memory once drawn into as a colour image
     // (Vigilante 8: 360-wide image at 0x377EC0, palettes and fonts from
     // 0x397400; 2nd Offense: 320-wide at 0x3B6DC0, font at 0x3BD5C8). Loads
@@ -112,9 +114,22 @@ static const GameProfile s_profiles[] = {
     // 0x2D4000: ~600 copy backs a frame once in game (1 VI/s in Xenia, the
     // first room's door and Mega Man black); without them 60 VI/s, textured.
     { "NM6", "Mega Man 64", H64_GP_COPY_BACK_SAME_WIDTH },
+    // Smash Remix (a hack with the same code) loads character textures from
+    // memory its intro screens drew into: copied back, the old frames
+    // replaced them (Sonic dark with black stripes, his stock icons blue
+    // bars) until a state load dropped the frames. The original game made
+    // no copy back from its character select to a match.
+    { "NAL", "Super Smash Bros.", H64_GP_COPY_BACK_SAME_WIDTH },
     // Calls osContInit before its timers exist: a cold boot with Count near
     // 0 armed a timer there and read a null pointer (nothing on screen).
     { "NBX", "BattleTanx", H64_GP_BOOT_TIME },
+    // Same race: with Count near 0 its osContInit waits 0.5 s for the
+    // controllers while another thread writes the EEPROM through libultra's
+    // timer queue, which osContInit creates last: a null thread queue, the
+    // game stopped after 16 frames (black screen).
+    // Its 400-wide frames are 448 lines tall: the GPU renderer takes the
+    // height from the scissor (only the top part showed, zoomed in).
+    { "NIJ", "Indiana Jones and the Infernal Machine", H64_GP_BOOT_TIME | H64_GP_TALL_FRAME },
     // 6106: with the HLE boot only its sound ran, never a graphics task.
     { "NCW", "Cruis'n World", H64_GP_IPL3_BOOT },
     // With the HLE boot, whole parts of rooms were missing depending on the
@@ -126,6 +141,9 @@ static const GameProfile s_profiles[] = {
     // S2DEX2 2D objects (rectangles, sprites, texture loads) in the graphics
     // HLE with the S2DEX 1.x code; those tasks ran on the LLE RSP.
     { "NBV", "Bomberman 64: The Second Attack!", H64_GP_S2DEX1 },
+    // Its dialogue boxes (G_OBJ_MOVEMEM) sent the tasks to the LLE RSP; the
+    // same images with the HLE (h64test, 4000 frames from boot).
+    { "NOB", "Ogre Battle 64: Person of Lordly Caliber", H64_GP_S2DEX1 },
     { "NDE", "Destruction Derby 64", H64_GP_S2DEX1 },
     // Never sets the texture filter and relies on the microcode's default
     // other modes at each task: from 0 its textures were read as YUV (dark,
@@ -142,6 +160,14 @@ static const GameProfile s_profiles[] = {
     { "NDM", "Doom 64", H64_GP_OTHERMODE_INIT },
     { "NEL", "Elmo's Letter Adventure", H64_GP_OTHERMODE_INIT },
     { "NSP", "Superman", H64_GP_OTHERMODE_INIT },   // its title pictures came out grey
+    // Sets the primitive depth source for a few draws and leaves it set at
+    // the end of a task: with no reset, the next frames drew everything at
+    // depth 0 and the first surface drawn won (Jim hidden on the Xbox, HUD
+    // missing with the software RDP). GitHub issue #7.
+    { "NJM", "Earthworm Jim 3D", H64_GP_OTHERMODE_INIT },
+    // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
+    // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
+    { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
@@ -172,6 +198,8 @@ static const GameProfile s_profiles[] = {
     { "NGC", "GT 64: Championship Edition", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
 };
 
+static void apply_idle_yield(H64System *sys);
+
 u32 h64_game_profile(const char *gameCode, const char **name)
 {
     u32 i;
@@ -191,7 +219,30 @@ void h64_apply_game_profile(H64System *sys)
     const char *name;
     u32 f = h64_game_profile(sys->rom.gameCode, &name);
     h64_apply_profile_flags(sys, f);
+    apply_idle_yield(sys);
     if (name) H64_INFO("[profile] %s: flags %X", name, f);
+}
+
+// Idle threads that call osYieldThread in a loop instead of spinning: when
+// no other thread is ready, the recompiler lets the time pass up to the next
+// event there (h64_jit.cpp). The loop's head and where __osRunQueue lives.
+struct IdleYield { const char *code; u32 pc, runQueue; };
+static const IdleYield s_idleYield[] = {
+    // ~190 instructions a turn, 2700 turns a frame in its logos and menus
+    // (COP0 moves, an ERET, MI_INTR_MASK writes): 34 VI/s on the console.
+    { "NIJ", 0x40036DA0u, 0x000479F8u },
+};
+
+static void apply_idle_yield(H64System *sys)
+{
+    u32 i;
+    sys->options.idleYieldPc = sys->options.idleRunQueue = 0;
+    for (i = 0; i < sizeof(s_idleYield) / sizeof(s_idleYield[0]); i++)
+        if (!memcmp(sys->rom.gameCode, s_idleYield[i].code, 3))
+        {
+            sys->options.idleYieldPc = s_idleYield[i].pc;
+            sys->options.idleRunQueue = s_idleYield[i].runQueue;
+        }
 }
 
 void h64_apply_profile_flags(H64System *sys, u32 f)
@@ -217,4 +268,7 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxNoOldFrame = (f & H64_GP_NO_OLD_FRAME) != 0;
     sys->options.gfxSoft8bit = (f & H64_GP_SOFT_8BIT) != 0;
     sys->options.gfxDepthFillToRdram = (f & H64_GP_DEPTH_FILL_RDRAM) != 0;
+    sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
+    sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
+    if (f & H64_GP_FPU_NO_TRAPS) sys->cpu.fpuNoTraps = 1;
 }
