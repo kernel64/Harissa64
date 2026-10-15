@@ -82,6 +82,7 @@ struct H64Cpu
     u64 fgr[32];
     u32 fcr31;
     int fpuNoTraps;       // FCR31's enables raise no exception (mupen64plus's way: fast FPU, profile fpuNoTraps)
+    int laxAlign64;       // profile: a doubleword access 4 bytes off alignment is two word accesses, not an address error
     double jitFpMin[2];   // dynarec native FPU: smallest normal single and double
     u64 jitScratch;       // dynarec native FPU: FPSCR read-back
 
