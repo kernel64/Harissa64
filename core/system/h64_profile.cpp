@@ -142,6 +142,11 @@ static const GameProfile s_profiles[] = {
     { "NDM", "Doom 64", H64_GP_OTHERMODE_INIT },
     { "NEL", "Elmo's Letter Adventure", H64_GP_OTHERMODE_INIT },
     { "NSP", "Superman", H64_GP_OTHERMODE_INIT },   // its title pictures came out grey
+    // Sets the primitive depth source for a few draws and leaves it set at
+    // the end of a task: with no reset, the next frames drew everything at
+    // depth 0 and the first surface drawn won (Jim hidden on the Xbox, HUD
+    // missing with the software RDP). GitHub issue #7.
+    { "NJM", "Earthworm Jim 3D", H64_GP_OTHERMODE_INIT },
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
