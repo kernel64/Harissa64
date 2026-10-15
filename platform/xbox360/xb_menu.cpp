@@ -118,7 +118,10 @@ void UiMenuDraw(const UiMenu *m)
     static UiAnim sel;
     static char lastTitle[64];
     static int lastCount;
-    const float w = 660, rowH = 48, head = 100, foot = 78;
+    const float w = 660, head = 100, foot = 78;
+    // Rows shrink a little when a page has many (the Graphics page: 11), so
+    // the panel stays on screen with a margin.
+    float rowH = m->count > 0 && (UI_HEIGHT - 40 - head - 18 - foot) / m->count < 48 ? (UI_HEIGHT - 40 - head - 18 - foot) / m->count : 48;
     float h = head + m->count * rowH + 18 + foot, x = (UI_WIDTH - w) * 0.5f, y = (UI_HEIGHT - h) * 0.5f, sy;
     int i, restart = strcmp(lastTitle, m->title) != 0 || lastCount != m->count;
     if (m->page == UI_PAGE_CONTROLS) { controls_draw(m); lastTitle[0] = 0; return; }
@@ -153,7 +156,7 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
 enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
-enum { G_PRESET = 0, G_RES, G_BRIGHT, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+enum { G_PRESET = 0, G_RES, G_STRETCH, G_BRIGHT, G_VSYNC, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
@@ -207,6 +210,8 @@ static void settings_values(UiMenu *m, const Config *c)
         {
             static const char *br[3] = { "Normal", "Lighter", "Much lighter" };
             sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
+            sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
+            sprintf(m->value[G_VSYNC], "< %s >", onoff(c->vsync));
         }
         return;
     }
@@ -249,7 +254,9 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuClear(m, "Graphics", "A:Select|DPAD:Change|B:Back");
     UiMenuAdd(m, "Preset", "");
     UiMenuAdd(m, "Resolution", "");
+    UiMenuAdd(m, "Stretch to 16:9", "");
     UiMenuAdd(m, "Brightness", "");
+    UiMenuAdd(m, "V-Sync", "");
     UiMenuAdd(m, "Texture filter", "");
     UiMenuAdd(m, "Edge smoothing (FXAA)", "");
     UiMenuAdd(m, "Sharpen", "");
@@ -758,6 +765,8 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         case G_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;
         case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
         case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
+        case G_STRETCH: c->stretch = !c->stretch; break;
+        case G_VSYNC: c->vsync = !c->vsync; break;
         }
         settings_values(m, c);
         return SET_CHANGED;
@@ -1059,7 +1068,12 @@ static int settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsP
     SettingsBuild(&m, c, 0);
     s_browser = 1;
     settings_main(&m, c);
-    if (ctlTest >= 200)
+    if (ctlTest >= 300)
+    {
+        settings_graphics(&m, c);            // controlstest=300+N: the Graphics page, on item N
+        m.sel = (ctlTest - 300) % m.count;
+    }
+    else if (ctlTest >= 200)
         m.sel = (ctlTest - 200) % m.count;   // controlstest=200+N: this page, on item N
     else if (ctlTest >= 0)
     {

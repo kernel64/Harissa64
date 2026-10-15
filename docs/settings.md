@@ -58,7 +58,13 @@ How many pixels the games are drawn with. More pixels give a sharper picture but
 - *x3 960x720*: the default, a good balance. 4:3.
 - *HD 1280x720 (16:9)*: the sharpest, in widescreen. A very busy game may run slower with it. If so, go back to x3.
 
-With the 4:3 resolutions you get the original shape, with black bars on the sides of a wide TV. With HD 1280x720 the picture fills a wide TV and shows more of the scene on the left and right, without stretching anything. The menus and the on-screen info stay in the middle, where the game expects them. Widescreen works better in some games than others: N64 games were made for 4:3, so some don't draw what's at the far edges, and you may see things pop in or empty strips there. If a game looks wrong in HD, pick x3.
+With the 4:3 resolutions you get the original shape, with black bars on the sides of a wide TV. With HD 1280x720 the picture fills a wide TV and shows more of the scene on the left and right, without stretching anything. The menus and the on-screen info stay in the middle, where the game expects them. Widescreen works better in some games than others: N64 games were made for 4:3, so some don't draw what's at the far edges, and you may see things pop in or empty strips there. If a game looks wrong in HD, pick x3, or turn on *Stretch to 16:9*.
+
+**Stretch to 16:9**
+Pulls the 4:3 picture wider to fill a wide TV, at any resolution. Everything looks a bit wider, but nothing is missing. With HD 1280x720 it replaces the widescreen view, which helps games that look wrong in widescreen.
+
+**V-Sync**
+On by default. Each picture waits for the TV to be ready, so the image doesn't tear (a line cutting through the picture when the camera moves). When a game is a little late, the picture is shown at once if the TV is still at the very top of the screen, so slow games don't lose speed. Turn it off only if a game feels less smooth with it.
 
 **Brightness**
 Some games are very dark on a modern TV (Doom 64, for example). This lifts the dark parts of the picture without washing out the bright ones.
