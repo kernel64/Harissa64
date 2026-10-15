@@ -84,7 +84,11 @@ static const GameProfile s_profiles[] = {
     // never does. Some also run into enabled FPU exceptions the old
     // emulators never raised (Sunshine Secret Book 64: 0 times an infinite
     // distance at its star doors, the game stopped); SM64 itself never traps.
-    { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART | H64_GP_FPU_NO_TRAPS },
+    // Super Mario 64 Land's own code leaves the stack only 4-byte aligned,
+    // then saves FPU registers with SDC1 (an address error on the console;
+    // the PC emulators it was made on write the two words): the game thread
+    // stopped near 1-3's rail platforms (GitHub issue #8).
+    { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART | H64_GP_FPU_NO_TRAPS | H64_GP_LAX_ALIGN64 },
     // Fonts and palettes live in memory once drawn into as a colour image
     // (Vigilante 8: 360-wide image at 0x377EC0, palettes and fonts from
     // 0x397400; 2nd Offense: 320-wide at 0x3B6DC0, font at 0x3BD5C8). Loads
@@ -271,4 +275,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
     sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
     if (f & H64_GP_FPU_NO_TRAPS) sys->cpu.fpuNoTraps = 1;
+    sys->cpu.laxAlign64 = (f & H64_GP_LAX_ALIGN64) != 0;
 }

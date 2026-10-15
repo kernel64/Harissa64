@@ -336,6 +336,15 @@ int h64_cpu_read32(H64System *sys, u64 vaddr, u32 *v)
 int h64_cpu_read64(H64System *sys, u64 vaddr, u64 *v)
 {
     u32 p;
+    if ((vaddr & 7) == 4 && sys->cpu.laxAlign64)
+    {
+        // Profile laxAlign64: two words (high word first), as the PC
+        // emulators ROM hacks were made on read it.
+        u32 hi, lo;
+        if (h64_cpu_read32(sys, vaddr, &hi) || h64_cpu_read32(sys, vaddr + 4, &lo)) return -1;
+        *v = ((u64)hi << 32) | lo;
+        return 0;
+    }
     CHECK_ALIGN(&sys->cpu, vaddr, 8, 0);
     if (translate(&sys->cpu, vaddr, ACC_READ, &p)) return -1;
     return h64_bus_read64(sys, p, v);
@@ -363,6 +372,12 @@ int h64_cpu_write32(H64System *sys, u64 vaddr, u32 v)
 int h64_cpu_write64(H64System *sys, u64 vaddr, u64 v)
 {
     u32 p;
+    if ((vaddr & 7) == 4 && sys->cpu.laxAlign64)
+    {
+        // Profile laxAlign64 (see h64_cpu_read64).
+        if (h64_cpu_write32(sys, vaddr, (u32)(v >> 32))) return -1;
+        return h64_cpu_write32(sys, vaddr + 4, (u32)v);
+    }
     CHECK_ALIGN(&sys->cpu, vaddr, 8, 1);
     if (translate(&sys->cpu, vaddr, ACC_WRITE, &p)) return -1;
     return h64_bus_write64(sys, p, v);

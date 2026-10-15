@@ -34,6 +34,7 @@ enum
     H64_GP_ALPHA_REF0_PASS = 1 << 17, // options.gfxAlphaRef0Pass
     H64_GP_TALL_FRAME = 1 << 18,  // options.gfxTallFrame
     H64_GP_FPU_NO_TRAPS = 1 << 19, // cpu.fpuNoTraps (also on with the fast FPU)
+    H64_GP_LAX_ALIGN64 = 1 << 22, // cpu.laxAlign64
     H64_GP_SHORT_GFX_TASK = 1 << 20, // options.gfxShortTask
     H64_GP_BIG_TEX_POOL = 1 << 24,   // options.gfxBigTexPool
     H64_GP_GFX_STREAM = 1 << 21,     // options.gfxStream
