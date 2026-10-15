@@ -112,6 +112,12 @@ static const GameProfile s_profiles[] = {
     // 0x2D4000: ~600 copy backs a frame once in game (1 VI/s in Xenia, the
     // first room's door and Mega Man black); without them 60 VI/s, textured.
     { "NM6", "Mega Man 64", H64_GP_COPY_BACK_SAME_WIDTH },
+    // Smash Remix (a hack with the same code) loads character textures from
+    // memory its intro screens drew into: copied back, the old frames
+    // replaced them (Sonic dark with black stripes, his stock icons blue
+    // bars) until a state load dropped the frames. The original game made
+    // no copy back from its character select to a match.
+    { "NAL", "Super Smash Bros.", H64_GP_COPY_BACK_SAME_WIDTH },
     // Calls osContInit before its timers exist: a cold boot with Count near
     // 0 armed a timer there and read a null pointer (nothing on screen).
     { "NBX", "BattleTanx", H64_GP_BOOT_TIME },
