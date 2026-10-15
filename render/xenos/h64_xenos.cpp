@@ -130,6 +130,7 @@ struct Xenos
     int texFilter;      // 0 the N64's 3-point filter, 1 bilinear, 2 nearest
     int sharpen, blur, screen;  // display: sharpening 0-2, blur 0-2, screen effect (H64XenosOptions)
     int brightness;             // display: 0-2 (H64XenosOptions)
+    int vsync, vsyncSet;        // display: V-Sync wanted (H64XenosOptions), and what the device has (-1: unknown)
     int viGamma;                // the VI's gamma bit at this present (VI_CONTROL bit 3)
     int aspect;                 // 0 4:3, 1 16:9 widescreen (wider 3D), 2 16:9 stretched
     int wsMain;                 // 16:9 widescreen applies to the current colour image (select_framebuffer)
@@ -2940,6 +2941,16 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->dev->SetTexture(0, x->dummy);
         x->dev->SetTexture(1, x->dummy);
     }
+    if (x->vsyncSet != x->vsync)
+    {
+        // V-Sync: the frame waits for the TV's refresh (no tearing). One that
+        // comes late goes at once while the scan is in the top 10 % of the
+        // picture (a tear there, rarely seen), so a game a little under 60
+        // does not drop to 30.
+        x->dev->SetRenderState(D3DRS_PRESENTINTERVAL, x->vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE);
+        x->dev->SetRenderState(D3DRS_PRESENTIMMEDIATETHRESHOLD, x->vsync ? 10 : 100);
+        x->vsyncSet = x->vsync;
+    }
     x->dev->Present(NULL, NULL, NULL, NULL);
     x->stats.presents++;
     x->presentCount++;
@@ -3056,6 +3067,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->texFilter = 1;
     x->sharpen = x->blur = x->screen = x->aspect = x->wsMain = 0;
     x->brightness = x->viGamma = 0;
+    x->vsync = 1;
+    x->vsyncSet = -1;
     x->deferNotify = 0;
     x->pendingLo = x->pendingHi = 0;
     x->psFill = compile_ps(dev, s_psFillSource);
@@ -3266,6 +3279,7 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     x->blur = o->blur < 0 || o->blur > 2 ? 0 : o->blur;
     x->screen = o->screen < 0 || o->screen > 5 ? 0 : o->screen;
     x->brightness = o->brightness < 0 || o->brightness > 2 ? 0 : o->brightness;
+    x->vsync = o->vsync != 0;
     if (o->aspect != x->aspect) x->stateDirty = 1;   // the scissor moves in widescreen
     x->aspect = o->aspect < 0 || o->aspect > 2 ? 0 : o->aspect;
     if (o->texFilter != x->texFilter)

@@ -682,7 +682,9 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     // The aspect follows the resolution: HD 1280x720 is 16:9 widescreen (the
     // 3D drawn wider), every other resolution 4:3. Widescreen shows more than
     // the game's viewport: keep the triangles the microcode would drop outside it.
-    int aspect = c->resScale == 4 ? 1 : 0;
+    // Stretch (its own setting): the 4:3 picture pulled to 16:9 at any
+    // resolution, for games widescreen does not suit.
+    int aspect = c->stretch ? 2 : c->resScale == 4 ? 1 : 0;
     sys->options.gfxKeepOffscreen = aspect == 1;
     if (!renderer) return;
     o.scale = c->resScale;
@@ -692,6 +694,7 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     o.blur = c->blur;
     o.screen = c->screen;
     o.brightness = c->brightness;
+    o.vsync = c->vsync;
     o.aspect = aspect;
     h64_xenos_set_options(renderer, &o);
 }
