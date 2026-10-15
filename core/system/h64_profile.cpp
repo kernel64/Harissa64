@@ -169,6 +169,9 @@ static const GameProfile s_profiles[] = {
     // depth 0 and the first surface drawn won (Jim hidden on the Xbox, HUD
     // missing with the software RDP). GitHub issue #7.
     { "NJM", "Earthworm Jim 3D", H64_GP_OTHERMODE_INIT },
+    // Relies on the default perspective-corrected textures: without them the
+    // balls' round outline came out as squares.
+    { "NVR", "Virtual Pool 64", H64_GP_OTHERMODE_INIT },
     // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
     // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
     { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
