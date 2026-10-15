@@ -333,6 +333,13 @@ static void print_state(H64System *sys)
            (u32)(c->cop0[CP0_BADVADDR] >> 32), (u32)c->cop0[CP0_BADVADDR], sys->mi.intr, sys->mi.mask);
     printf("sp status=%08X pc=%03X | dpc start=%06X end=%06X current=%06X status=%08X hleSyncPending=%u\n", sys->rsp.status,
            sys->rsp.pc & 0xFFF, sys->dp.start, sys->dp.end, sys->dp.current, sys->dp.status, sys->dp.hleSyncPending);
+    printf("si status=%08X pi status=%08X ai status=%08X | events (cycles from now, - none):", sys->si.status, sys->pi.regs[4], sys->ai.status);
+    for (i = 0; i < H64_EV_COUNT; i++)
+        if (sys->sched.when[i] == H64_NEVER) printf(" -");
+        else printf(" %lld", (long long)(sys->sched.when[i] - sys->cpu.cycles));
+    printf(" (COMPARE VI AI PI SI SP DP RSP)\n");
+    printf("vi origin=%06X width=%u | colour image %06X width %u\n", sys->vi.regs[1] & 0xFFFFFF, sys->vi.regs[2] & 0xFFF,
+           h64_rdp_state(sys)->colorAddr & 0xFFFFFF, h64_rdp_state(sys)->colorWidth);
     printf("last jumps:");
     for (i = 0; i < 16; i++)
         printf("%s%08X->%08X", (i % 4) ? " " : "\n  ", c->jumpFrom[(c->jumpPos + i) & 15], c->jumpTo[(c->jumpPos + i) & 15]);
