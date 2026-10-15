@@ -187,6 +187,8 @@ static const GameProfile s_profiles[] = {
     { "NGC", "GT 64: Championship Edition", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
 };
 
+static void apply_idle_yield(H64System *sys);
+
 u32 h64_game_profile(const char *gameCode, const char **name)
 {
     u32 i;
@@ -206,7 +208,30 @@ void h64_apply_game_profile(H64System *sys)
     const char *name;
     u32 f = h64_game_profile(sys->rom.gameCode, &name);
     h64_apply_profile_flags(sys, f);
+    apply_idle_yield(sys);
     if (name) H64_INFO("[profile] %s: flags %X", name, f);
+}
+
+// Idle threads that call osYieldThread in a loop instead of spinning: when
+// no other thread is ready, the recompiler lets the time pass up to the next
+// event there (h64_jit.cpp). The loop's head and where __osRunQueue lives.
+struct IdleYield { const char *code; u32 pc, runQueue; };
+static const IdleYield s_idleYield[] = {
+    // ~190 instructions a turn, 2700 turns a frame in its logos and menus
+    // (COP0 moves, an ERET, MI_INTR_MASK writes): 34 VI/s on the console.
+    { "NIJ", 0x40036DA0u, 0x000479F8u },
+};
+
+static void apply_idle_yield(H64System *sys)
+{
+    u32 i;
+    sys->options.idleYieldPc = sys->options.idleRunQueue = 0;
+    for (i = 0; i < sizeof(s_idleYield) / sizeof(s_idleYield[0]); i++)
+        if (!memcmp(sys->rom.gameCode, s_idleYield[i].code, 3))
+        {
+            sys->options.idleYieldPc = s_idleYield[i].pc;
+            sys->options.idleRunQueue = s_idleYield[i].runQueue;
+        }
 }
 
 void h64_apply_profile_flags(H64System *sys, u32 f)

@@ -39,11 +39,16 @@ int h64_input_script_parse(H64InputScript *s, const char *script)
 
 void h64_input_script_apply(const H64InputScript *s, H64System *sys)
 {
+    h64_input_script_apply_at(s, sys, sys->vi.frames);
+}
+
+void h64_input_script_apply_at(const H64InputScript *s, H64System *sys, u32 frame)
+{
     int i;
     sys->pad[0].buttons = 0;
     sys->pad[0].x = sys->pad[0].y = 0;
     for (i = 0; i < s->count; i++)
-        if (sys->vi.frames >= s->events[i].first && sys->vi.frames <= s->events[i].last)
+        if (frame >= s->events[i].first && frame <= s->events[i].last)
         {
             sys->pad[0].buttons |= s->events[i].buttons;
             if (s->events[i].axis == 1) sys->pad[0].x = (s8)s->events[i].value;
