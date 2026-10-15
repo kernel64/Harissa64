@@ -217,6 +217,7 @@ struct Xenos
     u32 useCounter;
     int debug;
     u32 debugFrom;
+    u32 tallW, tallH;   // profile gfxTallFrame: an image this wide is this tall (from the game's scissor)
     u32 dzPrim, dzHigh, dzTris, dzLastPrim;   // xenosdebug=15: triangles with prim depth / a vertex z >= 32767 / all, last prim depth
     float dzMin, dzMax;                        // xenosdebug=15: vertex z range (N64 units, 32767 = far)
     u64 dbgPresentT;   // xenosdebug=7: clock at the previous present
@@ -1002,7 +1003,14 @@ static void tc_affine(u32 shift, s32 lo, u32 size, float *a, float *b)
 }
 
 // ---------------------------------------------------------------- framebuffers
-static u32 fb_height(u32 width) { return width <= 320 ? 240 : width * 3 / 4; }
+// The height of a colour image, guessed from its width (4:3); profile
+// gfxTallFrame: the height the game's scissor gave an image of that width
+// (Indiana Jones: 400 x 448, shown as its top 300 lines, zoomed in).
+static u32 fb_height(const Xenos *x, u32 width)
+{
+    if (x->tallH && width == x->tallW) return x->tallH;
+    return width <= 320 ? 240 : width * 3 / 4;
+}
 
 static void bind_n64_target(Xenos *x)
 {
@@ -1401,7 +1409,7 @@ static void select_framebuffer(Xenos *x)
     // frame's memory through a wider image, then draws in the frame: the
     // frame starts from that memory, not from what the GPU last drew there.
     {
-        u32 bytes = x->st->colorWidth * fb_height(x->st->colorWidth) * 2;
+        u32 bytes = x->st->colorWidth * fb_height(x, x->st->colorWidth) * 2;
         ramFresh = x->ramShadow && x->ramCopyHi > x->ramCopyLo && addr < x->ramCopyHi && addr + bytes > x->ramCopyLo;
     }
     if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound &&
@@ -1472,7 +1480,7 @@ static void select_framebuffer(Xenos *x)
         u32 wdt = x->st->colorWidth;
         IDirect3DTexture9 *t = upload_mem(x, x->ramShadow, addr, wdt, x->st->colorFmt == FB_RGBA8888);
         if (t)
-            draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(wdt) / RT_HEIGHT);
+            draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(x, wdt) / RT_HEIGHT);
         x->ramCopyLo = x->ramCopyHi = 0;
         x->stateDirty = 1;
     }
@@ -1481,7 +1489,7 @@ static void select_framebuffer(Xenos *x)
     s->cleanSnap = 0;
     s->drawnAt = x->presentCount;
     s->width = x->st->colorWidth;
-    s->height = fb_height(s->width);
+    s->height = fb_height(x, s->width);
     s->fmt = x->st->colorFmt;
     s->bytes = s->fmt == FB_RGBA8888 ? 4 : (s->fmt == FB_RGBA5551 || s->fmt == FB_IA88) ? 2 : 1;
     s->lastUse = ++x->useCounter;
@@ -1873,6 +1881,18 @@ static void set_scissor(Xenos *x, float sx, float sy)
     RECT r;
     float xlo = (float)(x->st->scissorXlo >> 2), xhi = (float)(x->st->scissorXhi >> 2);
     float fbw = (float)(x->st->colorWidth ? x->st->colorWidth : 320);
+    if (x->sys->options.gfxTallFrame && x->st->colorWidth > 320)
+    {
+        // A scissor taller than the 4:3 guess (up to 1.25 times the width):
+        // the image's real height, kept for that width.
+        u32 w = x->st->colorWidth, h = (x->st->scissorYhi + 3) >> 2;
+        if (h > fb_height(x, w) && h <= w * 5 / 4)
+        {
+            x->tallW = w;
+            x->tallH = h;
+            H64_INFO("[xenos] %u-wide images are %u lines tall (scissor)", w, h);
+        }
+    }
     note_drawn(x, (x->st->scissorYhi + 3) >> 2);
     if (!ws_wide(xhi - xlo, fbw) && !(x->sys->options.gfxWsBorder && xlo <= 16 && xhi >= fbw - 16))
     {
@@ -2028,7 +2048,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     const H64RdpState *st = x->st;
     int two = (st->rasterFlags & RS_MULTI_CYCLE) != 0;
     u32 flags = two ? KEY_TWO_CYCLE : 0;
-    float c[4], fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(st->colorWidth);
+    float c[4], fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(x, st->colorWidth);
     const u8 *b0 = st->blend[0];
     IDirect3DPixelShader9 *ps;
     if (two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
@@ -2215,7 +2235,7 @@ static void depth_fill_rdram(Xenos *x, u32 x0, u32 x1, u32 y0, u32 y1)
 static void fill_rect(Xenos *x, const u32 *w)
 {
     const H64RdpState *st = x->st;
-    float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(st->colorWidth);
+    float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(x, st->colorWidth);
     float sx = x->rtW / fbw, sy = x->rtH / fbh;
     u32 xh = (w[0] >> 12) & 0xFFF, yh = w[0] & 0xFFF, xl = (w[1] >> 12) & 0xFFF, yl = w[1] & 0xFFF;
     D3DRECT r;
@@ -2503,7 +2523,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     if (copy)
     {
         float c[4];
-        float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(st->colorWidth);
+        float fbw = (float)(st->colorWidth ? st->colorWidth : 320), fbh = (float)fb_height(x, st->colorWidth);
         x->dev->SetPixelShader(x->psCopy);
         bind_texture(x, 0, tile, &tb0);
         tb1 = tb0;
@@ -2749,7 +2769,7 @@ static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 wi
 {
     IDirect3DTexture9 *tex = x->cpuFb[x->cpuFbNext];
     D3DLOCKED_RECT lr;
-    u32 h = fb_height(width), y, xx;
+    u32 h = fb_height(x, width), y, xx;
     x->cpuFbNext ^= 1;
     if (!tex || width == 0 || width > RT_WIDTH) return NULL;
     tex->BlockUntilNotBusy();
@@ -2779,7 +2799,7 @@ static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 wi
 
 static void show_rdram_frame(Xenos *x, const u32 *vi, u32 origin, u32 width, int bpp32)
 {
-    u32 h = fb_height(width);
+    u32 h = fb_height(x, width);
     ViGeom g;
     IDirect3DTexture9 *tex = upload_rdram(x, origin, width, bpp32);
     if (!tex) return;
@@ -3008,6 +3028,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->poolBytes = 0;
     x->retires = 0;
     x->presentCount = 0;
+    x->tallW = x->tallH = 0;
     x->arenaHead = 0;
     x->arena = (u8 *)XPhysicalAlloc(ARENA_BYTES, MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
     if (!x->arena) H64_WARN("[xenos] no texture arena (%u MB): CreateTexture for every texture", ARENA_BYTES >> 20);

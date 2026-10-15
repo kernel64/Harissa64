@@ -115,6 +115,13 @@ static const GameProfile s_profiles[] = {
     // Calls osContInit before its timers exist: a cold boot with Count near
     // 0 armed a timer there and read a null pointer (nothing on screen).
     { "NBX", "BattleTanx", H64_GP_BOOT_TIME },
+    // Same race: with Count near 0 its osContInit waits 0.5 s for the
+    // controllers while another thread writes the EEPROM through libultra's
+    // timer queue, which osContInit creates last: a null thread queue, the
+    // game stopped after 16 frames (black screen).
+    // Its 400-wide frames are 448 lines tall: the GPU renderer takes the
+    // height from the scissor (only the top part showed, zoomed in).
+    { "NIJ", "Indiana Jones and the Infernal Machine", H64_GP_BOOT_TIME | H64_GP_TALL_FRAME },
     // 6106: with the HLE boot only its sound ran, never a graphics task.
     { "NCW", "Cruis'n World", H64_GP_IPL3_BOOT },
     // With the HLE boot, whole parts of rooms were missing depending on the
@@ -226,4 +233,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxSoft8bit = (f & H64_GP_SOFT_8BIT) != 0;
     sys->options.gfxDepthFillToRdram = (f & H64_GP_DEPTH_FILL_RDRAM) != 0;
     sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
+    sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
 }
