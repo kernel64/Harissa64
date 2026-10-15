@@ -226,7 +226,8 @@ def run_case(con, c, update, log):
     for ev in [e for e in inp.split(',') if e]:
         k, rng = ev.split('@')
         lo, _, hi = rng.partition('-')
-        events.append('%s@%d%s' % (k, c['frame'] + int(lo), ('-%d' % (c['frame'] + int(hi))) if hi else ''))
+        # input= counts VIs from the launch, as shots= (also after loadstate=)
+        events.append('%s@%d%s' % (k, int(lo), ('-%d' % int(hi)) if hi else ''))
     if browser:
         ini = ['mode=play', 'cpu=dynarec', 'hle=1']
     else:

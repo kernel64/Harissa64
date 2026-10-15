@@ -87,6 +87,11 @@ static int fpu_finish(H64Cpu *cpu, u32 cause)
 {
     u32 enables = (cpu->fcr31 >> 7) & 0x1F;
     cpu->fcr31 = (cpu->fcr31 & ~FCR31_CAUSE) | (cause << 12);
+    // fpuNoTraps: an enabled cause sets its flag and the operation goes on,
+    // as the recompiler's fast FPU (and mupen64plus) does. SM64 hacks divide
+    // by a zero distance and multiply the infinity by 0 with the Invalid
+    // enable on: the game thread stopped (GitHub issue #8).
+    if (cpu->fpuNoTraps) enables = 0;
     if ((cause & CAUSE_E) || (cause & enables))
     {
         h64_cpu_exception(cpu, EXC_FPE, 0x180);
@@ -125,7 +130,7 @@ static int s_result(H64Cpu *cpu, float r, u32 cause, u32 *out)
     else if ((cause & CAUSE_U) || s_is_denormal(b))
     {
         int neg = (b >> 31) != 0, rm = (int)(cpu->fcr31 & 3);
-        if (!flush_allowed(cpu)) { fpu_finish(cpu, CAUSE_E); return -1; }
+        if (!flush_allowed(cpu) && !cpu->fpuNoTraps) { fpu_finish(cpu, CAUSE_E); return -1; }
         if ((rm == H64_RM_UP && !neg) || (rm == H64_RM_DOWN && neg)) b = (neg ? 0x80000000u : 0) | 0x00800000u;
         else b = neg ? 0x80000000u : 0;
         cause = (cause & (CAUSE_Z | CAUSE_V | CAUSE_O)) | CAUSE_U | CAUSE_I;
@@ -142,7 +147,7 @@ static int d_result(H64Cpu *cpu, double r, u32 cause, u64 *out)
     else if ((cause & CAUSE_U) || d_is_denormal(b))
     {
         int neg = (b >> 63) != 0, rm = (int)(cpu->fcr31 & 3);
-        if (!flush_allowed(cpu)) { fpu_finish(cpu, CAUSE_E); return -1; }
+        if (!flush_allowed(cpu) && !cpu->fpuNoTraps) { fpu_finish(cpu, CAUSE_E); return -1; }
         if ((rm == H64_RM_UP && !neg) || (rm == H64_RM_DOWN && neg))
             b = (neg ? 0x8000000000000000ull : 0) | 0x0010000000000000ull;
         else b = neg ? 0x8000000000000000ull : 0;
@@ -158,14 +163,18 @@ static int d_result(H64Cpu *cpu, double r, u32 cause, u64 *out)
 // MIPS encoding) raises Invalid and the result is the default NaN; a NaN with
 // that bit clear (quiet in the MIPS encoding, e.g. 0x7FBFFFFF) is an
 // Unimplemented Operation.
+// fpuNoTraps: a NaN operand gives the default NaN (Invalid) and a denormal
+// is used as it is, as on the host FPU.
 static int s_check(H64Cpu *cpu, u32 a, u32 *cause)
 {
+    if (cpu->fpuNoTraps) { if (s_is_nan(a)) *cause |= CAUSE_V; return 0; }
     if (s_is_denormal(a) || (s_is_nan(a) && !s_is_snan(a))) { fpu_finish(cpu, CAUSE_E); return -1; }
     if (s_is_nan(a)) *cause |= CAUSE_V;
     return 0;
 }
 static int d_check(H64Cpu *cpu, u64 a, u32 *cause)
 {
+    if (cpu->fpuNoTraps) { if (d_is_nan(a)) *cause |= CAUSE_V; return 0; }
     if (d_is_denormal(a) || (d_is_nan(a) && !d_is_snan(a))) { fpu_finish(cpu, CAUSE_E); return -1; }
     if (d_is_nan(a)) *cause |= CAUSE_V;
     return 0;
@@ -195,10 +204,17 @@ static int to_int(H64Cpu *cpu, double x, int isNanOrInf, int mode, int bits64, u
     double r, limit = bits64 ? 9007199254740992.0 /* 2^53 */ : 2147483648.0;
     int over;
     if (mode < 0) mode = (int)(cpu->fcr31 & 3);
-    if (isNanOrInf) { fpu_finish(cpu, CAUSE_E); return -1; }
-    r = round_mode(x, mode);
+    if (isNanOrInf && !cpu->fpuNoTraps) { fpu_finish(cpu, CAUSE_E); return -1; }
+    r = isNanOrInf ? limit : round_mode(x, mode);
     // 32-bit: [-2^31, 2^31); 64-bit: (-2^53, 2^53), both ends unimplemented.
     over = bits64 ? (r >= limit || r <= -limit) : (r >= limit || r < -limit);
+    if (over && cpu->fpuNoTraps)
+    {
+        // fpuNoTraps: the host's "integer indefinite" (mupen64plus on x86).
+        if (fpu_finish(cpu, CAUSE_V)) return -1;
+        *out = bits64 ? 0x8000000000000000ull : SEXT32(0x80000000u);
+        return 0;
+    }
     if (over) { fpu_finish(cpu, CAUSE_E); return -1; }
     if (fpu_finish(cpu, r != x ? CAUSE_I : 0)) return -1;
     *out = bits64 ? (u64)(s64)r : SEXT32((u32)(s32)r);
@@ -457,7 +473,7 @@ void h64_cop1_execute(H64System *sys, u32 op)
         {
             cpu->fcr31 = (u32)cpu->gpr[rt] & FCR31_WRITABLE;
             // A cause bit written together with its enable (or E) traps at once.
-            if (((cpu->fcr31 >> 12) & ((cpu->fcr31 >> 7) & 0x1F)) || (cpu->fcr31 & (CAUSE_E << 12)))
+            if (!cpu->fpuNoTraps && (((cpu->fcr31 >> 12) & ((cpu->fcr31 >> 7) & 0x1F)) || (cpu->fcr31 & (CAUSE_E << 12))))
                 h64_cpu_exception(cpu, EXC_FPE, 0x180);
         }
         return;

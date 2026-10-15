@@ -187,6 +187,24 @@ static int s_jumpStop = 0;
 static int s_logPcCount;
 static u32 s_logPcA0;   // --log-pc PC:A0: only when a0 matches
 static u32 s_logWord;   // --log-word ADDR: that RDRAM word on each --log-pc line
+// --poke FIRST[-LAST]:ADDR=VALUE[:SIZE]: RDRAM written (big-endian, SIZE 1, 2 or 4 bytes, default 4) at
+// every run slice of those VI frames (moving a character, setting a game variable for a check).
+struct PokeEv { u32 first, last, addr, value, size; };
+static PokeEv s_pokes[64];
+static int s_pokeCount;
+static void apply_pokes(H64System *sys)
+{
+    int k;
+    for (k = 0; k < s_pokeCount; k++)
+    {
+        const PokeEv *p = &s_pokes[k];
+        u32 a = p->addr & 0x7FFFFF;
+        if (sys->vi.frames < p->first || sys->vi.frames > p->last || a + p->size > H64_RDRAM_SIZE) continue;
+        if (p->size == 1) sys->rdram[a] = (u8)p->value;
+        else if (p->size == 2) h64_store_be16(sys->rdram + a, (u16)p->value);
+        else h64_store_be32(sys->rdram + a, p->value);
+    }
+}
 static u32 s_logFrom;   // --log-from FRAME: --log-pc lines from that VI frame
 static void log_pc_hook(void *user)
 {
@@ -333,6 +351,17 @@ static void print_state(H64System *sys)
            (u32)(c->cop0[CP0_BADVADDR] >> 32), (u32)c->cop0[CP0_BADVADDR], sys->mi.intr, sys->mi.mask);
     printf("sp status=%08X pc=%03X | dpc start=%06X end=%06X current=%06X status=%08X hleSyncPending=%u\n", sys->rsp.status,
            sys->rsp.pc & 0xFFF, sys->dp.start, sys->dp.end, sys->dp.current, sys->dp.status, sys->dp.hleSyncPending);
+    printf("si status=%08X pi status=%08X ai status=%08X | events (cycles from now, - none):", sys->si.status, sys->pi.regs[4], sys->ai.status);
+    for (i = 0; i < H64_EV_COUNT; i++)
+        if (sys->sched.when[i] == H64_NEVER) printf(" -");
+        else printf(" %lld", (long long)(sys->sched.when[i] - sys->cpu.cycles));
+    printf(" (COMPARE VI AI PI SI SP DP RSP)\n");
+    printf("fcr31=%08X\n", sys->cpu.fcr31);
+    printf("vi regs:");
+    for (i = 0; i < 14; i++) printf(" %08X", sys->vi.regs[i]);
+    printf("\n");
+    printf("vi origin=%06X width=%u | colour image %06X width %u\n", sys->vi.regs[1] & 0xFFFFFF, sys->vi.regs[2] & 0xFFF,
+           h64_rdp_state(sys)->colorAddr & 0xFFFFFF, h64_rdp_state(sys)->colorWidth);
     printf("last jumps:");
     for (i = 0; i < 16; i++)
         printf("%s%08X->%08X", (i % 4) ? " " : "\n  ", c->jumpFrom[(c->jumpPos + i) & 15], c->jumpTo[(c->jumpPos + i) & 15]);
@@ -452,6 +481,17 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--log-from") && i + 1 < argc) s_logFrom = (u32)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--poke") && i + 1 < argc && s_pokeCount < 64)
+        {
+            char *p;
+            PokeEv *e = &s_pokes[s_pokeCount++];
+            e->first = e->last = (u32)strtoul(argv[++i], &p, 10);
+            if (*p == '-') e->last = (u32)strtoul(p + 1, &p, 10);
+            e->addr = *p == ':' ? (u32)strtoul(p + 1, &p, 16) : 0;
+            e->value = *p == '=' ? (u32)strtoul(p + 1, &p, 16) : 0;
+            e->size = *p == ':' ? (u32)strtoul(p + 1, &p, 10) : 4;
+            if (e->size != 1 && e->size != 2) e->size = 4;
+        }
         else if (!strcmp(argv[i], "--watch-word") && i + 1 < argc) watchWord = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--log-pc") && i + 1 < argc)
         {
@@ -584,7 +624,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (noLink && sys->jit) sys->jit->noLink = 1;
     if (noRegCache && sys->jit) sys->jit->noRegCache = 1;
     if (noFpCache && sys->jit) sys->jit->noFpCache = 1;
-    if (fastFpu && sys->jit) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
+    if (fastFpu && sys->jit) { sys->jit->fastFpu = 1; sys->cpu.fpuNoTraps = 1; h64_jit_reset(sys); }
     if (fullExits && sys->jit) sys->jit->fullExits = 1;
     if (noSuper && sys->jit) sys->jit->noSuper = 1;
     if (jitDump && sys->jit) sys->jit->dumpFile = fopen(jitDump, "wb");
@@ -702,6 +742,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
                         printf("[shot] frame %u: %s\n", sys->vi.frames, shots[k].path);
                 }
         }
+        if (s_pokeCount) apply_pokes(sys);
         if (probe)
         {
             H64RdpState *ps = h64_rdp_state(sys);
