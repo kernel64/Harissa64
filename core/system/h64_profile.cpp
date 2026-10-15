@@ -141,6 +141,9 @@ static const GameProfile s_profiles[] = {
     // S2DEX2 2D objects (rectangles, sprites, texture loads) in the graphics
     // HLE with the S2DEX 1.x code; those tasks ran on the LLE RSP.
     { "NBV", "Bomberman 64: The Second Attack!", H64_GP_S2DEX1 },
+    // Its dialogue boxes (G_OBJ_MOVEMEM) sent the tasks to the LLE RSP; the
+    // same images with the HLE (h64test, 4000 frames from boot).
+    { "NOB", "Ogre Battle 64: Person of Lordly Caliber", H64_GP_S2DEX1 },
     { "NDE", "Destruction Derby 64", H64_GP_S2DEX1 },
     // Never sets the texture filter and relies on the microcode's default
     // other modes at each task: from 0 its textures were read as YUV (dark,
