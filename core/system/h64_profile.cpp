@@ -147,6 +147,9 @@ static const GameProfile s_profiles[] = {
     // depth 0 and the first surface drawn won (Jim hidden on the Xbox, HUD
     // missing with the software RDP). GitHub issue #7.
     { "NJM", "Earthworm Jim 3D", H64_GP_OTHERMODE_INIT },
+    // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
+    // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
+    { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
@@ -222,4 +225,5 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxNoOldFrame = (f & H64_GP_NO_OLD_FRAME) != 0;
     sys->options.gfxSoft8bit = (f & H64_GP_SOFT_8BIT) != 0;
     sys->options.gfxDepthFillToRdram = (f & H64_GP_DEPTH_FILL_RDRAM) != 0;
+    sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
 }

@@ -1977,9 +1977,13 @@ static void set_alpha_test(Xenos *x)
     const H64RdpState *st = x->st;
     if (st->rasterFlags & RS_ALPHA_TEST)
     {
+        // The RDP drops a pixel whose alpha is below the blend colour's
+        // alpha. Against 0 nothing is dropped; dropping alpha 0 there is the
+        // default, profile gfxAlphaRef0Pass keeps it (Hot Wheels Turbo Racing
+        // draws with alpha = texel alpha * fog factor: unfogged surfaces vanished).
         u32 ref = st->blendColor & 0xFF;
         x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
+        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref || x->sys->options.gfxAlphaRef0Pass ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
         x->dev->SetRenderState(D3DRS_ALPHAREF, ref);
     }
     else if (st->rasterFlags & RS_CVG_TIMES_ALPHA)
