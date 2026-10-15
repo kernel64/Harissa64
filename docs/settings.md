@@ -66,6 +66,9 @@ Pulls the 4:3 picture wider to fill a wide TV, at any resolution. Everything loo
 **V-Sync**
 On by default. Each picture waits for the TV to be ready, so the image doesn't tear (a line cutting through the picture when the camera moves). When a game is a little late, the picture is shown at once if the TV is still at the very top of the screen, so slow games don't lose speed. Turn it off only if a game feels less smooth with it.
 
+**Anti-flicker**
+Off by default. Some N64 games make an effect see-through by drawing it only every other picture (a shadow, a glow, the disc under the character you're looking at in Smash Remix). On an old TV this looked like a soft, see-through effect; on a modern screen it flickers. With this on, each picture is mixed with the one before, so those effects look as they did on an old TV. Fast motion gets a little softer.
+
 **Brightness**
 Some games are very dark on a modern TV (Doom 64, for example). This lifts the dark parts of the picture without washing out the bright ones.
 - *Normal*: the picture as the console sends it.

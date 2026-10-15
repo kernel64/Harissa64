@@ -88,6 +88,7 @@ struct H64XenosOptions
     int aspect;      // 0 4:3, 1 16:9 widescreen (3D drawn wider, no distortion), 2 16:9 stretched
     int brightness;  // 0 as the console, 1 lighter, 2 much lighter (dark tones lifted, white kept)
     int vsync;       // 1: frames wait for the TV's refresh (no tearing); a late one goes at once near the top
+    int deflicker;   // 1: each picture shown is mixed half and half with the previous one
 };
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);
