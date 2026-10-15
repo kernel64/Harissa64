@@ -123,6 +123,8 @@ struct H64Options
     int gfxNoOldFrame;      // GPU renderer (game profile): never show a frame older than the one on screen
     int gfxSoft8bit;        // GPU renderer (game profile): drawing into 8-bit colour images done by the software RDP
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
+    u32 idleYieldPc;        // recompiler (game profile): head of an idle thread's osYieldThread loop (0: none)
+    u32 idleRunQueue;       // and the physical address of libultra's __osRunQueue (see h64_jit.cpp)
     int gfxTallFrame;       // GPU renderer (game profile): colour images as tall as the game's scissor, not 4:3
     int gfxAlphaRef0Pass;   // GPU renderer (game profile): an alpha test against 0 keeps every pixel, as the RDP does
     int gfxStream;          // graphics HLE (game profile): a display list may branch to itself until the CPU

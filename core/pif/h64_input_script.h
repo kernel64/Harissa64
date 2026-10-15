@@ -29,5 +29,8 @@ struct H64InputScript
 int h64_input_script_parse(H64InputScript *s, const char *text);
 // Sets controller 1 from the events active at the current VI frame.
 void h64_input_script_apply(const H64InputScript *s, H64System *sys);
+// The same at VI frame `frame` (the Xbox counts from the launch, as shots=,
+// also after loadstate=).
+void h64_input_script_apply_at(const H64InputScript *s, H64System *sys, u32 frame);
 
 #endif

@@ -705,6 +705,7 @@ static int s_padValid;
 static XINPUT_STATE s_padsMore[3];          // controllers 2-4: N64 ports 2-4
 static int s_padsMoreValid[3];
 static const H64InputScript *s_script;   // scripted input (input=), NULL: the controller
+static u32 s_scriptBase;                 // VI frame at the launch: input= counts from there, as shots=
 
 static const H64PadMap *s_padMaps;      // the controls of ports 1-4 (Config.padMap; edited live by the menu)
 
@@ -741,7 +742,7 @@ static void PadFromXInput(const XINPUT_GAMEPAD *g, int port, H64Pad *pad)
 static void PadHook(H64System *sys)
 {
     int i;
-    if (s_script) { h64_input_script_apply(s_script, sys); return; }
+    if (s_script) { h64_input_script_apply_at(s_script, sys, sys->vi.frames - s_scriptBase); return; }
     sys->padMask = 1;
     // BACK held: the buttons are front-end shortcuts, not the game's.
     if (!s_padValid || (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK)) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; }
@@ -1165,6 +1166,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     s_osd[0] = 0;
     h64_xenos_set_overlay(renderer, OverlayHook, NULL);
     if (c->loadState) LoadStateNow(sys);
+    s_scriptBase = sys->vi.frames;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&frameStart);
     if (!c->xenia)
