@@ -143,8 +143,36 @@ void test_padmap(H64TestContext *ctx)
     H64_CHECK(ctx, !h64_padmap_parse_key(&d, "mapx", "1"));
     H64_CHECK(ctx, !h64_padmap_parse_key(&d, "smooth", "1"));
     H64_CHECK(ctx, h64_padmap_parse_key(&d, "map_unknown", "xa") == 0);
+    H64_CHECK(ctx, h64_padmap_parse_key(&d, "map_invert", "y"));
+    H64_CHECK_EQ(ctx, d.invert, H64_INVERT_Y);
+    H64_CHECK(ctx, !h64_padmap_is_default(&d));
+    H64_CHECK(ctx, h64_padmap_parse_key(&d, "map_stick", "dpad"));
+    H64_CHECK_EQ(ctx, d.stick, H64_STICK_DPAD);
     H64_CHECK(ctx, h64_padmap_parse_key(&d, "map", "default"));
     H64_CHECK(ctx, h64_padmap_is_default(&d));
+
+    // The D-pad as the stick (its directions press no button), inverted axes.
+    h64_padmap_default(&m);
+    m.stick = H64_STICK_DPAD;
+    memset(&in, 0, sizeof(in));
+    in.buttons = H64_XB_DPAD_UP | H64_XB_A;
+    in.lx = 32767;
+    h64_padmap_apply(&m, &in, &got);
+    H64_CHECK_EQ(ctx, got.buttons, 0x8000);
+    H64_CHECK(ctx, got.x == 0 && got.y == 80);
+    in.buttons = H64_XB_DPAD_DOWN | H64_XB_DPAD_LEFT;
+    h64_padmap_apply(&m, &in, &got);
+    H64_CHECK(ctx, got.buttons == 0 && got.x == -56 && got.y == -56);
+    m.invert = H64_INVERT_X | H64_INVERT_Y;
+    h64_padmap_apply(&m, &in, &got);
+    H64_CHECK(ctx, got.x == 56 && got.y == 56);
+    m.stick = H64_STICK_LEFT;
+    m.invert = H64_INVERT_Y;
+    in.buttons = H64_XB_DPAD_UP;
+    in.lx = 32767;
+    in.ly = 32767;
+    h64_padmap_apply(&m, &in, &got);
+    H64_CHECK(ctx, got.buttons == 0x0800 && got.x == 80 && got.y == -80);
 
     // Every name round-trips.
     for (i = 0; i < H64_SRC_COUNT; i++)
