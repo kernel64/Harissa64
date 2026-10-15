@@ -601,7 +601,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
     if (sys->jit) sys->jit->noFpu = s_jitNoFpu;
     if (sys->jit) sys->jit->noRegCache = s_noRegCache;
     if (sys->jit) sys->jit->noFpCache = s_noFpCache;
-    if (sys->jit && s_fastFpu) { sys->jit->fastFpu = 1; h64_jit_reset(sys); }
+    if (sys->jit && s_fastFpu) { sys->jit->fastFpu = 1; sys->cpu.fpuNoTraps = 1; h64_jit_reset(sys); }
     if (sys->jit && s_fullExits) { sys->jit->fullExits = 1; h64_jit_reset(sys); }
     if (sys->jit && s_noSuper) { sys->jit->noSuper = 1; h64_jit_reset(sys); }
     sys->cpu.cpi = s_cpi;
