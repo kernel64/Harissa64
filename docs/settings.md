@@ -108,7 +108,8 @@ This page shows which Xbox 360 button does what on the N64 controller, for each 
 - **A** on an N64 button: press the Xbox button you want for it.
 - **Y**: add another button for the same N64 button (for example, two ways to fire).
 - **X**: clear it.
-- **Analog stick**: pick which Xbox stick moves the N64 stick, or turn it off.
+- **Analog stick**: pick what moves the N64 stick: the left stick, the right stick, or the D-pad, or turn it off. With the D-pad, its directions move the stick at full tilt and no longer press the N64 D-pad.
+- **Invert**: flips the stick left/right (X), up/down (Y), or both.
 - **Dead zone**: how far you need to push the stick before it reacts. Raise it if your character moves on their own.
 - **Sensitivity**: how far the N64 stick goes when you push yours all the way.
 - **Reset to default**: back to the usual layout.

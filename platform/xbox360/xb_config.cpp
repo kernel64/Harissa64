@@ -187,8 +187,9 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             fprintf(f, "%smap_%s=%s\n", pre, h64_padmap_n64_name(k), src);
         }
         fprintf(f, "%smap_stick=%s\n%smap_deadzone=%d\n%smap_range=%d\n", pre,
-                m->stick == H64_STICK_RIGHT ? "right" : m->stick == H64_STICK_NONE ? "none" : "left", pre, m->deadzone, pre,
-                m->range);
+                m->stick == H64_STICK_RIGHT ? "right" : m->stick == H64_STICK_DPAD ? "dpad" : m->stick == H64_STICK_NONE ? "none" : "left",
+                pre, m->deadzone, pre, m->range);
+        fprintf(f, "%smap_invert=%s\n", pre, m->invert == 3 ? "xy" : m->invert == 2 ? "y" : m->invert == 1 ? "x" : "none");
     }
     if (withLastRom && c->lastRom[0]) fprintf(f, "lastrom=%s\n", c->lastRom);
     fclose(f);
