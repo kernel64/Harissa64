@@ -156,7 +156,7 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
 enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
-enum { G_PRESET = 0, G_RES, G_STRETCH, G_BRIGHT, G_VSYNC, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+enum { G_PRESET = 0, G_RES, G_STRETCH, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
@@ -212,6 +212,7 @@ static void settings_values(UiMenu *m, const Config *c)
             sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
             sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
             sprintf(m->value[G_VSYNC], "< %s >", onoff(c->vsync));
+            sprintf(m->value[G_DEFLICKER], "< %s >", onoff(c->deflicker));
         }
         return;
     }
@@ -257,6 +258,7 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuAdd(m, "Stretch to 16:9", "");
     UiMenuAdd(m, "Brightness", "");
     UiMenuAdd(m, "V-Sync", "");
+    UiMenuAdd(m, "Anti-flicker", "");
     UiMenuAdd(m, "Texture filter", "");
     UiMenuAdd(m, "Edge smoothing (FXAA)", "");
     UiMenuAdd(m, "Sharpen", "");
@@ -772,6 +774,7 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
         case G_STRETCH: c->stretch = !c->stretch; break;
         case G_VSYNC: c->vsync = !c->vsync; break;
+        case G_DEFLICKER: c->deflicker = !c->deflicker; break;
         }
         settings_values(m, c);
         return SET_CHANGED;

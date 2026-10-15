@@ -695,6 +695,7 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     o.screen = c->screen;
     o.brightness = c->brightness;
     o.vsync = c->vsync;
+    o.deflicker = c->deflicker;
     o.aspect = aspect;
     h64_xenos_set_options(renderer, &o);
 }

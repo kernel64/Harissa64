@@ -40,6 +40,7 @@ struct Config
     int screen;         // screen=0..4: none, scanlines, CRT, curved CRT, LCD grid (crt=1: curved CRT)
     int brightness;     // brightness=0|1|2: as the console, lighter, much lighter
     int vsync;          // vsync=1|0: frames wait for the TV's refresh (default 1)
+    int deflicker;      // deflicker=0|1: each picture shown mixed with the previous one (default 0)
     int stretch;        // stretch=0|1: the picture stretched to 16:9 (any resolution; HD then stretches instead of widening)
     int showFps;        // showfps=1: frames shown per second in a corner
     int logCpu;         // logcpu=N: hardware thread of the log writer (5)

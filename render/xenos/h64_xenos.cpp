@@ -213,6 +213,10 @@ struct Xenos
     IDirect3DSurface9 *rbSurf;     // EDRAM target at EDRAM_READBACK
     IDirect3DTexture9 *rbTex;      // its resolve, in CPU-cached memory (D3DUSAGE_CPU_CACHED_MEMORY)
     IDirect3DTexture9 *shotTex;    // screenshots: the shown frame resolved into CPU-cached memory (made on first use)
+    int deflicker;                 // option: pictures mixed with the previous one (deflicker_pass)
+    IDirect3DTexture9 *dfTex[2];   // the last two pictures shown, before the mix (made on first use)
+    int dfCur, dfValid;
+    IDirect3DPixelShader9 *psMix;
     u32 copyBacks;
     u32 useCounter;
     int debug;
@@ -314,6 +318,12 @@ static const char s_vsSource[] =
     "  o.pos.z = saturate(i.pos.z) * w;\n"
     "  float4 c = saturate(i.col);\n"
     "  o.col = c; o.tc = i.tc; o.lcol = c * w; o.lw = float4(w, i.pos.z * w, o.pos.z, 0.0); return o; }\n";
+
+// Anti-flicker: the average of two pictures.
+static const char s_psMixSource[] =
+    "sampler t0 : register(s0);\n"
+    "sampler t1 : register(s1);\n"
+    "float4 main(float4 col : COLOR0, float4 tc : TEXCOORD0) : COLOR { return (tex2D(t0, tc.xy) + tex2D(t1, tc.xy)) * 0.5; }\n";
 
 static const char s_psCopySource[] =
     "sampler t0 : register(s0);\n"
@@ -1078,6 +1088,71 @@ static void draw_textured_uv(Xenos *x, IDirect3DPixelShader9 *ps, IDirect3DTextu
     x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
     x->dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
+}
+
+// Anti-flicker (option): the picture just drawn on the back buffer is kept
+// (resolved), then the back buffer becomes its average with the previous
+// one. Games that draw an effect every other frame (Smash Remix's disc under
+// the character being looked at, shadows) looked translucent on a CRT, whose
+// glow lasts; on a modern screen they flicker. Before the menus and the FPS.
+static void deflicker_pass(Xenos *x)
+{
+    D3DSURFACE_DESC d;
+    IDirect3DTexture9 *cur, *prev;
+    XVtx q[4];
+    float c[4], bw, bh;
+    int i;
+    if (!x->deflicker || !x->psMix) return;
+    x->backBuffer->GetDesc(&d);
+    if (d.Width > RT_WIDTH || d.Height > RT_HEIGHT) return;
+    for (i = 0; i < 2; i++)
+        if (!x->dfTex[i] && FAILED(x->dev->CreateTexture(RT_WIDTH, RT_HEIGHT, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &x->dfTex[i], NULL)))
+        {
+            x->dfTex[i] = NULL;
+            return;
+        }
+    cur = x->dfTex[x->dfCur];
+    prev = x->dfTex[x->dfCur ^ 1];
+    x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, NULL, cur, NULL, 0, 0, NULL, 0.0f, 0, NULL);
+    x->dfCur ^= 1;
+    if (!x->dfValid) { x->dfValid = 1; return; }
+    bw = (float)d.Width;
+    bh = (float)d.Height;
+    c[0] = 2.0f / bw; c[1] = -2.0f / bh; c[2] = 0; c[3] = 0;
+    for (i = 0; i < 4; i++)
+    {
+        q[i].x = (i & 1) ? bw : 0.0f;
+        q[i].y = (i & 2) ? bh : 0.0f;
+        q[i].z = 0;
+        q[i].w = 1;
+        q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 1.0f;
+        q[i].u0 = (i & 1) ? bw / RT_WIDTH : 0.0f;
+        q[i].v0 = (i & 2) ? bh / RT_HEIGHT : 0.0f;
+        q[i].u1 = q[i].v1 = 0;
+    }
+    x->dev->SetVertexShaderConstantF(0, c, 1);
+    x->dev->SetPixelShader(x->psMix);
+    x->dev->SetTexture(0, cur);
+    x->dev->SetTexture(1, prev);
+    for (i = 0; i < 2; i++)
+    {
+        x->dev->SetSamplerState(i, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        x->dev->SetSamplerState(i, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        x->dev->SetSamplerState(i, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        x->dev->SetSamplerState(i, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+    }
+    x->dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    x->dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
+    // Both units back to the dummy: never leave one on a texture the next
+    // Resolve writes (and the renderer binds its own before drawing).
+    x->dev->SetTexture(0, x->dummy);
+    x->dev->SetTexture(1, x->dummy);
+    x->stateDirty = 1;
 }
 
 static void draw_fullscreen(Xenos *x, IDirect3DTexture9 *tex, float u1, float v1)
@@ -2955,6 +3030,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             if ((int)k != found) x->fb[k].showFront = 0;
         x->shownSlot = found;
     }
+    deflicker_pass(x);
     if (x->overlay)
     {
         // The front end draws with its own shaders, declaration and texture:
@@ -3082,6 +3158,9 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     dev->CreateVertexDeclaration(decl, &x->decl);
     x->vs = compile_vs(dev, s_vsSource);
     x->psCopy = compile_ps(dev, s_psCopySource);
+    x->psMix = compile_ps(dev, s_psMixSource);
+    x->deflicker = x->dfCur = x->dfValid = 0;
+    x->dfTex[0] = x->dfTex[1] = NULL;
     x->psSmooth = compile_ps(dev, s_psSmoothSource);
     x->smooth = 1;
     x->scale = 3;
@@ -3182,6 +3261,9 @@ void h64_xenos_free(H64Renderer *r)
     if (x->rbSurf) x->rbSurf->Release();
     if (x->rbTex) x->rbTex->Release();
     if (x->shotTex) x->shotTex->Release();
+    if (x->dfTex[0]) x->dfTex[0]->Release();
+    if (x->dfTex[1]) x->dfTex[1]->Release();
+    if (x->psMix) x->psMix->Release();
     if (x->backBuffer) x->backBuffer->Release();
     x->sys->options.rdpStateOnly = 0;
     free(x->ramShadow);
@@ -3305,6 +3387,8 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     x->screen = o->screen < 0 || o->screen > 5 ? 0 : o->screen;
     x->brightness = o->brightness < 0 || o->brightness > 2 ? 0 : o->brightness;
     x->vsync = o->vsync != 0;
+    if (!o->deflicker) x->dfValid = 0;
+    x->deflicker = o->deflicker != 0;
     if (o->aspect != x->aspect) x->stateDirty = 1;   // the scissor moves in widescreen
     x->aspect = o->aspect < 0 || o->aspect > 2 ? 0 : o->aspect;
     if (o->texFilter != x->texFilter)

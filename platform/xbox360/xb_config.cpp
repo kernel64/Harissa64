@@ -56,6 +56,7 @@ void ConfigDefaults(Config *c)
     c->screen = 0;
     c->brightness = 0;
     c->vsync = 1;
+    c->deflicker = 0;
     c->stretch = 0;
     c->asyncGfx = 1;
     c->parseWorker = 1;
@@ -128,6 +129,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "screen")) c->screen = atoi(eq + 1);
         else if (!strcmp(line, "brightness")) c->brightness = atoi(eq + 1);
         else if (!strcmp(line, "vsync")) c->vsync = atoi(eq + 1);
+        else if (!strcmp(line, "deflicker")) c->deflicker = atoi(eq + 1);
         else if (!strcmp(line, "stretch")) c->stretch = atoi(eq + 1);
         else if (!strcmp(line, "blur")) c->blur = atoi(eq + 1);
         else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
@@ -166,8 +168,8 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
     if (!f) return 0;
     fprintf(f, "# Written by the Harissa64 V2 menu\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
             c->smooth, c->showFps);
-    fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\n", c->resScale,
-            c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch);
+    fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
+            c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.
