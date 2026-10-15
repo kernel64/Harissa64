@@ -795,8 +795,11 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         // windowed rectangle cost GoldenEye ~30 ms per frame.
         u32 firstRow = 0;
         u64 h0 = h64_prof_now(x->sys);
+        // A clamped axis never samples row h: hashing it made the key change
+        // with whatever an earlier load left there (Quake II's paused frame,
+        // 80 strips of 320x3: every strip decoded again every frame).
         if (t->maskT) rows = 1u << t->maskT;
-        else { firstRow = b->oy; rows = b->h + 1; }
+        else { firstRow = b->oy; rows = b->h + (b->clampT ? 0 : 1); }
         if (rowBytes * rows > 4096) { rows = 4096 / rowBytes; firstRow = 0; }
         {
             // The rows are contiguous in TMEM (wrapping at 4 KB): one or two ranges.
@@ -2906,10 +2909,14 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     // first match showed a black frame every other game frame. Conker's
     // buffers are closer than a guessed 240 lines: the most recently drawn
     // one, which covered the other, gave the same black frames.
+    // Only images of the VI's pixel size: Resident Evil 2's intro video, 32-bit
+    // pixels the CPU writes, lies where a 16-bit logo frame was drawn earlier,
+    // and the old frame (black) was shown instead of RDRAM.
     for (i = 0; i < FB_SLOTS; i++)
     {
         const FbSlot *s = &x->fb[i];
-        if (s->valid && s->tex && origin >= s->addr && origin < s->addr + s->width * s->height * s->bytes &&
+        if (s->valid && s->tex && s->bytes == (type == 3 ? 4u : 2u) && origin >= s->addr &&
+            origin < s->addr + s->width * s->height * s->bytes &&
             (found < 0 || s->addr > x->fb[found].addr ||
              (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;

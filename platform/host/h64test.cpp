@@ -357,6 +357,9 @@ static void print_state(H64System *sys)
         else printf(" %lld", (long long)(sys->sched.when[i] - sys->cpu.cycles));
     printf(" (COMPARE VI AI PI SI SP DP RSP)\n");
     printf("fcr31=%08X\n", sys->cpu.fcr31);
+    printf("vi regs:");
+    for (i = 0; i < 14; i++) printf(" %08X", sys->vi.regs[i]);
+    printf("\n");
     printf("vi origin=%06X width=%u | colour image %06X width %u\n", sys->vi.regs[1] & 0xFFFFFF, sys->vi.regs[2] & 0xFFF,
            h64_rdp_state(sys)->colorAddr & 0xFFFFFF, h64_rdp_state(sys)->colorWidth);
     printf("last jumps:");
