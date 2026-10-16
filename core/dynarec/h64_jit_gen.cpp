@@ -2651,6 +2651,24 @@ static void classify_idle(H64JitBlock *b, const u32 *ops, u32 n)
             b->pollSize = size;
         }
     }
+    else if (n == 4 && ops[3] == 0 && (ops[0] >> 26) == 0x0F && plain_branch_to(ops[2], pc + 8, pc) &&
+             ((ops[2] >> 26) == 0x04 || (ops[2] >> 26) == 0x05))
+    {
+        // "lui base, hi; lw rX, lo(base); beq/bne rX, rY, self; nop": the poll
+        // address is a constant rebuilt each turn (base may be rX: Mario
+        // Tennis waits on a function pointer at 0x80061F6C, 2/3 of its CPU
+        // time in a match). The lui writes the same value every turn.
+        u32 lop = ops[1] >> 26, rX = (ops[1] >> 16) & 31, base = (ops[1] >> 21) & 31, lt = (ops[0] >> 16) & 31;
+        u32 bs = (ops[2] >> 21) & 31, bt = (ops[2] >> 16) & 31, other = bs == rX ? bt : bs;
+        u32 size = lop == 0x20 || lop == 0x24 ? 1 : lop == 0x21 || lop == 0x25 ? 2 : lop == 0x23 || lop == 0x27 ? 4 : 0;
+        if (size && rX != 0 && lt != 0 && base == lt && (bs == rX || bt == rX) && other != lt && (other != rX || bs == bt))
+        {
+            b->idle = 2;
+            b->pollBase = 0;   // r0: the address is pollOff alone
+            b->pollOff = (s32)((ops[0] & 0xFFFF) << 16) + (s32)(s16)(ops[1] & 0xFFFF);
+            b->pollSize = size;
+        }
+    }
 }
 
 // A branch the block may go on after (emit_side_branch): conditional,
