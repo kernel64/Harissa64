@@ -258,10 +258,32 @@ static const IdleYield s_idleYield[] = {
     { "NIJ", 0x40036DA0u, 0x000479F8u },
 };
 
+// Loops that only read Count until enough time has passed (frame limiters)
+// or poll a message queue: the recompiler moves time on there (h64_jit.cpp).
+// The loop's head, the most CPU cycles skipped at a time (0: up to the next
+// event), the physical address of the queue (skipped only while empty).
+struct CountWait { const char *code; u32 pc, step, queue; };
+static const CountWait s_countWait[] = {
+    // while (osGetCount() - start < limit) {}: half of the CPU time in
+    // game, 42-44 VI/s on the console.
+    { "NFF", 0x80022948u, 4096, 0 },
+    // Its intro and menus poll a queue with osRecvMesg(NOBLOCK) (interrupts
+    // off and on each turn): 23 ms of CPU a frame, 42 VI/s on the console.
+    { "NVR", 0x800062ACu, 0, 0x00271C78u },
+};
+
 static void apply_idle_yield(H64System *sys)
 {
     u32 i;
     sys->options.idleYieldPc = sys->options.idleRunQueue = 0;
+    sys->options.countWaitPc = sys->options.countWaitStep = sys->options.countWaitQueue = 0;
+    for (i = 0; i < sizeof(s_countWait) / sizeof(s_countWait[0]); i++)
+        if (!memcmp(sys->rom.gameCode, s_countWait[i].code, 3))
+        {
+            sys->options.countWaitPc = s_countWait[i].pc;
+            sys->options.countWaitStep = s_countWait[i].step;
+            sys->options.countWaitQueue = s_countWait[i].queue;
+        }
     for (i = 0; i < sizeof(s_idleYield) / sizeof(s_idleYield[0]); i++)
         if (!memcmp(sys->rom.gameCode, s_idleYield[i].code, 3))
         {

@@ -125,6 +125,10 @@ struct H64Options
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
     u32 idleYieldPc;        // recompiler (game profile): head of an idle thread's osYieldThread loop (0: none)
     u32 idleRunQueue;       // and the physical address of libultra's __osRunQueue (see h64_jit.cpp)
+    u32 countWaitPc;        // recompiler (game profile): head of a loop that only polls Count or an empty
+                            // message queue (0: none); time moves on there (h64_jit.cpp)
+    u32 countWaitStep;      // at most this many CPU cycles at a time (0: up to the next event)
+    u32 countWaitQueue;     // physical address of the OSMesgQueue polled (0: none), skipped only while empty
     int gfxTallFrame;       // GPU renderer (game profile): colour images as tall as the game's scissor, not 4:3
     int gfxKeepShown;       // GPU renderer (game profile): a VI origin in no frame slot keeps the frame on screen
     int gfxRectPoint;       // GPU renderer (game profile): filtered rectangles drawn 1:1 sample whole texels, as the N64 does
