@@ -172,6 +172,10 @@ static const GameProfile s_profiles[] = {
     // Relies on the default perspective-corrected textures: without them the
     // balls' round outline came out as squares.
     { "NVR", "Virtual Pool 64", H64_GP_OTHERMODE_INIT },
+    // Its backgrounds and sprites are filtered rectangles drawn 1:1 with an
+    // alpha test, over magenta transparent texels: the N64 samples whole
+    // texels there, a higher resolution filtered magenta into their edges.
+    { "NRI", "The New Tetris", H64_GP_RECT_POINT },
     // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
     // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
     { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
@@ -277,6 +281,7 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxDepthFillToRdram = (f & H64_GP_DEPTH_FILL_RDRAM) != 0;
     sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
     sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
+    sys->options.gfxRectPoint = (f & H64_GP_RECT_POINT) != 0;
     if (f & H64_GP_FPU_NO_TRAPS) sys->cpu.fpuNoTraps = 1;
     sys->cpu.laxAlign64 = (f & H64_GP_LAX_ALIGN64) != 0;
 }
