@@ -177,6 +177,9 @@ static const GameProfile s_profiles[] = {
     // Copies the frame on screen with the CPU into another image the VI
     // shows while a level loads: that frame is only on the GPU (noise).
     { "NFF", "Fighting Force 64", H64_GP_KEEP_SHOWN },
+    // Its animated 24x24 32-bit textures are declared with 256x256 masks: each
+    // was decoded as 65536 texels and again every frame (30-35 VI/s in races).
+    { "NML", "Mickey's Speedway USA", H64_GP_MASK_TO_TILE },
     // Its backgrounds and sprites are filtered rectangles drawn 1:1 with an
     // alpha test, over magenta transparent texels: the N64 samples whole
     // texels there, a higher resolution filtered magenta into their edges.
@@ -319,6 +322,7 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
     sys->options.gfxRectPoint = (f & H64_GP_RECT_POINT) != 0;
     sys->options.gfxKeepShown = (f & H64_GP_KEEP_SHOWN) != 0;
+    sys->options.gfxMaskToTile = (f & H64_GP_MASK_TO_TILE) != 0;
     if (f & H64_GP_FPU_NO_TRAPS) sys->cpu.fpuNoTraps = 1;
     sys->cpu.laxAlign64 = (f & H64_GP_LAX_ALIGN64) != 0;
     sys->cpu.noOvTrap = (f & H64_GP_NO_OV_TRAP) != 0;
