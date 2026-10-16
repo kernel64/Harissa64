@@ -447,7 +447,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u8 *file;
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
-    int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1; u32 gameFlags = 0;
+    int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1, strictCpu = 0; u32 gameFlags = 0;
     u32 rdpLogFrame = 0, peekVa = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
@@ -475,6 +475,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--gfx-cost-log")) gfxCostLog = 1;
         else if (!strcmp(argv[i], "--keep-offscreen")) keepOffscreen = 1;
         else if (!strcmp(argv[i], "--no-profile")) noProfile = 1;
+        else if (!strcmp(argv[i], "--strict")) strictCpu = 1;
         else if (!strcmp(argv[i], "--gameflags") && i + 1 < argc) { gameFlags = (u32)strtoul(argv[++i], 0, 16); noProfile = 2; }
         else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--peek") && i + 1 < argc) peekVa = (u32)strtoul(argv[++i], 0, 16);
@@ -642,6 +643,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.hleAudio = hleAudio == 1;
     sys->options.hleAudioCheck = hleAudio == 2;
     sys->options.gfxCostLog = gfxCostLog;
+    sys->options.strictCpu = strictCpu;   // --strict: no ROM hack tolerance (test ROMs)
     if (!noProfile) h64_apply_game_profile(sys);   // --no-profile: none of the per-game settings
     else if (noProfile == 2) h64_apply_profile_flags(sys, gameFlags);   // --gameflags HEX: these instead (as the ini's gameflags=)
     sys->options.gfxKeepOffscreen = keepOffscreen;

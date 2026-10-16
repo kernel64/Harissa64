@@ -228,6 +228,7 @@ struct Xenos
     u32 debugLines;    // xenosdebug=9: lines logged so far     // xenosdebug=8: the first of the two presents logged (xenosdebug=8000+N: present N)
     IDirect3DTexture9 *shown;   // texture shown at the last present
     int shownSlot;              // frame slot the VI showed at the last present (-1: none)
+    u32 shownOrigin;            // the VI origin it showed there
     float shownU, shownV;
     int shownTiled;
     void (*overlay)(void *user, IDirect3DDevice9 *dev);   // front-end messages, drawn before each present
@@ -2937,6 +2938,15 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             if (s->valid && s->tex && s->addr == x->fb[found].addr && s->width == width) { found = (int)i; break; }
         }
     }
+    if (x->sys->options.gfxKeepShown && found < 0 && x->shownSlot >= 0 && x->fb[x->shownSlot].valid && x->fb[x->shownSlot].tex)
+    {
+        // Profile gfxKeepShown: the VI went to an image no frame slot holds,
+        // one the CPU fills by copying the frame on screen (Fighting Force's
+        // loading screens: noise, as that frame is only on the GPU). The
+        // frame on screen stays, which is what the copy shows.
+        found = x->shownSlot;
+        origin = x->shownOrigin;
+    }
     if (x->sys->options.gfxNoOldFrame && found >= 0 && x->shownSlot >= 0 && found != x->shownSlot &&
         x->fb[x->shownSlot].valid && x->fb[x->shownSlot].tex &&
         x->fb[found].drawnAt < x->fb[x->shownSlot].drawnAt && x->fb[x->shownSlot].drawnAt - x->fb[found].drawnAt <= 8)
@@ -3043,6 +3053,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         for (k = 0; k < FB_SLOTS; k++)
             if ((int)k != found) x->fb[k].showFront = 0;
         x->shownSlot = found;
+        x->shownOrigin = origin;
     }
     deflicker_pass(x);
     if (x->overlay)
