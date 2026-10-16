@@ -286,6 +286,15 @@ static int run_queue_empty(H64System *sys)
     return prio == 0xFFFFFFFFu;
 }
 
+// The message queue a wait loop polls (options.countWaitQueue) holds no
+// message (OSMesgQueue.validCount, at +8, is 0); true without a queue.
+static int mesg_queue_empty(H64System *sys)
+{
+    u32 q = sys->options.countWaitQueue;
+    if (!q) return 1;
+    return q + 12 <= H64_RDRAM_SIZE && h64_load_be32(sys->rdram + q + 8) == 0;
+}
+
 void h64_jit_run_one(H64System *sys)
 {
     H64Jit *j = sys->jit;
@@ -390,6 +399,21 @@ void h64_jit_run_one(H64System *sys)
     {
         u64 k = (sys->sched.next - cpu->cycles) / cpu->cpi - 1;
         if (k > (1u << 24)) k = 1u << 24;
+        cpu->cycles += k * cpu->cpi;
+        cpu->instructions += k;
+        j->stats.idleSkipped += k;
+    }
+    // A loop that only reads Count until enough time has passed (a frame
+    // limiter) or polls an empty message queue (game profile): time moves
+    // on to the next event, at most countWaitStep cycles at a time, so a
+    // Count loop leaves at most that late (Fighting Force: half of the CPU
+    // time went round it, 42 VI/s); a queue only fills from an interrupt.
+    if (b->idle == 4 && b->valid && !interrupt_pending(cpu) && sys->sched.next != H64_NEVER &&
+        sys->sched.next > cpu->cycles + cpu->cpi && mesg_queue_empty(sys))
+    {
+        u64 k = (sys->sched.next - cpu->cycles) / cpu->cpi - 1;
+        u32 step = sys->options.countWaitStep;
+        if (step && k > step / cpu->cpi) k = step / cpu->cpi;
         cpu->cycles += k * cpu->cpi;
         cpu->instructions += k;
         j->stats.idleSkipped += k;

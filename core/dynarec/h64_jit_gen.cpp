@@ -2870,6 +2870,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     b->hotWords = g.c.pos;
     if (g.native) classify_idle(b, ops, n);
     if (g.native && sys->options.idleYieldPc && pc == sys->options.idleYieldPc) b->idle = 3;
+    if (g.native && sys->options.countWaitPc && pc == sys->options.countWaitPc) b->idle = 4;
     b->fn = 0;
     if (j->dumpFile)
     {
