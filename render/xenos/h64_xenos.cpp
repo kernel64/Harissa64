@@ -2622,7 +2622,14 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     }
     else
     {
+        // Profile gfxRectPoint: a rectangle drawn 1:1 samples whole texels on
+        // the N64, so its filter never blends; point sampled here (The New
+        // Tetris: magenta transparent texels filtered into sprite edges).
+        int filter = x->texFilter;
+        if (x->sys->options.gfxRectPoint && !fbSrc && (dsdx == 1.0f || dsdx == -1.0f) && (dtdy == 1.0f || dtdy == -1.0f))
+            x->texFilter = 2;
         setup_combined(x, 1, &tb0, &tb1, tile, 0);
+        x->texFilter = filter;
         if ((st->rasterFlags & RS_SAMPLE_QUAD) && !flip && !t0->shiftS && !t0->shiftT)
         {
             // Bilinear rectangles that stay inside their tile (MK64's title is

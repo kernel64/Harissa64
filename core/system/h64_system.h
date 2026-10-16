@@ -126,6 +126,7 @@ struct H64Options
     u32 idleYieldPc;        // recompiler (game profile): head of an idle thread's osYieldThread loop (0: none)
     u32 idleRunQueue;       // and the physical address of libultra's __osRunQueue (see h64_jit.cpp)
     int gfxTallFrame;       // GPU renderer (game profile): colour images as tall as the game's scissor, not 4:3
+    int gfxRectPoint;       // GPU renderer (game profile): filtered rectangles drawn 1:1 sample whole texels, as the N64 does
     int gfxAlphaRef0Pass;   // GPU renderer (game profile): an alpha test against 0 keeps every pixel, as the RDP does
     int gfxStream;          // graphics HLE (game profile): a display list may branch to itself until the CPU
                             // writes more of it; tasks run on the CPU thread (no graphics worker)
