@@ -176,6 +176,10 @@ static const GameProfile s_profiles[] = {
     // alpha test, over magenta transparent texels: the N64 samples whole
     // texels there, a higher resolution filtered magenta into their edges.
     { "NRI", "The New Tetris", H64_GP_RECT_POINT },
+    // Fast3D with no name string (now drawn here, ~20 ms a frame on the LLE
+    // RSP before): its tasks rely on the default other modes (texture
+    // conversion), else its panels' texel alpha came out as YUV.
+    { "NT6", "Tetris 64", H64_GP_OTHERMODE_INIT },
     // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
     // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
     { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
