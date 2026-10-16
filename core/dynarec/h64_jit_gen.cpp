@@ -98,7 +98,7 @@ static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
                 if ((u64)(s64)(s32)a != a || ((u32)a >> 30) != 2) sys->jit->opHist[192]++;
                 else if (a & (size - 1)) sys->jit->opHist[193]++;
                 else if ((paddr0 = (u32)a & 0x1FFFFFFF) >= H64_RDRAM_SIZE) sys->jit->opHist[194]++;
-                else if (opc >= 0x28 && sys->jit->codeMap[paddr0 >> 6]) sys->jit->opHist[195]++;
+                else if (opc >= 0x28 && sys->jit->codeMap[paddr0 >> H64_JIT_CHUNK_SHIFT]) sys->jit->opHist[195]++;
                 else sys->jit->opHist[196]++;
             }
         }
@@ -792,7 +792,7 @@ static void emit_epilogue(Gen *g)
 //     returns r4 = the physical address and cr0.eq set when the access can
 //     take the fast path: a sign-extended 32-bit KSEG0/KSEG1 address inside
 //     the 8 MB of RDRAM ((addr & 0xDF800000) == 0x80000000), aligned, and for
-//     stores no block over the 64-byte chunk (codeMap) and no MI repeat mode.
+//     stores no block over the chunk (codeMap) and no MI repeat mode.
 //     TLB-mapped addresses take the fast path too when the page is in
 //     H64Cpu.dtlbR/dtlbW (filled by the interpreter's translations).
 //     Clobbers r0, r5, r6, cr0 and LR (r7 holds Status.FR for COP1 accesses).
@@ -857,7 +857,7 @@ void h64_jit_emit_runtime(H64System *sys)
             {
                 load_ptr(&g, 6, (s32)offsetof(H64System, jit), JR_SYS);
                 load_ptr(&g, 6, (s32)offsetof(H64Jit, codeMap), 6);
-                ppc_rlwinm(c, 5, 4, 32 - 5, 5, 30);   // (paddr >> 6) * 2
+                ppc_rlwinm(c, 5, 4, 32 - (H64_JIT_CHUNK_SHIFT - 1), H64_JIT_CHUNK_SHIFT - 1, 30);   // (paddr >> shift) * 2
                 ppc_lhzx(c, 5, 6, 5);
                 ppc_cmpwi(c, 0, 5, 0);
                 ppc_put(c, 0x4C820020u);          // bnelr: code in this chunk
