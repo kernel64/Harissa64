@@ -600,7 +600,7 @@ static u32 tile_extent(u32 lo, u32 hi)
 }
 
 // Decoded texture size and addressing for one tile.
-static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy)
+static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskToTile)
 {
     u32 tw = tile_extent(t->slo, t->shi), th = tile_extent(t->tlo, t->thi);
     u32 ms = t->maskS ? 1u << (t->maskS > 10 ? 10 : t->maskS) : 0, mt = t->maskT ? 1u << (t->maskT > 10 ? 10 : t->maskT) : 0;
@@ -615,6 +615,14 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy)
     // mirrored: one period of the mask.
     b->w = b->clampS ? tw : ms;
     b->h = b->clampT ? th : mt;
+    // Profile gfxMaskToTile: a wrapped axis whose mask is wider than the tile
+    // repeats the tile itself. Mickey's Speedway declares 24x24 32-bit
+    // textures (animated, 6 images) with 256x256 masks: each was decoded as
+    // 65536 texels, its key hashing nearly all TMEM, so again every frame
+    // (~3 a frame, 11-15 ms in a race). The same where the game samples the
+    // tile's texels only.
+    if (maskToTile && b->wrapS && ms > tw) b->w = tw;
+    if (maskToTile && b->wrapT && mt > th) b->h = th;
     // A clamped tile can be declared far larger than TMEM holds (S2DEX strips:
     // up to 1024 texels a side): past the texels TMEM has, the sampler would
     // read the same words again. Decode at most what the tile can address.
@@ -737,7 +745,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     std::map<u64, TexEntry>::iterator it;
     TexEntry e;
     D3DLOCKED_RECT lr;
-    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0);
+    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0, x->sys->options.gfxMaskToTile);
     if (x->win.active && x->win.tile == (tileIndex & 7))
     {
         // Per axis, decode only the texels sampled, when that is at most half
@@ -799,7 +807,8 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         // A clamped axis never samples row h: hashing it made the key change
         // with whatever an earlier load left there (Quake II's paused frame,
         // 80 strips of 320x3: every strip decoded again every frame).
-        if (t->maskT) rows = 1u << t->maskT;
+        if (t->maskT && b->h >= (1u << t->maskT)) rows = 1u << t->maskT;
+        else if (t->maskT) rows = b->h + 1;   // gfxMaskToTile: the tile's rows (+1: bilinear)
         else { firstRow = b->oy; rows = b->h + (b->clampT ? 0 : 1); }
         if (rowBytes * rows > 4096) { rows = 4096 / rowBytes; firstRow = 0; }
         {
