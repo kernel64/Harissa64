@@ -56,7 +56,7 @@ void ConfigDefaults(Config *c)
     c->blur = 0;
     c->screen = 0;
     c->brightness = 0;
-    c->vsync = 1;
+    c->vsync = 0;   // off by default (as 2.0.1): with it, waits on the GPU also wait for the TV
     c->deflicker = 0;
     c->stretch = 0;
     c->asyncGfx = 1;

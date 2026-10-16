@@ -87,7 +87,7 @@ struct H64XenosOptions
     int screen;      // screen effect: 0 none, 1 scanlines, 2 CRT, 3 curved CRT, 4 LCD grid, 5 light scanlines
     int aspect;      // 0 4:3, 1 16:9 widescreen (3D drawn wider, no distortion), 2 16:9 stretched
     int brightness;  // 0 as the console, 1 lighter, 2 much lighter (dark tones lifted, white kept)
-    int vsync;       // 1: frames wait for the TV's refresh (no tearing); a late one goes at once near the top
+    int vsync;       // 1: frames on time wait for the TV's refresh, a late one goes at once; 2: late ones wait too (but near the top)
     int deflicker;   // 1: each picture shown is mixed half and half with the previous one
 };
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
