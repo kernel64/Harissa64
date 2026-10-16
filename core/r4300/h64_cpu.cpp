@@ -801,7 +801,7 @@ static void do_special(H64System *sys, u32 op)
     case 0x20:                                                                     // ADD
     {
         u32 r = (u32)rs + (u32)rt;
-        if (add32_overflows((u32)rs, (u32)rt, r)) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
+        if (add32_overflows((u32)rs, (u32)rt, r) && !cpu->noOvTrap) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
         g[rd] = SEXT32(r);
         return;
     }
@@ -809,7 +809,7 @@ static void do_special(H64System *sys, u32 op)
     case 0x22:                                                                     // SUB
     {
         u32 r = (u32)rs - (u32)rt;
-        if (sub32_overflows((u32)rs, (u32)rt, r)) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
+        if (sub32_overflows((u32)rs, (u32)rt, r) && !cpu->noOvTrap) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
         g[rd] = SEXT32(r);
         return;
     }
@@ -823,7 +823,7 @@ static void do_special(H64System *sys, u32 op)
     case 0x2C:                                                                     // DADD
     {
         u64 r = rs + rt;
-        if (add64_overflows(rs, rt, r)) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
+        if (add64_overflows(rs, rt, r) && !cpu->noOvTrap) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
         g[rd] = r;
         return;
     }
@@ -831,7 +831,7 @@ static void do_special(H64System *sys, u32 op)
     case 0x2E:                                                                     // DSUB
     {
         u64 r = rs - rt;
-        if (sub64_overflows(rs, rt, r)) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
+        if (sub64_overflows(rs, rt, r) && !cpu->noOvTrap) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
         g[rd] = r;
         return;
     }
@@ -1053,7 +1053,7 @@ static void execute(H64System *sys, u32 op)
     case 0x08:                                                                     // ADDI
     {
         u32 r = (u32)rs + (u32)IMM16(op);
-        if (add32_overflows((u32)rs, (u32)IMM16(op), r)) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
+        if (add32_overflows((u32)rs, (u32)IMM16(op), r) && !cpu->noOvTrap) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
         g[t] = SEXT32(r);
         return;
     }
@@ -1090,7 +1090,7 @@ static void execute(H64System *sys, u32 op)
     {
         u64 r = rs + IMM16(op);
         if (reserved_64bit(cpu)) return;
-        if (add64_overflows(rs, IMM16(op), r)) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
+        if (add64_overflows(rs, IMM16(op), r) && !cpu->noOvTrap) { h64_cpu_exception(cpu, EXC_OV, 0x180); return; }
         g[t] = r;
         return;
     }
