@@ -82,11 +82,16 @@ int ConfigParseFile(Config *c, const char *path)
 {
     FILE *f = fopen(path, "r");
     static char line[8192];   // input= scripts run long (one line)
+    // Menu files written before settingsver=2 saved V-Sync on by default
+    // (2.0.2-2.0.4): their vsync=1 is not a choice, and V-Sync made busy
+    // games slower (Mario Tennis); it is off by default again.
+    int menuFile = 0, settingsVer = 0, vsync = -1;
     if (!f) return 0;
     while (fgets(line, sizeof(line), f))
     {
         char *eq = strchr(line, '=');
         trim(line);
+        if (!strncmp(line, "# Written by the Harissa64 V2 menu", 34)) menuFile = 1;
         if (line[0] == '#' || line[0] == ';' || !eq) continue;
         *eq = 0;
         if (!strcmp(line, "mode")) { strncpy(c->mode, eq + 1, sizeof(c->mode) - 1); c->mode[sizeof(c->mode) - 1] = 0; }
@@ -130,7 +135,8 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "crt")) c->screen = atoi(eq + 1) ? 3 : 0;
         else if (!strcmp(line, "screen")) c->screen = atoi(eq + 1);
         else if (!strcmp(line, "brightness")) c->brightness = atoi(eq + 1);
-        else if (!strcmp(line, "vsync")) c->vsync = atoi(eq + 1);
+        else if (!strcmp(line, "vsync")) vsync = atoi(eq + 1);
+        else if (!strcmp(line, "settingsver")) settingsVer = atoi(eq + 1);
         else if (!strcmp(line, "deflicker")) c->deflicker = atoi(eq + 1);
         else if (!strcmp(line, "stretch")) c->stretch = atoi(eq + 1);
         else if (!strcmp(line, "blur")) c->blur = atoi(eq + 1);
@@ -160,6 +166,7 @@ int ConfigParseFile(Config *c, const char *path)
         }
     }
     fclose(f);
+    if (vsync >= 0 && !(menuFile && settingsVer < 2 && vsync == 1)) c->vsync = vsync;
     return 1;
 }
 
@@ -168,7 +175,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
     FILE *f = fopen(path, "w");
     int i;
     if (!f) return 0;
-    fprintf(f, "# Written by the Harissa64 V2 menu\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
+    fprintf(f, "# Written by the Harissa64 V2 menu\nsettingsver=2\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
