@@ -1091,6 +1091,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
     sys->options.gfxTiming = c->gfxTiming;
+    sys->options.strictCpu = c->strict;
     // Per-game settings (core/system/h64_profile.cpp); the ini may still force late parse.
     h64_apply_game_profile(sys);
     if (c->gameFlags >= 0)

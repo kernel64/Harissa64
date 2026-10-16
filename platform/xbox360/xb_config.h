@@ -29,6 +29,7 @@ struct Config
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
     int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
     int fpCache;        // fpcache=0: no COP1 registers kept in host FPRs (diagnosis)
+    int strict;         // strict=1: no ROM hack tolerance (the console's exact CPU and PI behaviour)
     int fullExits;      // fullexits=1: the dynarec's older inline linked exits (A/B check)
     int superblocks;    // superblocks=0: blocks end at every branch (A/B check)
     int fastFpu;        // fastfpu=0: exact COP1 (FCR31 cause/flag bits kept); 1 by default

@@ -47,6 +47,7 @@ void ConfigDefaults(Config *c)
     c->fpCache = 1;
     c->fastFpu = 1;  // host FPU without FCR31 cause/flag tracking, as mupen64plus
     c->fullExits = 0;
+    c->strict = 0;
     c->superblocks = 1;
     c->smooth = 1;
     c->resScale = 3;
@@ -120,6 +121,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "fpcache")) c->fpCache = atoi(eq + 1);
         else if (!strcmp(line, "fastfpu")) c->fastFpu = atoi(eq + 1);
         else if (!strcmp(line, "fullexits")) c->fullExits = atoi(eq + 1);
+        else if (!strcmp(line, "strict")) c->strict = atoi(eq + 1);
         else if (!strcmp(line, "superblocks")) c->superblocks = atoi(eq + 1);
         else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
         else if (!strcmp(line, "resolution")) c->resScale = atoi(eq + 1);

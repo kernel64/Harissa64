@@ -174,6 +174,9 @@ static const GameProfile s_profiles[] = {
     // Relies on the default perspective-corrected textures: without them the
     // balls' round outline came out as squares.
     { "NVR", "Virtual Pool 64", H64_GP_OTHERMODE_INIT },
+    // Copies the frame on screen with the CPU into another image the VI
+    // shows while a level loads: that frame is only on the GPU (noise).
+    { "NFF", "Fighting Force 64", H64_GP_KEEP_SHOWN },
     // Its backgrounds and sprites are filtered rectangles drawn 1:1 with an
     // alpha test, over magenta transparent texels: the N64 samples whole
     // texels there, a higher resolution filtered magenta into their edges.
@@ -293,7 +296,20 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
     sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
     sys->options.gfxRectPoint = (f & H64_GP_RECT_POINT) != 0;
+    sys->options.gfxKeepShown = (f & H64_GP_KEEP_SHOWN) != 0;
     if (f & H64_GP_FPU_NO_TRAPS) sys->cpu.fpuNoTraps = 1;
     sys->cpu.laxAlign64 = (f & H64_GP_LAX_ALIGN64) != 0;
     sys->cpu.noOvTrap = (f & H64_GP_NO_OV_TRAP) != 0;
+    if (!sys->options.strictCpu)
+    {
+        // ROM hacks are made on PC emulators (Project64, mupen64plus) that
+        // let through what stops the console: a ROM DMA from an odd address,
+        // FPU exceptions, doubleword accesses 4 bytes off, integer overflows.
+        // Games made for the console never do these (they would stop there),
+        // so every game gets that tolerance; strictCpu keeps the console's way.
+        sys->options.piOddCart = 1;
+        sys->cpu.fpuNoTraps = 1;
+        sys->cpu.laxAlign64 = 1;
+        sys->cpu.noOvTrap = 1;
+    }
 }
