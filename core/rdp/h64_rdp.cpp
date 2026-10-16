@@ -114,7 +114,14 @@ static void load_range(std::vector<u32> &r, u32 op, const u64 *w, u32 addr, u32 
         lo = addr + tl * bpl + ((sl << size) >> 1);
         hi = lo + ((((sh - sl + 1) & 0xFFF) << size) >> 1) + 16;
     }
-    else              // LOAD_TILE, LOAD_TLUT: lines tl..th
+    else if (op == 0x30)   // LOAD_TLUT: count entries of 2 bytes from (sl, tl), whatever the image width
+    {                      // (Tetris 64 loads 256 entries from a 1-texel-wide image)
+        u32 count = ((sh >> 2) - (sl >> 2) + 1) & 0xFFF;
+        if (count > 256) count = 256;
+        lo = addr + ((((tl >> 2) * width + (sl >> 2)) << size) >> 1);
+        hi = lo + count * 2 + 16;
+    }
+    else              // LOAD_TILE: lines tl..th
     {
         lo = addr + (tl >> 2) * bpl;
         hi = addr + ((th >> 2) + 1) * bpl + 16;
