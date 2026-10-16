@@ -177,7 +177,12 @@ static const GameProfile s_profiles[] = {
     // Its backgrounds and sprites are filtered rectangles drawn 1:1 with an
     // alpha test, over magenta transparent texels: the N64 samples whole
     // texels there, a higher resolution filtered magenta into their edges.
-    { "NRI", "The New Tetris", H64_GP_RECT_POINT },
+    // Started from the ROM list, its game background lies where its menu
+    // frames were drawn: ~400 copy backs a second wrote those old frames
+    // over it (stone menu texture in the scene, 14 VI/s in Xenia, sound
+    // cuts); after a state load (slots dropped) it was right. It never
+    // samples its frames: no copy backs, 60 VI/s.
+    { "NRI", "The New Tetris", H64_GP_RECT_POINT | H64_GP_NO_COPY_BACK },
     // Fast3D with no name string (now drawn here, ~20 ms a frame on the LLE
     // RSP before): its tasks rely on the default other modes (texture
     // conversion), else its panels' texel alpha came out as YUV.
