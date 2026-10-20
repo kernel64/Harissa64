@@ -2801,6 +2801,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         ppc_addi(&g.c, 4, 4, 1);
         ppc_stw(&g.c, 4, 0, 3);
     }
+    int statusFast = 0;   // the block ends with a native MTC0 Status (it may link on)
     for (i = 0; i < n; i++)
     {
         u32 ipc = pc + i * 4, op = ops[i];
@@ -2830,6 +2831,51 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
             }
             break;   // a native branch's code leaves by its own exits
         }
+        if (g.native && i == n - 1 && (op >> 26) == 0x10 && ((op >> 21) & 31) == 4 && ((op >> 11) & 31) == CP0_STATUS &&
+            !j->noStatusFast)
+        {
+            // MTC0 Status that changes only IE (libultra's __osDisableInt and
+            // __osRestoreInt): written here and the block links on, unless it
+            // unmasks a pending interrupt. Anything else (mode, CU1, FR, BEV,
+            // IM...) runs in the interpreter and leaves as before. Cruis'n USA
+            // does ~16000 pairs a frame for its lists (32 ms of CPU a frame,
+            // each a trip through the dispatcher).
+            H64PpcCode *c = &g.c;
+            u32 rt = (op >> 16) & 31, fast, noInt[2], pend;
+            g.rmNearest = 0;
+            rc_flush(&g);   // both paths start from the same generator state
+            if (rt) ppc_ld(c, 3, OFF_GPR(rt), JR_CPU);
+            else ppc_li(c, 3, 0);
+            ppc_li32u(c, 6, 0xFF57FFFFu);
+            ppc_and(c, 5, 3, 6);                        // r5 = the value cop0_write stores
+            ppc_ld(c, 4, OFF_COP0(CP0_STATUS), JR_CPU);
+            ppc_xor(c, 6, 5, 4);
+            ppc_rlwinm(c, 6, 6, 0, 0, 30);              // the change, IE left out
+            ppc_cmpwi(c, 0, 6, 0);
+            fast = ppc_bc_fwd(c, 12, 0, PPC_EQ);       // only IE changes
+            pend = g.pending;
+            call_interp_nc(&g, ipc);
+            sync_to(&g, 0, ipc + 4);
+            exit_block(&g);
+            g.pending = pend;
+            ppc_patch_here(c, fast);
+            ppc_std(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
+            g.pending++;
+            ppc_andi_(c, 6, 5, 7);
+            ppc_cmpwi(c, 0, 6, 1);                      // IE on, EXL and ERL off
+            noInt[0] = ppc_bc_fwd(c, 4, 0, PPC_EQ);    // bne: no interrupt can be taken
+            ppc_ld(c, 7, OFF_COP0(CP0_CAUSE), JR_CPU);
+            ppc_and(c, 7, 7, 5);
+            ppc_andi_(c, 7, 7, 0xFF00);
+            noInt[1] = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // none pending
+            sync_to(&g, g.pending, ipc + 4);
+            exit_block(&g);                             // the dispatcher takes it
+            ppc_patch_here(c, noInt[0]);
+            ppc_patch_here(c, noInt[1]);
+            statusFast = 1;
+            j->stats.nativeInsns++;
+            continue;
+        }
         if (g.native && !ends_block(op) && emit_native(&g, op, ipc))
         {
             j->stats.nativeInsns++;
@@ -2840,7 +2886,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     }
     if (!endsWithBranch)
     {
-        if (ends_block(ops[n - 1]))
+        if (ends_block(ops[n - 1]) && !statusFast)
         {
             sync_to(&g, g.pending, pc + n * 4);
             exit_block(&g);   // COP0: the mode may have changed

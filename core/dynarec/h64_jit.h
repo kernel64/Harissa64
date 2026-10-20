@@ -114,6 +114,7 @@ struct H64Jit
     u32 linkCount, linkCap;
     int noLink;                     // debugging: every block returns to the dispatcher
     int fullExits;                  // debugging: linked exits without rtLink (the inline form)
+    int noStatusFast;               // debugging: MTC0 Status always runs in the interpreter (h64test --no-status-fast, ini statusfast=0)
     int noSuper;                    // debugging: blocks end at every branch (no side exits)
 
     H64JitStats stats;
