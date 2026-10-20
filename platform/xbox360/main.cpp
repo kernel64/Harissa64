@@ -522,6 +522,7 @@ static int s_noRegCache; // regcache=0
 static int s_noFpCache;  // fpcache=0
 static int s_fastFpu;    // fastfpu=1
 static int s_fullExits;  // fullexits=1
+static int s_statusFast = 1;  // statusfast=0
 static int s_noSuper;    // superblocks=0
 
 static u32 s_cpi = 2;    // cpi=N
@@ -603,6 +604,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
     if (sys->jit) sys->jit->noFpCache = s_noFpCache;
     if (sys->jit && s_fastFpu) { sys->jit->fastFpu = 1; sys->cpu.fpuNoTraps = 1; h64_jit_reset(sys); }
     if (sys->jit && s_fullExits) { sys->jit->fullExits = 1; h64_jit_reset(sys); }
+    if (sys->jit && !s_statusFast) { sys->jit->noStatusFast = 1; h64_jit_reset(sys); }
     if (sys->jit && s_noSuper) { sys->jit->noSuper = 1; h64_jit_reset(sys); }
     sys->cpu.cpi = s_cpi;
     return sys;
@@ -696,6 +698,9 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     o.brightness = c->brightness;
     o.vsync = c->vsync;
     o.deflicker = c->deflicker;
+    o.zoom = c->zoom;
+    o.offsetX = c->offsetX;
+    o.offsetY = c->offsetY;
     o.aspect = aspect;
     h64_xenos_set_options(renderer, &o);
 }
@@ -1091,6 +1096,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
     sys->options.gfxTiming = c->gfxTiming;
+    sys->options.strictCpu = c->strict;
     // Per-game settings (core/system/h64_profile.cpp); the ini may still force late parse.
     h64_apply_game_profile(sys);
     if (c->gameFlags >= 0)
@@ -1484,9 +1490,9 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                          pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_TLB] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          pr[H64_PROF_WAIT_TASK] * k, pr[H64_PROF_WAIT_DPC] * k, pr[H64_PROF_WAIT_START] * k,
                          s_gfxQ.thread ? " (graphics and audio HLE run on workers, beside cpu)" : "");
-                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses, %u rectangles from GPU frames) draw calls %.1f, copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes",
+                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses, %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
-                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.fbTexRects, xs.tDraw * k, xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads);
+                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads);
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;
@@ -1549,6 +1555,7 @@ int __cdecl main()
     s_noFpCache = !cfg.fpCache;
     s_fastFpu = cfg.fastFpu;
     s_fullExits = cfg.fullExits;
+    s_statusFast = cfg.statusFast;
     s_noSuper = !cfg.superblocks;
     s_cpi = cfg.cpi >= 1 && cfg.cpi <= 8 ? (u32)cfg.cpi : 2;
     H64_INFO("[main] settings: mode=%s cpu=%s hle=%d rom=%s jitfpu=%d cpi=%d regcache=%d", cfg.mode, cfg.cpu, cfg.hle, cfg.rom[0] ? cfg.rom : "(auto)",

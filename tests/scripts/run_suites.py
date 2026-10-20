@@ -35,7 +35,7 @@ def suite_dillonb(runner):
     for name in sorted(os.listdir(d)):
         if not name.endswith(".z64"):
             continue
-        code, out = run(runner, ["--rom", os.path.join(d, name), "--dillon", "--seconds", "10"])
+        code, out = run(runner, ["--strict", "--rom", os.path.join(d, name), "--dillon", "--seconds", "10"])
         m = re.search(r"DILLON (PASS|FAIL test -?\d+|TIMEOUT)", out)
         status = m.group(1) if m else "ERROR"
         results.append((name, status.startswith("PASS"), status))
@@ -44,7 +44,7 @@ def suite_dillonb(runner):
 
 def suite_systemtest(runner):
     rom = os.path.join(ROMS, "n64-systemtest", "n64-systemtest.z64")
-    code, out = run(runner, ["--rom", rom, "--seconds", "300"], timeout=3600)
+    code, out = run(runner, ["--strict", "--rom", rom, "--seconds", "300"], timeout=3600)
     lines = [l[6:] for l in out.splitlines() if l.startswith("[isv] ")]
     m = re.search(r"Base: Failed (\d+) of (\d+) tests", out)
     if m:
@@ -150,7 +150,7 @@ def suite_peterlemon(runner, sub):
             rel = os.path.relpath(os.path.join(d, name), base).replace(os.sep, "/")
             if os.path.exists(out_png):
                 os.remove(out_png)
-            code, out = run(runner, ["--rom", os.path.join(d, name), "--seconds", "3", "--raw-png", out_png], timeout=300)
+            code, out = run(runner, ["--strict", "--rom", os.path.join(d, name), "--seconds", "3", "--raw-png", out_png], timeout=300)
             if not os.path.exists(out_png):
                 results.append((rel, False, "no picture"))
                 continue

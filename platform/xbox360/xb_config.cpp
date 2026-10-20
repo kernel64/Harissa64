@@ -47,6 +47,8 @@ void ConfigDefaults(Config *c)
     c->fpCache = 1;
     c->fastFpu = 1;  // host FPU without FCR31 cause/flag tracking, as mupen64plus
     c->fullExits = 0;
+    c->statusFast = 1;
+    c->strict = 0;
     c->superblocks = 1;
     c->smooth = 1;
     c->resScale = 3;
@@ -55,8 +57,10 @@ void ConfigDefaults(Config *c)
     c->blur = 0;
     c->screen = 0;
     c->brightness = 0;
-    c->vsync = 1;
+    c->vsync = 0;   // off by default (as 2.0.1): with it, waits on the GPU also wait for the TV
     c->deflicker = 0;
+    c->zoom = 100;
+    c->offsetX = c->offsetY = 0;
     c->stretch = 0;
     c->asyncGfx = 1;
     c->parseWorker = 1;
@@ -81,11 +85,16 @@ int ConfigParseFile(Config *c, const char *path)
 {
     FILE *f = fopen(path, "r");
     static char line[8192];   // input= scripts run long (one line)
+    // Menu files written before settingsver=2 saved V-Sync on by default
+    // (2.0.2-2.0.4): their vsync=1 is not a choice, and V-Sync made busy
+    // games slower (Mario Tennis); it is off by default again.
+    int menuFile = 0, settingsVer = 0, vsync = -1;
     if (!f) return 0;
     while (fgets(line, sizeof(line), f))
     {
         char *eq = strchr(line, '=');
         trim(line);
+        if (!strncmp(line, "# Written by the Harissa64 V2 menu", 34)) menuFile = 1;
         if (line[0] == '#' || line[0] == ';' || !eq) continue;
         *eq = 0;
         if (!strcmp(line, "mode")) { strncpy(c->mode, eq + 1, sizeof(c->mode) - 1); c->mode[sizeof(c->mode) - 1] = 0; }
@@ -120,6 +129,8 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "fpcache")) c->fpCache = atoi(eq + 1);
         else if (!strcmp(line, "fastfpu")) c->fastFpu = atoi(eq + 1);
         else if (!strcmp(line, "fullexits")) c->fullExits = atoi(eq + 1);
+        else if (!strcmp(line, "statusfast")) c->statusFast = atoi(eq + 1);
+        else if (!strcmp(line, "strict")) c->strict = atoi(eq + 1);
         else if (!strcmp(line, "superblocks")) c->superblocks = atoi(eq + 1);
         else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
         else if (!strcmp(line, "resolution")) c->resScale = atoi(eq + 1);
@@ -128,8 +139,12 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "crt")) c->screen = atoi(eq + 1) ? 3 : 0;
         else if (!strcmp(line, "screen")) c->screen = atoi(eq + 1);
         else if (!strcmp(line, "brightness")) c->brightness = atoi(eq + 1);
-        else if (!strcmp(line, "vsync")) c->vsync = atoi(eq + 1);
+        else if (!strcmp(line, "vsync")) vsync = atoi(eq + 1);
+        else if (!strcmp(line, "settingsver")) settingsVer = atoi(eq + 1);
         else if (!strcmp(line, "deflicker")) c->deflicker = atoi(eq + 1);
+        else if (!strcmp(line, "zoom")) c->zoom = atoi(eq + 1);
+        else if (!strcmp(line, "posx")) c->offsetX = atoi(eq + 1);
+        else if (!strcmp(line, "posy")) c->offsetY = atoi(eq + 1);
         else if (!strcmp(line, "stretch")) c->stretch = atoi(eq + 1);
         else if (!strcmp(line, "blur")) c->blur = atoi(eq + 1);
         else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
@@ -158,6 +173,7 @@ int ConfigParseFile(Config *c, const char *path)
         }
     }
     fclose(f);
+    if (vsync >= 0 && !(menuFile && settingsVer < 2 && vsync == 1)) c->vsync = vsync;
     return 1;
 }
 
@@ -166,10 +182,11 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
     FILE *f = fopen(path, "w");
     int i;
     if (!f) return 0;
-    fprintf(f, "# Written by the Harissa64 V2 menu\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
+    fprintf(f, "# Written by the Harissa64 V2 menu\nsettingsver=2\ncpu=%s\nhle=%d\naudioms=%d\nsmooth=%d\nshowfps=%d\n", c->cpu, c->hle, c->audioMs,
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
+    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\n", c->zoom, c->offsetX, c->offsetY);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.

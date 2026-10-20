@@ -214,6 +214,7 @@ struct Xenos
     IDirect3DTexture9 *rbTex;      // its resolve, in CPU-cached memory (D3DUSAGE_CPU_CACHED_MEMORY)
     IDirect3DTexture9 *shotTex;    // screenshots: the shown frame resolved into CPU-cached memory (made on first use)
     int deflicker;                 // option: pictures mixed with the previous one (deflicker_pass)
+    int zoom, offsetX, offsetY;    // option: picture size (percent) and position (output pixels)
     IDirect3DTexture9 *dfTex[2];   // the last two pictures shown, before the mix (made on first use)
     int dfCur, dfValid;
     IDirect3DPixelShader9 *psMix;
@@ -228,6 +229,7 @@ struct Xenos
     u32 debugLines;    // xenosdebug=9: lines logged so far     // xenosdebug=8: the first of the two presents logged (xenosdebug=8000+N: present N)
     IDirect3DTexture9 *shown;   // texture shown at the last present
     int shownSlot;              // frame slot the VI showed at the last present (-1: none)
+    u32 shownOrigin;            // the VI origin it showed there
     float shownU, shownV;
     int shownTiled;
     void (*overlay)(void *user, IDirect3DDevice9 *dev);   // front-end messages, drawn before each present
@@ -599,7 +601,7 @@ static u32 tile_extent(u32 lo, u32 hi)
 }
 
 // Decoded texture size and addressing for one tile.
-static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy)
+static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskToTile)
 {
     u32 tw = tile_extent(t->slo, t->shi), th = tile_extent(t->tlo, t->thi);
     u32 ms = t->maskS ? 1u << (t->maskS > 10 ? 10 : t->maskS) : 0, mt = t->maskT ? 1u << (t->maskT > 10 ? 10 : t->maskT) : 0;
@@ -614,6 +616,14 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy)
     // mirrored: one period of the mask.
     b->w = b->clampS ? tw : ms;
     b->h = b->clampT ? th : mt;
+    // Profile gfxMaskToTile: a wrapped axis whose mask is wider than the tile
+    // repeats the tile itself. Mickey's Speedway declares 24x24 32-bit
+    // textures (animated, 6 images) with 256x256 masks: each was decoded as
+    // 65536 texels, its key hashing nearly all TMEM, so again every frame
+    // (~3 a frame, 11-15 ms in a race). The same where the game samples the
+    // tile's texels only.
+    if (maskToTile && b->wrapS && ms > tw) b->w = tw;
+    if (maskToTile && b->wrapT && mt > th) b->h = th;
     // A clamped tile can be declared far larger than TMEM holds (S2DEX strips:
     // up to 1024 texels a side): past the texels TMEM has, the sampler would
     // read the same words again. Decode at most what the tile can address.
@@ -736,7 +746,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     std::map<u64, TexEntry>::iterator it;
     TexEntry e;
     D3DLOCKED_RECT lr;
-    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0);
+    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0, x->sys->options.gfxMaskToTile);
     if (x->win.active && x->win.tile == (tileIndex & 7))
     {
         // Per axis, decode only the texels sampled, when that is at most half
@@ -798,7 +808,8 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         // A clamped axis never samples row h: hashing it made the key change
         // with whatever an earlier load left there (Quake II's paused frame,
         // 80 strips of 320x3: every strip decoded again every frame).
-        if (t->maskT) rows = 1u << t->maskT;
+        if (t->maskT && b->h >= (1u << t->maskT)) rows = 1u << t->maskT;
+        else if (t->maskT) rows = b->h + 1;   // gfxMaskToTile: the tile's rows (+1: bilinear)
         else { firstRow = b->oy; rows = b->h + (b->clampT ? 0 : 1); }
         if (rowBytes * rows > 4096) { rows = 4096 / rowBytes; firstRow = 0; }
         {
@@ -1021,6 +1032,10 @@ static void tc_affine(u32 shift, s32 lo, u32 size, float *a, float *b)
 // (Indiana Jones: 400 x 448, shown as its top 300 lines, zoomed in).
 static u32 fb_height(const Xenos *x, u32 width)
 {
+    // gfxTallFrame: a VI line twice the image's width steps two image lines
+    // (an interlaced 480-line frame; Star Wars Racer's intro, 320 x 480,
+    // showed its top half stretched over the screen).
+    if (x->sys->options.gfxTallFrame && width <= 320 && (x->sys->vi.regs[2] & 0xFFF) == width * 2) return 480;
     if (x->tallH && width == x->tallW) return x->tallH;
     return width <= 320 ? 240 : width * 3 / 4;
 }
@@ -1357,22 +1372,25 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, floa
     h = bh;
     w = x->aspect ? bw : bh * 4.0f / 3.0f;
     if (w > bw) { w = bw; h = bw * 3.0f / 4.0f; }
+    // The player's calibration (GitHub issue #11): size and position.
+    w *= x->zoom / 100.0f;
+    h *= x->zoom / 100.0f;
     if (!lines) lines = 240;
     if (!width) width = 320;
     if (g)
     {
         u0 = (g->sx0 + ox) * uPer; u1 = (g->sx1 + ox) * uPer;
         v0 = (g->sy0 + oy) * vPer; v1 = (g->sy1 + oy) * vPer;
-        px0 = (bw - w) / 2 + g->dx0 * w; pw = (g->dx1 - g->dx0) * w;
-        py0 = (bh - h) / 2 + g->dy0 * h; ph = (g->dy1 - g->dy0) * h;
+        px0 = (bw - w) / 2 + x->offsetX + g->dx0 * w; pw = (g->dx1 - g->dx0) * w;
+        py0 = (bh - h) / 2 + x->offsetY + g->dy0 * h; ph = (g->dy1 - g->dy0) * h;
         lines = (u32)g->lines;
     }
     else
     {
         u0 = v0 = 0.0f;
         u1 = width * uPer; v1 = lines * vPer;
-        px0 = (bw - w) / 2; pw = w;
-        py0 = (bh - h) / 2; ph = h;
+        px0 = (bw - w) / 2 + x->offsetX; pw = w;
+        py0 = (bh - h) / 2 + x->offsetY; ph = h;
     }
     ps = display_shader(x);
     if (!ps) ps = x->smooth && x->psSmooth ? x->psSmooth : x->psCopy;
@@ -2351,6 +2369,37 @@ static void fill_rect(Xenos *x, const u32 *w)
         if (x->sys->options.gfxDepthFillToRdram) depth_fill_rdram(x, xl >> 2, xh >> 2, yl >> 2, yh >> 2);
         return;
     }
+    if (st->scissorXhi || st->scissorYhi)
+    {
+        // A colour fill keeps to the scissor, as the RDP's spans do (scissor
+        // rounding as set_scissor). Star Fox 64 draws its stars as 1-pixel
+        // fills, also outside its scissor: they piled up in the border the
+        // game leaves alone, a dotted blue frame around the picture.
+        float cx1 = (float)(xl >> 2), cx2 = (float)((xh >> 2) + 1);
+        float sxlo = (float)(st->scissorXlo >> 2), sxhi = (float)(st->scissorXhi >> 2);
+        u32 cy1 = yl >> 2, cy2 = (yh >> 2) + 1, sylo = st->scissorYlo >> 2, syhi = st->scissorYhi >> 2;
+        if (cx1 < sxlo) cx1 = sxlo;
+        if (cx2 > sxhi) cx2 = sxhi;
+        if (cy1 < sylo) cy1 = sylo;
+        if (cy2 > syhi) cy2 = syhi;
+        if (cx1 >= cx2 || cy1 >= cy2) return;
+        if (cx1 > (float)(xl >> 2) || cx2 < (float)((xh >> 2) + 1))
+        {
+            fx1 = cx1; fx2 = cx2;
+            if (!ws_wide(fx2 - fx1, fbw) && !(x->sys->options.gfxWsBorder && (cx1 <= 0.0f || fx2 >= fbw)))
+            {
+                fx1 = ws_x(x, fx1, fbw);
+                fx2 = ws_x(x, fx2, fbw);
+            }
+            r.x1 = (LONG)(fx1 * sx);
+            r.x2 = (LONG)(fx2 * sx);
+        }
+        r.y1 = (LONG)(cy1 * sy);
+        r.y2 = (LONG)(cy2 * sy);
+        if (r.x2 > (LONG)x->rtW) r.x2 = (LONG)x->rtW;
+        if (r.y2 > (LONG)x->rtH) r.y2 = (LONG)x->rtH;
+        if (r.x1 >= r.x2 || r.y1 >= r.y2) return;
+    }
     select_framebuffer(x);
     {
         u32 bottom = (yh >> 2) + 1, sb = (st->scissorYhi + 3) >> 2;
@@ -2622,7 +2671,14 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     }
     else
     {
+        // Profile gfxRectPoint: a rectangle drawn 1:1 samples whole texels on
+        // the N64, so its filter never blends; point sampled here (The New
+        // Tetris: magenta transparent texels filtered into sprite edges).
+        int filter = x->texFilter;
+        if (x->sys->options.gfxRectPoint && !fbSrc && (dsdx == 1.0f || dsdx == -1.0f) && (dtdy == 1.0f || dtdy == -1.0f))
+            x->texFilter = 2;
         setup_combined(x, 1, &tb0, &tb1, tile, 0);
+        x->texFilter = filter;
         if ((st->rasterFlags & RS_SAMPLE_QUAD) && !flip && !t0->shiftS && !t0->shiftT)
         {
             // Bilinear rectangles that stay inside their tile (MK64's title is
@@ -2930,6 +2986,15 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
             if (s->valid && s->tex && s->addr == x->fb[found].addr && s->width == width) { found = (int)i; break; }
         }
     }
+    if (x->sys->options.gfxKeepShown && found < 0 && x->shownSlot >= 0 && x->fb[x->shownSlot].valid && x->fb[x->shownSlot].tex)
+    {
+        // Profile gfxKeepShown: the VI went to an image no frame slot holds,
+        // one the CPU fills by copying the frame on screen (Fighting Force's
+        // loading screens: noise, as that frame is only on the GPU). The
+        // frame on screen stays, which is what the copy shows.
+        found = x->shownSlot;
+        origin = x->shownOrigin;
+    }
     if (x->sys->options.gfxNoOldFrame && found >= 0 && x->shownSlot >= 0 && found != x->shownSlot &&
         x->fb[x->shownSlot].valid && x->fb[x->shownSlot].tex &&
         x->fb[found].drawnAt < x->fb[x->shownSlot].drawnAt && x->fb[x->shownSlot].drawnAt - x->fb[found].drawnAt <= 8)
@@ -3036,6 +3101,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         for (k = 0; k < FB_SLOTS; k++)
             if ((int)k != found) x->fb[k].showFront = 0;
         x->shownSlot = found;
+        x->shownOrigin = origin;
     }
     deflicker_pass(x);
     if (x->overlay)
@@ -3050,12 +3116,13 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     }
     if (x->vsyncSet != x->vsync)
     {
-        // V-Sync: the frame waits for the TV's refresh (no tearing). One that
-        // comes late goes at once while the scan is in the top 10 % of the
-        // picture (a tear there, rarely seen), so a game a little under 60
-        // does not drop to 30.
+        // V-Sync: a frame on time waits for the TV's refresh (no tearing); a
+        // late one goes at once (adaptive: a tear on that frame only). With
+        // late frames held to the next refresh (vsync=2: only within the top
+        // 10 % of the scan), a game a little under 60 dropped to 30: Mario
+        // Tennis's busy moments 27-43 VI/s, 52-60 in 2.0.1 (no V-Sync).
         x->dev->SetRenderState(D3DRS_PRESENTINTERVAL, x->vsync ? D3DPRESENT_INTERVAL_ONE : D3DPRESENT_INTERVAL_IMMEDIATE);
-        x->dev->SetRenderState(D3DRS_PRESENTIMMEDIATETHRESHOLD, x->vsync ? 10 : 100);
+        x->dev->SetRenderState(D3DRS_PRESENTIMMEDIATETHRESHOLD, x->vsync == 2 ? 10 : 100);
         x->vsyncSet = x->vsync;
     }
     x->dev->Present(NULL, NULL, NULL, NULL);
@@ -3178,7 +3245,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->texFilter = 1;
     x->sharpen = x->blur = x->screen = x->aspect = x->wsMain = 0;
     x->brightness = x->viGamma = 0;
-    x->vsync = 1;
+    x->vsync = 0;
     x->vsyncSet = -1;
     x->deferNotify = 0;
     x->pendingLo = x->pendingHi = 0;
@@ -3393,9 +3460,12 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     x->blur = o->blur < 0 || o->blur > 2 ? 0 : o->blur;
     x->screen = o->screen < 0 || o->screen > 5 ? 0 : o->screen;
     x->brightness = o->brightness < 0 || o->brightness > 2 ? 0 : o->brightness;
-    x->vsync = o->vsync != 0;
+    x->vsync = o->vsync;
     if (!o->deflicker) x->dfValid = 0;
     x->deflicker = o->deflicker != 0;
+    x->zoom = o->zoom < 50 || o->zoom > 200 ? 100 : o->zoom;
+    x->offsetX = o->offsetX;
+    x->offsetY = o->offsetY;
     if (o->aspect != x->aspect) x->stateDirty = 1;   // the scissor moves in widescreen
     x->aspect = o->aspect < 0 || o->aspect > 2 ? 0 : o->aspect;
     if (o->texFilter != x->texFilter)

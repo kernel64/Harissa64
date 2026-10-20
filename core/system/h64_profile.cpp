@@ -19,7 +19,10 @@ static const GameProfile s_profiles[] = {
     { "NFU", "Conker's Bad Fur Day", H64_GP_LATE_PARSE },
     // Each player's view is drawn with a scissor wider than the view: the
     // microcode's viewport rejection and guard band clipping keep them apart.
-    { "NKT", "Mario Kart 64", H64_GP_VIEWPORT_CLIP },
+    // Its trackside screens (Luigi Raceway, Wario Stadium...) show the race:
+    // the CPU copies part of the frame on screen into their texture, a frame
+    // only the GPU held (a black rectangle). The shown frame goes back to RDRAM.
+    { "NKT", "Mario Kart 64", H64_GP_VIEWPORT_CLIP | H64_GP_FRAME_TO_RDRAM },
     // Textures and palettes kept where small images were drawn earlier.
     { "NMQ", "Paper Mario", H64_GP_CPU_WRITTEN },
     // A null pointer read at boot with the HLE boot: the game stopped. Its
@@ -87,8 +90,10 @@ static const GameProfile s_profiles[] = {
     // Super Mario 64 Land's own code leaves the stack only 4-byte aligned,
     // then saves FPU registers with SDC1 (an address error on the console;
     // the PC emulators it was made on write the two words): the game thread
-    // stopped near 1-3's rail platforms (GitHub issue #8).
-    { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART | H64_GP_FPU_NO_TRAPS | H64_GP_LAX_ALIGN64 },
+    // stopped near 1-3's rail platforms (GitHub issue #8). Super Mario
+    // Odyssey 64 adds two floats' bit patterns with ADD (0x802ACF8C) and
+    // overflows: the game thread stopped in Cap Kingdom (GitHub issue #10).
+    { "NSM", "Super Mario 64", H64_GP_PI_ODD_CART | H64_GP_FPU_NO_TRAPS | H64_GP_LAX_ALIGN64 | H64_GP_NO_OV_TRAP },
     // Fonts and palettes live in memory once drawn into as a colour image
     // (Vigilante 8: 360-wide image at 0x377EC0, palettes and fonts from
     // 0x397400; 2nd Offense: 320-wide at 0x3B6DC0, font at 0x3BD5C8). Loads
@@ -169,6 +174,31 @@ static const GameProfile s_profiles[] = {
     // depth 0 and the first surface drawn won (Jim hidden on the Xbox, HUD
     // missing with the software RDP). GitHub issue #7.
     { "NJM", "Earthworm Jim 3D", H64_GP_OTHERMODE_INIT },
+    // Relies on the default perspective-corrected textures: without them the
+    // balls' round outline came out as squares.
+    { "NVR", "Virtual Pool 64", H64_GP_OTHERMODE_INIT },
+    // Copies the frame on screen with the CPU into another image the VI
+    // shows while a level loads: that frame is only on the GPU (noise).
+    { "NFF", "Fighting Force 64", H64_GP_KEEP_SHOWN },
+    // Its animated 24x24 32-bit textures are declared with 256x256 masks: each
+    // was decoded as 65536 texels and again every frame (30-35 VI/s in races).
+    { "NML", "Mickey's Speedway USA", H64_GP_MASK_TO_TILE },
+    // Its intro video is a 320 x 480 interlaced frame (the VI line steps two
+    // image lines): its top half was shown stretched over the screen.
+    { "NEP", "Star Wars Episode I: Racer", H64_GP_TALL_FRAME },
+    // Its backgrounds and sprites are filtered rectangles drawn 1:1 with an
+    // alpha test, over magenta transparent texels: the N64 samples whole
+    // texels there, a higher resolution filtered magenta into their edges.
+    // Started from the ROM list, its game background lies where its menu
+    // frames were drawn: ~400 copy backs a second wrote those old frames
+    // over it (stone menu texture in the scene, 14 VI/s in Xenia, sound
+    // cuts); after a state load (slots dropped) it was right. It never
+    // samples its frames: no copy backs, 60 VI/s.
+    { "NRI", "The New Tetris", H64_GP_RECT_POINT | H64_GP_NO_COPY_BACK },
+    // Fast3D with no name string (now drawn here, ~20 ms a frame on the LLE
+    // RSP before): its tasks rely on the default other modes (texture
+    // conversion), else its panels' texel alpha came out as YUV.
+    { "NT6", "Tetris 64", H64_GP_OTHERMODE_INIT },
     // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
     // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
     { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
@@ -237,10 +267,32 @@ static const IdleYield s_idleYield[] = {
     { "NIJ", 0x40036DA0u, 0x000479F8u },
 };
 
+// Loops that only read Count until enough time has passed (frame limiters)
+// or poll a message queue: the recompiler moves time on there (h64_jit.cpp).
+// The loop's head, the most CPU cycles skipped at a time (0: up to the next
+// event), the physical address of the queue (skipped only while empty).
+struct CountWait { const char *code; u32 pc, step, queue; };
+static const CountWait s_countWait[] = {
+    // while (osGetCount() - start < limit) {}: half of the CPU time in
+    // game, 42-44 VI/s on the console.
+    { "NFF", 0x80022948u, 4096, 0 },
+    // Its intro and menus poll a queue with osRecvMesg(NOBLOCK) (interrupts
+    // off and on each turn): 23 ms of CPU a frame, 42 VI/s on the console.
+    { "NVR", 0x800062ACu, 0, 0x00271C78u },
+};
+
 static void apply_idle_yield(H64System *sys)
 {
     u32 i;
     sys->options.idleYieldPc = sys->options.idleRunQueue = 0;
+    sys->options.countWaitPc = sys->options.countWaitStep = sys->options.countWaitQueue = 0;
+    for (i = 0; i < sizeof(s_countWait) / sizeof(s_countWait[0]); i++)
+        if (!memcmp(sys->rom.gameCode, s_countWait[i].code, 3))
+        {
+            sys->options.countWaitPc = s_countWait[i].pc;
+            sys->options.countWaitStep = s_countWait[i].step;
+            sys->options.countWaitQueue = s_countWait[i].queue;
+        }
     for (i = 0; i < sizeof(s_idleYield) / sizeof(s_idleYield[0]); i++)
         if (!memcmp(sys->rom.gameCode, s_idleYield[i].code, 3))
         {
@@ -274,6 +326,22 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxDepthFillToRdram = (f & H64_GP_DEPTH_FILL_RDRAM) != 0;
     sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
     sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
+    sys->options.gfxRectPoint = (f & H64_GP_RECT_POINT) != 0;
+    sys->options.gfxKeepShown = (f & H64_GP_KEEP_SHOWN) != 0;
+    sys->options.gfxMaskToTile = (f & H64_GP_MASK_TO_TILE) != 0;
     if (f & H64_GP_FPU_NO_TRAPS) sys->cpu.fpuNoTraps = 1;
     sys->cpu.laxAlign64 = (f & H64_GP_LAX_ALIGN64) != 0;
+    sys->cpu.noOvTrap = (f & H64_GP_NO_OV_TRAP) != 0;
+    if (!sys->options.strictCpu)
+    {
+        // ROM hacks are made on PC emulators (Project64, mupen64plus) that
+        // let through what stops the console: a ROM DMA from an odd address,
+        // FPU exceptions, doubleword accesses 4 bytes off, integer overflows.
+        // Games made for the console never do these (they would stop there),
+        // so every game gets that tolerance; strictCpu keeps the console's way.
+        sys->options.piOddCart = 1;
+        sys->cpu.fpuNoTraps = 1;
+        sys->cpu.laxAlign64 = 1;
+        sys->cpu.noOvTrap = 1;
+    }
 }

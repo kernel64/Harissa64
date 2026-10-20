@@ -541,6 +541,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             { 0x23FEF05Fu, UC_F5INDI, RARE_NONE, 0, "Star Wars Episode I: Battle for Naboo (Factor 5)" },
             { 0x6859BF8Eu, UC_F5INDI, RARE_NONE, 0, "Indiana Jones and the Infernal Machine (Factor 5)" },
             { 0x2BDCFC8Au, UC_TURBO3D, RARE_NONE, 0, "Turbo3D (Dark Rift)" },   // no name string
+            { 0xE62A706Du, UC_F3D, RARE_NONE, 0, "Fast3D (Tetris 64)" },        // no name string (GLideN64 GBI.cpp)
         };
         u8 code[4096];
         u32 crc, k;
@@ -679,7 +680,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             }
         }
     }
-    H64_INFO("[gfx] microcode at %06X: no name string, not handled (LLE)", u->start);
+    H64_INFO("[gfx] microcode at %06X: CRC %08X, no name string, not handled (LLE)", u->start, u->crc);
 }
 
 static const GfxUcode *find_ucode(H64Gfx *g, u32 start, u32 dstart, u32 dsize)

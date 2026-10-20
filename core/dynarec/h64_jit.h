@@ -36,6 +36,10 @@
 
 #define H64_JIT_MAX_INSNS 64
 #define H64_JIT_PAGES (0x800000u >> 12)   // RDRAM pages (8 MB)
+// codeMap's granularity: stores into a chunk holding code take the slow path.
+// 16 bytes, not 64: Fighting Force's audio decoder writes a buffer right after
+// its own code, ~1200 slow stores a frame (8-10 ms of helper time a frame).
+#define H64_JIT_CHUNK_SHIFT 4
 
 struct H64System;
 struct H64JitBlock;
@@ -72,7 +76,7 @@ struct H64Jit
     void *staleBlock;               // a TLB-mapped block whose page check failed (NULL: none)
     u32 curPage;
     int curInvalidated;
-    u16 *codeMap;                   // live blocks over each 64-byte RDRAM chunk (stores there take the slow path)
+    u16 *codeMap;                   // live blocks over each RDRAM chunk (1 << H64_JIT_CHUNK_SHIFT bytes; stores there take the slow path)
     // Indirect jump targets (jr/jalr, read by rtIndirect): KSEG0/1 pc -> native
     // block body, by pc bits 2..11; filled by the dispatcher, dropped with their block.
     u32 *indPc;
@@ -110,6 +114,7 @@ struct H64Jit
     u32 linkCount, linkCap;
     int noLink;                     // debugging: every block returns to the dispatcher
     int fullExits;                  // debugging: linked exits without rtLink (the inline form)
+    int noStatusFast;               // debugging: MTC0 Status always runs in the interpreter (h64test --no-status-fast, ini statusfast=0)
     int noSuper;                    // debugging: blocks end at every branch (no side exits)
 
     H64JitStats stats;
