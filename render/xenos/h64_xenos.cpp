@@ -1031,6 +1031,10 @@ static void tc_affine(u32 shift, s32 lo, u32 size, float *a, float *b)
 // (Indiana Jones: 400 x 448, shown as its top 300 lines, zoomed in).
 static u32 fb_height(const Xenos *x, u32 width)
 {
+    // gfxTallFrame: a VI line twice the image's width steps two image lines
+    // (an interlaced 480-line frame; Star Wars Racer's intro, 320 x 480,
+    // showed its top half stretched over the screen).
+    if (x->sys->options.gfxTallFrame && width <= 320 && (x->sys->vi.regs[2] & 0xFFF) == width * 2) return 480;
     if (x->tallH && width == x->tallW) return x->tallH;
     return width <= 320 ? 240 : width * 3 / 4;
 }
@@ -2360,6 +2364,37 @@ static void fill_rect(Xenos *x, const u32 *w)
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
         if (x->sys->options.gfxDepthFillToRdram) depth_fill_rdram(x, xl >> 2, xh >> 2, yl >> 2, yh >> 2);
         return;
+    }
+    if (st->scissorXhi || st->scissorYhi)
+    {
+        // A colour fill keeps to the scissor, as the RDP's spans do (scissor
+        // rounding as set_scissor). Star Fox 64 draws its stars as 1-pixel
+        // fills, also outside its scissor: they piled up in the border the
+        // game leaves alone, a dotted blue frame around the picture.
+        float cx1 = (float)(xl >> 2), cx2 = (float)((xh >> 2) + 1);
+        float sxlo = (float)(st->scissorXlo >> 2), sxhi = (float)(st->scissorXhi >> 2);
+        u32 cy1 = yl >> 2, cy2 = (yh >> 2) + 1, sylo = st->scissorYlo >> 2, syhi = st->scissorYhi >> 2;
+        if (cx1 < sxlo) cx1 = sxlo;
+        if (cx2 > sxhi) cx2 = sxhi;
+        if (cy1 < sylo) cy1 = sylo;
+        if (cy2 > syhi) cy2 = syhi;
+        if (cx1 >= cx2 || cy1 >= cy2) return;
+        if (cx1 > (float)(xl >> 2) || cx2 < (float)((xh >> 2) + 1))
+        {
+            fx1 = cx1; fx2 = cx2;
+            if (!ws_wide(fx2 - fx1, fbw) && !(x->sys->options.gfxWsBorder && (cx1 <= 0.0f || fx2 >= fbw)))
+            {
+                fx1 = ws_x(x, fx1, fbw);
+                fx2 = ws_x(x, fx2, fbw);
+            }
+            r.x1 = (LONG)(fx1 * sx);
+            r.x2 = (LONG)(fx2 * sx);
+        }
+        r.y1 = (LONG)(cy1 * sy);
+        r.y2 = (LONG)(cy2 * sy);
+        if (r.x2 > (LONG)x->rtW) r.x2 = (LONG)x->rtW;
+        if (r.y2 > (LONG)x->rtH) r.y2 = (LONG)x->rtH;
+        if (r.x1 >= r.x2 || r.y1 >= r.y2) return;
     }
     select_framebuffer(x);
     {
