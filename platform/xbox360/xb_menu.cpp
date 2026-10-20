@@ -267,7 +267,10 @@ static void settings_values(UiMenu *m, const Config *c)
     sprintf(m->value[S_CPU], "< %s >", strcmp(c->cpu, "interp") ? Tr(T_RECOMPILER) : Tr(T_INTERPRETER));
     sprintf(m->value[S_HLE], "< %s >", c->hle ? "HLE" : "LLE");
     sprintf(m->value[S_AUDIO], "< %d ms >", c->audioMs);
-    sprintf(m->value[S_FPS], "< %s >", onoff(c->showFps));
+    {
+        static const int fps[4] = { T_OFF, T_FPS_ONLY, T_FPS_CPU, T_FPS_ALL };
+        sprintf(m->value[S_FPS], "< %s >", Tr(fps[c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps]));
+    }
     {
         int i, custom = 0;
         for (i = 0; i < 4; i++) custom |= !h64_padmap_is_default(&c->padMap[i]);
@@ -326,7 +329,7 @@ static void settings_graphics(UiMenu *m, const Config *c)
 // analog stick's source (a stick or the D-pad), inverted axes, dead zone and sensitivity. A on a button waits for
 // an input to set it (Y adds one more, X clears); BACK or 5 s cancel.
 // Inputs are read from controller 1, whichever player is being edited.
-enum { C_STICK = H64_N64_COUNT, C_INVERT, C_DEAD, C_RANGE, C_RESET, C_BACK, C_COUNT };
+enum { C_STICK = H64_N64_COUNT, C_INVERT, C_DEAD, C_RANGE, C_RUMBLE, C_RESET, C_BACK, C_COUNT };
 #define CAPTURE_MS 5000
 
 struct ControlsState
@@ -345,7 +348,7 @@ static ControlsState s_ctl;
 static const int s_ctlOrder[C_COUNT] = {
     H64_N64_A, H64_N64_B, H64_N64_Z, H64_N64_START, H64_N64_L, H64_N64_R,
     H64_N64_DUP, H64_N64_DDOWN, H64_N64_DLEFT, H64_N64_DRIGHT, H64_N64_CUP, H64_N64_CDOWN, H64_N64_CLEFT, H64_N64_CRIGHT,
-    C_STICK, C_INVERT, C_DEAD, C_RANGE, C_RESET, C_BACK,
+    C_STICK, C_INVERT, C_DEAD, C_RANGE, C_RUMBLE, C_RESET, C_BACK,
 };
 
 #define CTL_X 70.0f
@@ -380,6 +383,7 @@ static void ctl_place(int item, int *col, float *row)
     case C_INVERT: *col = 2; *row = 1; return;
     case C_DEAD: *col = 2; *row = 2; return;
     case C_RANGE: *col = 2; *row = 3; return;
+    case C_RUMBLE: *col = 0; *row = 6; return;
     case C_RESET: *col = 0; *row = 7; return;
     default: *col = 0; *row = 8; return;
     }
@@ -509,6 +513,11 @@ static int controls_input(UiMenu *m, Config *c, WORD down)
         ctl_note(Tr(T_DEFAULT_CONTROLS));
         return SET_CHANGED;
     }
+    if (item == C_RUMBLE && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        c->rumble = !c->rumble;   // one setting for every player
+        return SET_CHANGED;
+    }
     if (item >= C_STICK && item <= C_RANGE && (dir || (down & XINPUT_GAMEPAD_A)))
     {
         if (!dir) dir = 1;
@@ -528,7 +537,7 @@ static int controls_input(UiMenu *m, Config *c, WORD down)
         }
         return SET_CHANGED;
     }
-    if (dir && (item < C_STICK || item >= C_RESET))
+    if (dir && (item < C_STICK || item >= C_RUMBLE))
     {
         // Left/right on a button row: the next column, on the row nearest the same height.
         int best = m->sel;
@@ -580,6 +589,7 @@ static void ctl_hints(u32 mask, char *out, size_t size)
 
 static void ctl_value_text(int item, const H64PadMap *map, char *out)
 {
+    if (item == C_RUMBLE) { sprintf(out, "< %s >", onoff(s_ctl.c ? s_ctl.c->rumble : 1)); return; }
     const char *sticks[H64_STICK_COUNT] = { Tr(T_STICK_LEFT), Tr(T_STICK_RIGHT), Tr(T_STICK_DPAD), Tr(T_OFF) };
     const char *inverts[4] = { Tr(T_OFF), "X", "Y", Tr(T_X_AND_Y) };
     if (item == C_STICK) sprintf(out, "< %s >", sticks[map->stick >= 0 && map->stick < H64_STICK_COUNT ? map->stick : 0]);
@@ -753,7 +763,7 @@ static void controls_draw(const UiMenu *m)
         }
         else
         {
-            static const int labels[] = { T_ANALOG_STICK, T_INVERT, T_DEAD_ZONE, T_SENSITIVITY, T_RESET_DEFAULT, T_BACK };
+            static const int labels[] = { T_ANALOG_STICK, T_INVERT, T_DEAD_ZONE, T_SENSITIVITY, T_RUMBLE, T_RESET_DEFAULT, T_BACK };
             UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, Tr(labels[item - C_STICK]), UI_LEFT);
             ctl_value_text(item, map, buf);
             if (buf[0]) draw_value(cx + CTL_COLW - 18, cy, buf, s);
@@ -880,7 +890,7 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
             if (c->audioMs < 50) c->audioMs = 50;
             if (c->audioMs > 500) c->audioMs = 500;
             break;
-        case S_FPS: c->showFps = !c->showFps; break;
+        case S_FPS: c->showFps = ((c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps) + dir + 4) % 4; break;   // off, FPS, + CPU/RAM, + resolution
         }
         changed = 1;
     }

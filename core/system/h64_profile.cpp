@@ -64,8 +64,12 @@ static const GameProfile s_profiles[] = {
     // the same address (one slot for both showed horizontal streaks).
     { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY | H64_GP_SLOT_BY_WIDTH },
     // Reads its background back six lines at a time (~40 copy backs a frame,
-    // ~47 VI/s in a match): one whole copy instead, 60 VI/s.
-    { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE },
+    // ~47 VI/s in a match): one whole copy instead, 60 VI/s. Draws the capsule
+    // Mario throws into the frame with the CPU (H64_GP_CPU_SPRITES).
+    { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE | H64_GP_CPU_SPRITES },
+    // Its menus read the previous frame back two lines at a time (~120 copy
+    // backs a frame, ~7 VI/s): one whole copy instead.
+    { "NBM", "Bomberman 64", H64_GP_COPY_BACK_WHOLE },
     // The magnifying glass on the character select enlarges what is on
     // screen: it reads the frame shown with the CPU (empty without).
     // Both also need each task to start from the microcode's default other
@@ -232,6 +236,17 @@ static const GameProfile s_profiles[] = {
     { "NGC", "GT 64: Championship Edition", H64_GP_S2DEX1 | H64_GP_OTHERMODE_INIT },
 };
 
+// Options with no bit left in the flags above, set by h64_apply_game_profile.
+enum { H64_GX_SOFT_TINY = 1 };   // options.gfxSoftTiny
+struct GameExtra { const char *code; u32 extra; };
+static const GameExtra s_extras[] = {
+    // Each character's shaded palette is drawn into a 16x1 image, then loaded
+    // with LOAD_TLUT: drawn by the GPU, each load waited for the GPU and copied
+    // it back (~10 a frame; Peach's castle in the prologue ran at ~20 VI/s).
+    // The software RDP draws them in memory instead: nothing to copy back.
+    { "NMQ", H64_GX_SOFT_TINY },
+};
+
 static void apply_idle_yield(H64System *sys);
 
 u32 h64_game_profile(const char *gameCode, const char **name)
@@ -251,10 +266,13 @@ u32 h64_game_profile(const char *gameCode, const char **name)
 void h64_apply_game_profile(H64System *sys)
 {
     const char *name;
-    u32 f = h64_game_profile(sys->rom.gameCode, &name);
+    u32 f = h64_game_profile(sys->rom.gameCode, &name), i, extra = 0;
     h64_apply_profile_flags(sys, f);
     apply_idle_yield(sys);
-    if (name) H64_INFO("[profile] %s: flags %X", name, f);
+    for (i = 0; i < sizeof(s_extras) / sizeof(s_extras[0]); i++)
+        if (!memcmp(sys->rom.gameCode, s_extras[i].code, 3)) extra = s_extras[i].extra;
+    sys->options.gfxSoftTiny = (extra & H64_GX_SOFT_TINY) != 0;
+    if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 
 // Idle threads that call osYieldThread in a loop instead of spinning: when
@@ -327,6 +345,7 @@ void h64_apply_profile_flags(H64System *sys, u32 f)
     sys->options.gfxAlphaRef0Pass = (f & H64_GP_ALPHA_REF0_PASS) != 0;
     sys->options.gfxTallFrame = (f & H64_GP_TALL_FRAME) != 0;
     sys->options.gfxRectPoint = (f & H64_GP_RECT_POINT) != 0;
+    sys->options.gfxCpuSprites = (f & H64_GP_CPU_SPRITES) != 0;
     sys->options.gfxKeepShown = (f & H64_GP_KEEP_SHOWN) != 0;
     sys->options.gfxMaskToTile = (f & H64_GP_MASK_TO_TILE) != 0;
     if (f & H64_GP_FPU_NO_TRAPS) sys->cpu.fpuNoTraps = 1;

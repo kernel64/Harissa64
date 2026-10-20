@@ -77,6 +77,32 @@ static void pif_challenge(H64System *sys)
     sys->pifRam[0x3F] = 0;
 }
 
+// ---- Rumble Pak ----
+// As libultra's osMotorInit/osMotorStart see it (mupen64plus-core
+// device/controllers/paks/rumblepak.c): reads of 0x8000-0x8FFF give 0x80
+// (the pak's identification), a write of 32 bytes to 0xC000 turns the motor
+// on (first byte non-zero) or off. Answers carry the data CRC as for the
+// Controller Pak.
+static int rumble_command(H64System *sys, int channel, const u8 *tx, int txLen, u8 *rx, int rxLen)
+{
+    u32 addr;
+    if (txLen < 3) return 0;
+    addr = ((u32)tx[1] << 8 | tx[2]) & 0xFFE0u;
+    if (tx[0] == 0x02 && rxLen >= 33)
+    {
+        memset(rx, addr >= 0x8000 && addr < 0x9000 ? 0x80 : 0x00, 32);
+        rx[32] = h64_save_pak_crc(rx, 32);
+        return 1;
+    }
+    if (tx[0] == 0x03 && txLen >= 35 && rxLen >= 1)
+    {
+        if (addr == 0xC000) sys->rumbleMotor[channel] = tx[3] ? 1 : 0;
+        rx[0] = h64_save_pak_crc(tx + 3, 32);
+        return 1;
+    }
+    return 0;
+}
+
 // ---- JoyBus devices ----
 // Standard controllers on the ports in sys->padMask (port 1 at least; state
 // in sys->pad[]), a Controller Pak on port 1 when the game uses one, and the
@@ -89,16 +115,18 @@ static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen,
     {
         const H64Pad *p = &sys->pad[channel];
         int pak = channel == 0 && sys->save->pak;
+        int rumble = !pak && (sys->rumblePaks & (1u << channel)) != 0;
         switch (tx[0])
         {
         case 0x00:   // info
         case 0xFF:   // reset + info
             // controller; status bit 0: a pak is plugged in (0x02 would mean "pak removed")
-            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = pak ? 0x01 : 0x00; }
+            if (rxLen >= 3) { rx[0] = 0x05; rx[1] = 0x00; rx[2] = pak || rumble ? 0x01 : 0x00; }
             return;
         case 0x02:   // pak read
         case 0x03:   // pak write
             if (pak && h64_save_pak_command(sys->save, tx, txLen, rx, rxLen) >= 0) return;
+            if (rumble && rumble_command(sys, channel, tx, txLen, rx, rxLen)) return;
             break;
         case 0x01:   // buttons and stick
             if (rxLen >= 4)

@@ -27,6 +27,9 @@ CUSTOM = Personal
 DEFAULT = Predeterminado
 RECOMPILER = Recompilador
 INTERPRETER = Intérprete
+FPS_ONLY = FPS
+FPS_CPU = FPS, CPU, RAM
+FPS_ALL = FPS, CPU, RAM, resolución
 
 # ---- Ajustes, página Gráficos ----
 PRESET = Preajuste
@@ -76,6 +79,7 @@ ANALOG_STICK = Stick analógico
 INVERT = Invertir
 DEAD_ZONE = Zona muerta
 SENSITIVITY = Sensibilidad
+RUMBLE = Vibración
 RESET_DEFAULT = Restablecer
 STICK_LEFT = Izquierdo
 STICK_RIGHT = Derecho

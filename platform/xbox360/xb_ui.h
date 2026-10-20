@@ -118,6 +118,8 @@ void UiScreenFooter(const char *hints);
 void UiToast(const char *text, float age, float life);
 // The frames-per-second badge in the top-right corner.
 void UiFpsBadge(const char *text);
+// The same corner with several lines ("\n"-separated): FPS, CPU, RAM, resolution.
+void UiPerfPanel(const char *text);
 
 // Controller 1 for menus: buttons pressed since the last call, with
 // auto-repeat for the D-pad and the left stick (as D-pad directions).

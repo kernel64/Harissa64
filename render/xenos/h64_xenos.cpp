@@ -901,6 +901,14 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
             }
         }
         x->stats.tFill += h64_prof_now(x->sys) - f0;
+        if (x->debug == 17 && x->debugLines < 60)
+        {
+            // xenosdebug=17: the first texels of each texture decoded (diagnosis).
+            x->debugLines++;
+            H64_INFO("[xtex] decoded tile %u fmt %u size %u tlut %d %ux%u at %d,%d: %08X %08X %08X %08X | mid %08X", tileIndex & 7, t->fmt,
+                     t->size, tlut, b->w, b->h, b->ox, b->oy, x->decodeBuf[0], x->decodeBuf[1 % count], x->decodeBuf[2 % count],
+                     x->decodeBuf[3 % count], x->decodeBuf[count / 2]);
+        }
     }
     {
         // Linear textures: rows 256-byte aligned, data 4 KB aligned.
@@ -1360,18 +1368,19 @@ static int vi_geometry(const u32 *v, ViGeom *g)
 // (16:9 widescreen, whose 3D was drawn wider, or stretched). `g`: what the VI
 // shows (NULL: the whole picture); ox/oy: the origin's offset in the image (N64
 // pixels); u/v per N64 pixel and line of `tex`; `width`: N64 pixels across.
-static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, float ox, float oy, float uPer, float vPer,
-                         u32 width, u32 lines)
+// Where the picture goes on the back buffer and which part of the texture it
+// shows (draw_display's geometry). Returns the lines shown.
+struct DisplayQuad { float bw, bh, u0, v0, u1, v1, px0, py0, pw, ph; };
+static u32 display_quad(Xenos *x, const ViGeom *g, float ox, float oy, float uPer, float vPer, u32 width, u32 lines, DisplayQuad *q)
 {
     D3DSURFACE_DESC d;
-    float bw, bh, w, h, c[4], u0, v0, u1, v1, px0, py0, pw, ph;
-    IDirect3DPixelShader9 *ps;
+    float w, h;
     x->backBuffer->GetDesc(&d);
-    bw = (float)d.Width;
-    bh = (float)d.Height;
-    h = bh;
-    w = x->aspect ? bw : bh * 4.0f / 3.0f;
-    if (w > bw) { w = bw; h = bw * 3.0f / 4.0f; }
+    q->bw = (float)d.Width;
+    q->bh = (float)d.Height;
+    h = q->bh;
+    w = x->aspect ? q->bw : q->bh * 4.0f / 3.0f;
+    if (w > q->bw) { w = q->bw; h = q->bw * 3.0f / 4.0f; }
     // The player's calibration (GitHub issue #11): size and position.
     w *= x->zoom / 100.0f;
     h *= x->zoom / 100.0f;
@@ -1379,19 +1388,32 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, floa
     if (!width) width = 320;
     if (g)
     {
-        u0 = (g->sx0 + ox) * uPer; u1 = (g->sx1 + ox) * uPer;
-        v0 = (g->sy0 + oy) * vPer; v1 = (g->sy1 + oy) * vPer;
-        px0 = (bw - w) / 2 + x->offsetX + g->dx0 * w; pw = (g->dx1 - g->dx0) * w;
-        py0 = (bh - h) / 2 + x->offsetY + g->dy0 * h; ph = (g->dy1 - g->dy0) * h;
+        q->u0 = (g->sx0 + ox) * uPer; q->u1 = (g->sx1 + ox) * uPer;
+        q->v0 = (g->sy0 + oy) * vPer; q->v1 = (g->sy1 + oy) * vPer;
+        q->px0 = (q->bw - w) / 2 + x->offsetX + g->dx0 * w; q->pw = (g->dx1 - g->dx0) * w;
+        q->py0 = (q->bh - h) / 2 + x->offsetY + g->dy0 * h; q->ph = (g->dy1 - g->dy0) * h;
         lines = (u32)g->lines;
     }
     else
     {
-        u0 = v0 = 0.0f;
-        u1 = width * uPer; v1 = lines * vPer;
-        px0 = (bw - w) / 2 + x->offsetX; pw = w;
-        py0 = (bh - h) / 2 + x->offsetY; ph = h;
+        q->u0 = q->v0 = 0.0f;
+        q->u1 = width * uPer; q->v1 = lines * vPer;
+        q->px0 = (q->bw - w) / 2 + x->offsetX; q->pw = w;
+        q->py0 = (q->bh - h) / 2 + x->offsetY; q->ph = h;
     }
+    return lines;
+}
+
+static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, float ox, float oy, float uPer, float vPer,
+                         u32 width, u32 lines)
+{
+    DisplayQuad dq;
+    float bw, bh, c[4], u0, v0, u1, v1, px0, py0, pw, ph;
+    IDirect3DPixelShader9 *ps;
+    if (!width) width = 320;
+    lines = display_quad(x, g, ox, oy, uPer, vPer, width, lines, &dq);
+    bw = dq.bw; bh = dq.bh; u0 = dq.u0; v0 = dq.v0; u1 = dq.u1; v1 = dq.v1;
+    px0 = dq.px0; py0 = dq.py0; pw = dq.pw; ph = dq.ph;
     ps = display_shader(x);
     if (!ps) ps = x->smooth && x->psSmooth ? x->psSmooth : x->psCopy;
     c[0] = 1.0f / RT_WIDTH; c[1] = 1.0f / RT_HEIGHT; c[2] = (float)RT_WIDTH; c[3] = (float)RT_HEIGHT;
@@ -2031,6 +2053,17 @@ static void set_blend(Xenos *x, int lastCycle)
         x->dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
         x->dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
         x->dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    }
+    else if (force && b[0] == 0 && b[2] == 1 && b[3] == 0 && (b[1] == 1 || b[1] == 3))
+    {
+        // in * A + mem * (1 - A) with A the fog colour's alpha (or zero): a
+        // constant blend factor. Bomberman 64 fades its title with a
+        // full-screen rectangle blended so; drawn opaque, the title was black.
+        u32 a = b[1] == 1 ? (st->fogColor & 0xFF) : 0;
+        x->dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        x->dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_BLENDFACTOR);
+        x->dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVBLENDFACTOR);
+        x->dev->SetRenderState(D3DRS_BLENDFACTOR, D3DCOLOR_ARGB(a, a, a, a));
     }
     else if (force && b[0] == 0 && b[2] == 1 && b[3] == 2)
     {
@@ -2720,6 +2753,12 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
             q[i].v0 = (fbMap[1] + tt / 32.0f - t0->tlo / 4.0f) * fbMap[3];
         }
     }
+    if (x->debug == 17 && x->debugLines < 120)
+    {
+        x->debugLines++;
+        H64_INFO("[xtex] rect %.0f,%.0f-%.0f,%.0f tile %u fbSrc %d copy %d uv %.3f,%.3f-%.3f,%.3f tex %ux%u+%d,%d z %.3f image %06X", xl, yl, xh, yh,
+                 tile, fbSrc, copy, q[0].u0, q[0].v0, q[3].u0, q[3].v0, tb0.w, tb0.h, tb0.ox, tb0.oy, z, st->colorAddr & 0xFFFFFF);
+    }
     x->win.active = 0;
     x->fbTex = NULL;
     x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
@@ -2834,15 +2873,22 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
             }
         }
     }
-    if (x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8 && (op == 0x24 || op == 0x25 || op == 0x36 || (op >= 0x08 && op <= 0x0F)))
+    int tiny = x->sys->options.gfxSoftTiny && x->st->scissorXhi > x->st->scissorXlo && x->st->scissorXhi - x->st->scissorXlo <= 16 * 4 &&
+               x->st->scissorYhi > x->st->scissorYlo && x->st->scissorYhi - x->st->scissorYlo <= 16 * 4;
+    if (((x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8) || tiny) &&
+        (op == 0x24 || op == 0x25 || op == 0x36 || (op >= 0x08 && op <= 0x0F)))
     {
+        // (Profile gfxSoftTiny: the same for drawing within a scissor of at
+        // most 16x16 pixels: Paper Mario draws each shaded palette as a 16x1
+        // rectangle into its scratch image, then loads it as a TLUT.)
         // Profile gfxSoft8bit: drawing into an 8-bit colour image is done by
         // the software RDP, in the job's snapshot (where this job's loads
         // read) and in RDRAM (later jobs); the GPU never holds the image, so
         // loads of it copy nothing back. Yoshi's Story redraws its scenery
         // tiles so each frame while Yoshi moves.
         H64RdpState *st = x->sys->rdpState;
-        u32 lo = st->colorAddr & 0xFFFFFF, hi = lo + (st->colorWidth ? st->colorWidth : 320) * 240;
+        u32 lo = st->colorAddr & 0xFFFFFF, hi = lo + (st->colorWidth ? st->colorWidth : 320) * (tiny ? (st->scissorYhi >> 2) + 1 : 240) *
+                                               (st->colorFmt == FB_RGBA8888 ? 4 : st->colorFmt >= FB_RGBA5551 ? 2 : 1);
         t0 = h64_prof_now(x->sys);
         st->softDraw = 1;
         st->drawRam = (u8 *)st->loadRam;
@@ -2929,6 +2975,97 @@ static IDirect3DTexture9 *upload_mem(Xenos *x, const u8 *ram, u32 origin, u32 wi
     }
     tex->UnlockRect(0);
     return tex;
+}
+
+// Profile gfxCpuSprites: the pixels of the 16-bit frame on screen that the
+// CPU changed in RDRAM since its graphics task was parsed (H64System.cpuSprite),
+// drawn over the GPU's picture with the N64's pixel size. Dr. Mario draws its
+// thrown capsules into the frame with the CPU once the RDP is done: the GPU's
+// picture never had them (the capsule vanished from Mario's hand and appeared
+// in the bottle).
+static void cpu_sprite_overlay(Xenos *x, const u32 *vi, u32 origin, u32 width)
+{
+    const H64CpuSprite *c = 0;
+    const u8 *ram = x->sys->rdram;
+    IDirect3DTexture9 *tex;
+    D3DLOCKED_RECT lr;
+    DisplayQuad q;
+    ViGeom g;
+    u32 k, y, xx, h, rowBytes = width * 2, first = 0xFFFFFFFFu;
+    for (k = 0; k < 4; k++)
+    {
+        const H64CpuSprite *s = &x->sys->cpuSprite[k];
+        if (s->bytes && s->data && origin >= s->addr && origin < s->addr + s->bytes) c = s;
+    }
+    if (!c || !width || width > 640) return;
+    h = (c->addr + c->bytes - origin) / rowBytes;
+    if (h > 480) h = 480;
+    for (y = 0; y < h && first == 0xFFFFFFFFu; y++)
+        if (memcmp(ram + origin + y * rowBytes, c->data + (origin - c->addr) + y * rowBytes, rowBytes)) first = y;
+    if (first == 0xFFFFFFFFu) return;   // the CPU drew nothing: the usual case
+    tex = x->cpuFb[x->cpuFbNext];
+    x->cpuFbNext ^= 1;
+    if (!tex) return;
+    tex->BlockUntilNotBusy();
+    if (FAILED(tex->LockRect(0, &lr, NULL, 0))) return;
+    for (y = 0; y < h; y++)
+    {
+        u32 *row = (u32 *)((u8 *)lr.pBits + y * lr.Pitch);
+        const u8 *now = ram + origin + y * rowBytes, *was = c->data + (origin - c->addr) + y * rowBytes;
+        if (y < first || !memcmp(now, was, rowBytes))
+        {
+            memset(row, 0, width * 4);
+            continue;
+        }
+        for (xx = 0; xx < width; xx++)
+        {
+            u32 p = h64_load_be16(now + xx * 2), R, G, B;
+            if (p == h64_load_be16(was + xx * 2)) { row[xx] = 0; continue; }
+            R = (p >> 11) & 31; G = (p >> 6) & 31; B = (p >> 1) & 31;
+            row[xx] = 0xFF000000u | ((R << 3 | R >> 2) << 16) | ((G << 3 | G >> 2) << 8) | (B << 3 | B >> 2);
+        }
+    }
+    tex->UnlockRect(0);
+    x->stats.cpuSprites++;
+    // As show_rdram_frame places an RDRAM frame, blended, texel for texel.
+    display_quad(x, vi_geometry(vi, &g) ? &g : NULL, 0.0f, 0.0f, 1.0f / RT_WIDTH, 1.0f / RT_HEIGHT, width, h, &q);
+    {
+        XVtx v[4];
+        float cst[4];
+        int i;
+        cst[0] = 2.0f / q.bw; cst[1] = -2.0f / q.bh; cst[2] = 0; cst[3] = 0;
+        for (i = 0; i < 4; i++)
+        {
+            v[i].x = q.px0 + ((i & 1) ? q.pw : 0.0f);
+            v[i].y = q.py0 + ((i & 2) ? q.ph : 0.0f);
+            v[i].z = 0;
+            v[i].w = 1;
+            v[i].col[0] = v[i].col[1] = v[i].col[2] = v[i].col[3] = 1.0f;
+            v[i].u0 = (i & 1) ? q.u1 : q.u0;
+            v[i].v0 = (i & 2) ? q.v1 : q.v0;
+            v[i].u1 = v[i].v1 = 0;
+        }
+        x->dev->SetVertexShaderConstantF(0, cst, 1);
+        x->dev->SetPixelShader(x->psCopy);
+        x->dev->SetTexture(0, tex);
+        x->dev->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+        x->dev->SetSamplerState(0, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+        x->dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+        x->dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+        x->dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+        x->dev->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+        x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+        x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+        x->dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+        x->dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        x->dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+        x->dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+        x->dev->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+        x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(XVtx));
+        x->dev->SetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+        x->dev->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        x->dev->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    }
 }
 
 static void show_rdram_frame(Xenos *x, const u32 *vi, u32 origin, u32 width, int bpp32)
@@ -3084,6 +3221,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         if (haveGeom && g.serrate) oy = (float)((u32)oy & ~1u);   // interlaced: both fields are in the image
         draw_display(x, fs->showFront && fs->front ? fs->front : fs->tex, haveGeom ? &g : NULL, ox, oy,
                      x->uMax / (fs->width ? fs->width : 320), x->vMax / (fs->height ? fs->height : 240), fs->width, fs->height);
+        if (x->sys->options.gfxCpuSprites && fs->bytes == 2) cpu_sprite_overlay(x, vi, origin, width);
         x->shown = fs->showFront && fs->front ? fs->front : fs->tex;
         x->shownU = x->uMax;
         x->shownV = x->vMax;
@@ -3484,6 +3622,13 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
         x->targetBound = 0;   // the viewport is set when the N64 target is bound again
         x->stateDirty = 1;
     }
+}
+
+void h64_xenos_internal_size(H64Renderer *r, u32 *w, u32 *h)
+{
+    Xenos *x = X(r);
+    *w = x->rtW;
+    *h = x->rtH;
 }
 
 void h64_xenos_set_debug(H64Renderer *r, int mode)

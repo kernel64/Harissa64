@@ -26,6 +26,9 @@ How much sound is kept ready in advance, from 50 to 500 ms. A bigger margin mean
 
 **Show FPS**
 Shows the speed in a corner of the screen. 60 means full speed (50 for European games).
+- *FPS*: the speed only.
+- *FPS, CPU, RAM*: also how busy the emulator is (CPU, in %) and how much of the console's memory is in use.
+- *FPS, CPU, RAM, resolution*: also the resolution the game is drawn at, and the N64's own picture size.
 
 **Graphics** and **Controls** open their own pages, described below.
 
@@ -121,6 +124,7 @@ This page shows which Xbox 360 button does what on the N64 controller, for each 
 - **Invert**: flips the stick left/right (X), up/down (Y), or both.
 - **Dead zone**: how far you need to push the stick before it reacts. Raise it if your character moves on their own.
 - **Sensitivity**: how far the N64 stick goes when you push yours all the way.
+- **Rumble Pak**: *On* (the default): in the games made for the N64's Rumble Pak, your controllers vibrate. *Off*: no vibration. In games that save on a Controller Pak, player 1 keeps the Controller Pak and the other players get the vibration.
 - **Reset to default**: back to the usual layout.
 
 The **BACK** button always stays reserved for the emulator's menu. Your layout is saved like the other settings, for all games or for one game.

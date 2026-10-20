@@ -34,7 +34,7 @@ The emulator remembers the last game you picked. In Aurora it shows up as "Haris
 | D-pad | D-pad |
 | START | START |
 
-You can change these in **Settings > Controls**: pick an N64 button, press A, then press the Xbox button or stick direction you want for it. Y adds a second button, X clears it. Each player (1 to 4) has their own controls, and you can save them for all games or for one game. BACK is kept for the emulator's menu.
+You can change these in **Settings > Controls**: pick an N64 button, press A, then press the Xbox button or stick direction you want for it. Y adds a second button, X clears it. Each player (1 to 4) has their own controls, and you can save them for all games or for one game. BACK is kept for the emulator's menu. Games made for the Rumble Pak make your controllers vibrate; you can turn it off on the same page.
 
 While playing:
 

@@ -154,6 +154,10 @@ static void unlink_block(H64Jit *j, H64JitBlock *b)
     }
 }
 
+static u32 s_invalLog;   // h64test --jit-inval N: the first N invalidating writes are logged
+
+void h64_jit_log_invalidations(u32 count) { s_invalLog = count; }
+
 void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
 {
     H64Jit *j = sys->jit;
@@ -183,6 +187,12 @@ void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
         }
         if (!hit) continue;
         j->stats.invalidations++;
+        if (s_invalLog)
+        {
+            s_invalLog--;
+            H64_INFO("[jit] write %06X+%u drops blocks of page %05X (cpu pc %08X, frame %u)", paddr, len, p << 12,
+                     (u32)sys->cpu.pc, sys->vi.frames);
+        }
         // Linked blocks run without the dispatcher updating curPage: any
         // invalidation stops the block being run.
         j->curInvalidated = 1;

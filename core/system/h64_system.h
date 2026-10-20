@@ -122,6 +122,8 @@ struct H64Options
     int gfxShortTask;       // graphics worker (game profile): a task keeps the RSP busy H64_HLE_GFX_CYCLES at most
     int gfxNoOldFrame;      // GPU renderer (game profile): never show a frame older than the one on screen
     int gfxSoft8bit;        // GPU renderer (game profile): drawing into 8-bit colour images done by the software RDP
+    int gfxSoftTiny;        // GPU renderer (game profile): drawing into colour images at most 16 pixels wide done by the
+                            // software RDP
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
     u32 idleYieldPc;        // recompiler (game profile): head of an idle thread's osYieldThread loop (0: none)
     u32 idleRunQueue;       // and the physical address of libultra's __osRunQueue (see h64_jit.cpp)
@@ -140,11 +142,21 @@ struct H64Options
                             // writes more of it; tasks run on the CPU thread (no graphics worker)
     int gfxCpuWritten;      // deferred rendering (game profile): loads from GPU images the CPU wrote over since
                             // read RDRAM (h64_gfx.cpp, CimgSig)
+    int gfxCpuSprites;      // GPU renderer (game profile): what the CPU draws into a frame after the RDP is shown
+                            // over the GPU's picture (H64System.cpuSprite)
     int gfxCostLog;     // h64test --gfx-cost-log: log each LLE graphics task's RSP time with its HLE counts
     int hleAudioCheck;  // 1: audio tasks run on the LLE RSP, and the HLE runs each one on a copy
                         //    of RDRAM; the results are compared when the LLE task ends (debug)
     u32 rdpLogFrame;    // h64test --rdp-log N: log the RDP's image, tile, load and rectangle commands during VI frame N (0: off)
 };
+
+// A frame's RDRAM when its graphics task was parsed (profile gfxCpuSprites).
+struct H64CpuSprite
+{
+    u32 addr, bytes;     // 0 bytes: unused
+    u8 *data;            // malloc'd, up to H64_CPU_SPRITE_MAX bytes
+};
+#define H64_CPU_SPRITE_MAX (640 * 480 * 2)
 
 struct H64System
 {
@@ -181,6 +193,9 @@ struct H64System
     int tvType;          // 0 PAL, 1 NTSC, 2 MPAL
     H64Pad pad[4];       // controller state, ports 1-4
     u32 padMask;         // bit n: a controller on port n + 1 (0 counts as 1: port 1 only)
+    u32 rumblePaks;      // bit n: a Rumble Pak in the controller of port n + 1 (set by the platform;
+                         // never port 1 when the game uses a Controller Pak there)
+    u8 rumbleMotor[4];   // the motor of each port's Rumble Pak: 1 on (the platform makes the pad vibrate)
     void (*padHook)(H64System *sys);   // optional: called just before the PIF reads the controllers
 
     // ISViewer debug output (cartridge 0x13FF0000).
@@ -217,6 +232,12 @@ struct H64System
     int stop;            // set to leave the run loop
     int exitRequested;   // the guest asked to end the run (EMUX XIOCTL exit)
     u32 miRaised[6];     // statistics: MI interrupts raised, per line (SP SI AI VI PI DP)
+    // Profile gfxCpuSprites: the RDRAM of the frames the last graphics tasks
+    // drew, as it was when they were parsed (h64_gfx.cpp). The renderer shows
+    // the pixels the CPU changed since over the GPU's picture (Dr. Mario
+    // draws its thrown capsules into the frame with the CPU).
+    H64CpuSprite cpuSprite[4];
+    u32 cpuSpriteNext;
     H64RspDecode rspDecode;
 };
 

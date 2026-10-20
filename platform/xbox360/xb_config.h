@@ -46,7 +46,7 @@ struct Config
     int zoom;           // zoom=N: picture size in percent (default 100)
     int offsetX, offsetY;   // posx=, posy=: picture position in output pixels (default 0)
     int stretch;        // stretch=0|1: the picture stretched to 16:9 (any resolution; HD then stretches instead of widening)
-    int showFps;        // showfps=1: frames shown per second in a corner
+    int showFps;        // showfps=1: frames shown per second in a corner; 2: also CPU and RAM; 3: and the resolution
     int logCpu;         // logcpu=N: hardware thread of the log writer (5)
     int gameFlags;      // gameflags=HEX: the game's profile flags instead of the table's (checks; -1: the table)
     int updateCheck;    // updatecheck=0: do not ask GitHub for a newer release (xb_update.cpp); 2: as if running 0.0.0 (testing)
@@ -81,6 +81,7 @@ struct Config
     char uiLang[8];     // uilang=CODE (harissa64v2.ini, checks): this language whatever settings.ini says, no language list
     int langPick;       // langpick=1: the language list at start even when a language is set (checks); 2..8: on LANG_* N-2
     int langAuto;       // langauto=MS: the language list confirms its selection by itself after MS ms (checks)
+    int rumble;         // rumble=0|1: a Rumble Pak in each controller of the games that support it (default 1)
     H64PadMap padMap[4];    // controls of N64 ports 1-4 (map_a=xa,... ; p2_map_a=... for port 2; core/pif/h64_padmap.h)
 };
 

@@ -37,6 +37,9 @@ CUSTOM = Custom
 DEFAULT = Default
 RECOMPILER = Recompiler
 INTERPRETER = Interpreter
+FPS_ONLY = FPS
+FPS_CPU = FPS, CPU, RAM
+FPS_ALL = FPS, CPU, RAM, resolution
 
 # ---- Settings, Graphics page ----
 PRESET = Preset
@@ -86,6 +89,7 @@ ANALOG_STICK = Analog stick
 INVERT = Invert
 DEAD_ZONE = Dead zone
 SENSITIVITY = Sensitivity
+RUMBLE = Rumble Pak
 RESET_DEFAULT = Reset to default
 STICK_LEFT = Left stick
 STICK_RIGHT = Right stick
