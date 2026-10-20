@@ -156,7 +156,8 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
 enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
-enum { G_PRESET = 0, G_RES, G_STRETCH, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR, G_SCREEN, G_BACK };
+enum { G_PRESET = 0, G_RES, G_STRETCH, G_ZOOM, G_POSX, G_POSY, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR,
+       G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
@@ -213,6 +214,9 @@ static void settings_values(UiMenu *m, const Config *c)
             sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
             sprintf(m->value[G_VSYNC], "< %s >", onoff(c->vsync));
             sprintf(m->value[G_DEFLICKER], "< %s >", onoff(c->deflicker));
+            sprintf(m->value[G_ZOOM], "< %d%% >", c->zoom);
+            sprintf(m->value[G_POSX], "< %+d >", c->offsetX);
+            sprintf(m->value[G_POSY], "< %+d >", c->offsetY);
         }
         return;
     }
@@ -256,6 +260,9 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuAdd(m, "Preset", "");
     UiMenuAdd(m, "Resolution", "");
     UiMenuAdd(m, "Stretch to 16:9", "");
+    UiMenuAdd(m, "Picture size", "");
+    UiMenuAdd(m, "Picture left/right", "");
+    UiMenuAdd(m, "Picture up/down", "");
     UiMenuAdd(m, "Brightness", "");
     UiMenuAdd(m, "V-Sync", "");
     UiMenuAdd(m, "Anti-flicker", "");
@@ -775,6 +782,9 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         case G_STRETCH: c->stretch = !c->stretch; break;
         case G_VSYNC: c->vsync = !c->vsync; break;
         case G_DEFLICKER: c->deflicker = !c->deflicker; break;
+        case G_ZOOM: c->zoom += dir * 2; if (c->zoom < 80) c->zoom = 80; if (c->zoom > 140) c->zoom = 140; break;
+        case G_POSX: c->offsetX += dir * 4; if (c->offsetX < -160) c->offsetX = -160; if (c->offsetX > 160) c->offsetX = 160; break;
+        case G_POSY: c->offsetY += dir * 4; if (c->offsetY < -120) c->offsetY = -120; if (c->offsetY > 120) c->offsetY = 120; break;
         }
         settings_values(m, c);
         return SET_CHANGED;
