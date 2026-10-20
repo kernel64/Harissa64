@@ -98,7 +98,7 @@ static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
                 if ((u64)(s64)(s32)a != a || ((u32)a >> 30) != 2) sys->jit->opHist[192]++;
                 else if (a & (size - 1)) sys->jit->opHist[193]++;
                 else if ((paddr0 = (u32)a & 0x1FFFFFFF) >= H64_RDRAM_SIZE) sys->jit->opHist[194]++;
-                else if (opc >= 0x28 && sys->jit->codeMap[paddr0 >> 6]) sys->jit->opHist[195]++;
+                else if (opc >= 0x28 && sys->jit->codeMap[paddr0 >> H64_JIT_CHUNK_SHIFT]) sys->jit->opHist[195]++;
                 else sys->jit->opHist[196]++;
             }
         }
@@ -792,7 +792,7 @@ static void emit_epilogue(Gen *g)
 //     returns r4 = the physical address and cr0.eq set when the access can
 //     take the fast path: a sign-extended 32-bit KSEG0/KSEG1 address inside
 //     the 8 MB of RDRAM ((addr & 0xDF800000) == 0x80000000), aligned, and for
-//     stores no block over the 64-byte chunk (codeMap) and no MI repeat mode.
+//     stores no block over the chunk (codeMap) and no MI repeat mode.
 //     TLB-mapped addresses take the fast path too when the page is in
 //     H64Cpu.dtlbR/dtlbW (filled by the interpreter's translations).
 //     Clobbers r0, r5, r6, cr0 and LR (r7 holds Status.FR for COP1 accesses).
@@ -857,7 +857,7 @@ void h64_jit_emit_runtime(H64System *sys)
             {
                 load_ptr(&g, 6, (s32)offsetof(H64System, jit), JR_SYS);
                 load_ptr(&g, 6, (s32)offsetof(H64Jit, codeMap), 6);
-                ppc_rlwinm(c, 5, 4, 32 - 5, 5, 30);   // (paddr >> 6) * 2
+                ppc_rlwinm(c, 5, 4, 32 - (H64_JIT_CHUNK_SHIFT - 1), H64_JIT_CHUNK_SHIFT - 1, 30);   // (paddr >> shift) * 2
                 ppc_lhzx(c, 5, 6, 5);
                 ppc_cmpwi(c, 0, 5, 0);
                 ppc_put(c, 0x4C820020u);          // bnelr: code in this chunk
@@ -2651,6 +2651,24 @@ static void classify_idle(H64JitBlock *b, const u32 *ops, u32 n)
             b->pollSize = size;
         }
     }
+    else if (n == 4 && ops[3] == 0 && (ops[0] >> 26) == 0x0F && plain_branch_to(ops[2], pc + 8, pc) &&
+             ((ops[2] >> 26) == 0x04 || (ops[2] >> 26) == 0x05))
+    {
+        // "lui base, hi; lw rX, lo(base); beq/bne rX, rY, self; nop": the poll
+        // address is a constant rebuilt each turn (base may be rX: Mario
+        // Tennis waits on a function pointer at 0x80061F6C, 2/3 of its CPU
+        // time in a match). The lui writes the same value every turn.
+        u32 lop = ops[1] >> 26, rX = (ops[1] >> 16) & 31, base = (ops[1] >> 21) & 31, lt = (ops[0] >> 16) & 31;
+        u32 bs = (ops[2] >> 21) & 31, bt = (ops[2] >> 16) & 31, other = bs == rX ? bt : bs;
+        u32 size = lop == 0x20 || lop == 0x24 ? 1 : lop == 0x21 || lop == 0x25 ? 2 : lop == 0x23 || lop == 0x27 ? 4 : 0;
+        if (size && rX != 0 && lt != 0 && base == lt && (bs == rX || bt == rX) && other != lt && (other != rX || bs == bt))
+        {
+            b->idle = 2;
+            b->pollBase = 0;   // r0: the address is pollOff alone
+            b->pollOff = (s32)((ops[0] & 0xFFFF) << 16) + (s32)(s16)(ops[1] & 0xFFFF);
+            b->pollSize = size;
+        }
+    }
 }
 
 // A branch the block may go on after (emit_side_branch): conditional,
@@ -2783,6 +2801,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
         ppc_addi(&g.c, 4, 4, 1);
         ppc_stw(&g.c, 4, 0, 3);
     }
+    int statusFast = 0;   // the block ends with a native MTC0 Status (it may link on)
     for (i = 0; i < n; i++)
     {
         u32 ipc = pc + i * 4, op = ops[i];
@@ -2812,6 +2831,51 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
             }
             break;   // a native branch's code leaves by its own exits
         }
+        if (g.native && i == n - 1 && (op >> 26) == 0x10 && ((op >> 21) & 31) == 4 && ((op >> 11) & 31) == CP0_STATUS &&
+            !j->noStatusFast)
+        {
+            // MTC0 Status that changes only IE (libultra's __osDisableInt and
+            // __osRestoreInt): written here and the block links on, unless it
+            // unmasks a pending interrupt. Anything else (mode, CU1, FR, BEV,
+            // IM...) runs in the interpreter and leaves as before. Cruis'n USA
+            // does ~16000 pairs a frame for its lists (32 ms of CPU a frame,
+            // each a trip through the dispatcher).
+            H64PpcCode *c = &g.c;
+            u32 rt = (op >> 16) & 31, fast, noInt[2], pend;
+            g.rmNearest = 0;
+            rc_flush(&g);   // both paths start from the same generator state
+            if (rt) ppc_ld(c, 3, OFF_GPR(rt), JR_CPU);
+            else ppc_li(c, 3, 0);
+            ppc_li32u(c, 6, 0xFF57FFFFu);
+            ppc_and(c, 5, 3, 6);                        // r5 = the value cop0_write stores
+            ppc_ld(c, 4, OFF_COP0(CP0_STATUS), JR_CPU);
+            ppc_xor(c, 6, 5, 4);
+            ppc_rlwinm(c, 6, 6, 0, 0, 30);              // the change, IE left out
+            ppc_cmpwi(c, 0, 6, 0);
+            fast = ppc_bc_fwd(c, 12, 0, PPC_EQ);       // only IE changes
+            pend = g.pending;
+            call_interp_nc(&g, ipc);
+            sync_to(&g, 0, ipc + 4);
+            exit_block(&g);
+            g.pending = pend;
+            ppc_patch_here(c, fast);
+            ppc_std(c, 5, OFF_COP0(CP0_STATUS), JR_CPU);
+            g.pending++;
+            ppc_andi_(c, 6, 5, 7);
+            ppc_cmpwi(c, 0, 6, 1);                      // IE on, EXL and ERL off
+            noInt[0] = ppc_bc_fwd(c, 4, 0, PPC_EQ);    // bne: no interrupt can be taken
+            ppc_ld(c, 7, OFF_COP0(CP0_CAUSE), JR_CPU);
+            ppc_and(c, 7, 7, 5);
+            ppc_andi_(c, 7, 7, 0xFF00);
+            noInt[1] = ppc_bc_fwd(c, 12, 0, PPC_EQ);   // none pending
+            sync_to(&g, g.pending, ipc + 4);
+            exit_block(&g);                             // the dispatcher takes it
+            ppc_patch_here(c, noInt[0]);
+            ppc_patch_here(c, noInt[1]);
+            statusFast = 1;
+            j->stats.nativeInsns++;
+            continue;
+        }
         if (g.native && !ends_block(op) && emit_native(&g, op, ipc))
         {
             j->stats.nativeInsns++;
@@ -2822,7 +2886,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     }
     if (!endsWithBranch)
     {
-        if (ends_block(ops[n - 1]))
+        if (ends_block(ops[n - 1]) && !statusFast)
         {
             sync_to(&g, g.pending, pc + n * 4);
             exit_block(&g);   // COP0: the mode may have changed
@@ -2870,6 +2934,7 @@ H64JitBlock *h64_jit_compile(H64System *sys, u32 pc, u32 paddr)
     b->hotWords = g.c.pos;
     if (g.native) classify_idle(b, ops, n);
     if (g.native && sys->options.idleYieldPc && pc == sys->options.idleYieldPc) b->idle = 3;
+    if (g.native && sys->options.countWaitPc && pc == sys->options.countWaitPc) b->idle = 4;
     b->fn = 0;
     if (j->dumpFile)
     {

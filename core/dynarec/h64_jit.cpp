@@ -25,7 +25,7 @@ void h64_jit_reset(H64System *sys)
     memset(j->indPc, 0, 1024 * sizeof(u32));
     memset(j->indBody, 0, 1024 * sizeof(u32 *));
     memset(j->indEnt, 0xFF, 1024);
-    memset(j->codeMap, 0, (H64_RDRAM_SIZE >> 6) * sizeof(u16));
+    memset(j->codeMap, 0, (H64_RDRAM_SIZE >> H64_JIT_CHUNK_SHIFT) * sizeof(u16));
     j->blockCount = 0;
     j->linkCount = 0;
     j->freeLink = -1;
@@ -57,7 +57,7 @@ int h64_jit_init(H64System *sys, void *execMem, u32 size, void (*flushIcache)(vo
     j->blocks = (H64JitBlock *)calloc(j->blockCap, sizeof(H64JitBlock));
     j->linkCap = 65536;
     j->links = (H64JitLink *)calloc(j->linkCap, sizeof(H64JitLink));
-    j->codeMap = (u16 *)calloc(H64_RDRAM_SIZE >> 6, sizeof(u16));
+    j->codeMap = (u16 *)calloc(H64_RDRAM_SIZE >> H64_JIT_CHUNK_SHIFT, sizeof(u16));
     j->indPc = (u32 *)calloc(1024, sizeof(u32));
     j->indBody = (u32 **)calloc(1024, sizeof(u32 *));
     j->indEnt = (s8 *)malloc(1024);
@@ -93,11 +93,11 @@ void h64_jit_free(H64System *sys)
     sys->jit = 0;
 }
 
-// Counts b in (+1) or out (-1) of the 64-byte chunks it covers.
+// Counts b in (+1) or out (-1) of the chunks it covers.
 void h64_jit_code_map(H64Jit *j, const H64JitBlock *b, int delta)
 {
-    u32 a = b->paddr >> 6, e = (b->paddr + b->insns * 4 - 1) >> 6;
-    for (; a <= e && a < (H64_RDRAM_SIZE >> 6); a++) j->codeMap[a] = (u16)(j->codeMap[a] + delta);
+    u32 a = b->paddr >> H64_JIT_CHUNK_SHIFT, e = (b->paddr + b->insns * 4 - 1) >> H64_JIT_CHUNK_SHIFT;
+    for (; a <= e && a < (H64_RDRAM_SIZE >> H64_JIT_CHUNK_SHIFT); a++) j->codeMap[a] = (u16)(j->codeMap[a] + delta);
 }
 
 // Link records are reused: Conker relinks tens of thousands of exits a frame
@@ -286,6 +286,15 @@ static int run_queue_empty(H64System *sys)
     return prio == 0xFFFFFFFFu;
 }
 
+// The message queue a wait loop polls (options.countWaitQueue) holds no
+// message (OSMesgQueue.validCount, at +8, is 0); true without a queue.
+static int mesg_queue_empty(H64System *sys)
+{
+    u32 q = sys->options.countWaitQueue;
+    if (!q) return 1;
+    return q + 12 <= H64_RDRAM_SIZE && h64_load_be32(sys->rdram + q + 8) == 0;
+}
+
 void h64_jit_run_one(H64System *sys)
 {
     H64Jit *j = sys->jit;
@@ -390,6 +399,21 @@ void h64_jit_run_one(H64System *sys)
     {
         u64 k = (sys->sched.next - cpu->cycles) / cpu->cpi - 1;
         if (k > (1u << 24)) k = 1u << 24;
+        cpu->cycles += k * cpu->cpi;
+        cpu->instructions += k;
+        j->stats.idleSkipped += k;
+    }
+    // A loop that only reads Count until enough time has passed (a frame
+    // limiter) or polls an empty message queue (game profile): time moves
+    // on to the next event, at most countWaitStep cycles at a time, so a
+    // Count loop leaves at most that late (Fighting Force: half of the CPU
+    // time went round it, 42 VI/s); a queue only fills from an interrupt.
+    if (b->idle == 4 && b->valid && !interrupt_pending(cpu) && sys->sched.next != H64_NEVER &&
+        sys->sched.next > cpu->cycles + cpu->cpi && mesg_queue_empty(sys))
+    {
+        u64 k = (sys->sched.next - cpu->cycles) / cpu->cpi - 1;
+        u32 step = sys->options.countWaitStep;
+        if (step && k > step / cpu->cpi) k = step / cpu->cpi;
         cpu->cycles += k * cpu->cpi;
         cpu->instructions += k;
         j->stats.idleSkipped += k;

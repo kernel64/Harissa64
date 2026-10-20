@@ -29,6 +29,8 @@ struct Config
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
     int regCache;       // regcache=0: no MIPS registers kept in host registers (diagnosis)
     int fpCache;        // fpcache=0: no COP1 registers kept in host FPRs (diagnosis)
+    int strict;         // strict=1: no ROM hack tolerance (the console's exact CPU and PI behaviour)
+    int statusFast;     // statusfast=0: MTC0 Status always in the interpreter (A/B check)
     int fullExits;      // fullexits=1: the dynarec's older inline linked exits (A/B check)
     int superblocks;    // superblocks=0: blocks end at every branch (A/B check)
     int fastFpu;        // fastfpu=0: exact COP1 (FCR31 cause/flag bits kept); 1 by default
@@ -41,6 +43,8 @@ struct Config
     int brightness;     // brightness=0|1|2: as the console, lighter, much lighter
     int vsync;          // vsync=1|0: frames wait for the TV's refresh (default 1)
     int deflicker;      // deflicker=0|1: each picture shown mixed with the previous one (default 0)
+    int zoom;           // zoom=N: picture size in percent (default 100)
+    int offsetX, offsetY;   // posx=, posy=: picture position in output pixels (default 0)
     int stretch;        // stretch=0|1: the picture stretched to 16:9 (any resolution; HD then stretches instead of widening)
     int showFps;        // showfps=1: frames shown per second in a corner
     int logCpu;         // logcpu=N: hardware thread of the log writer (5)
