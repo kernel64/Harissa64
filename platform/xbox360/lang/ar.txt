@@ -28,6 +28,9 @@ CUSTOM = مخصص
 DEFAULT = افتراضي
 RECOMPILER = المترجم الديناميكي
 INTERPRETER = المفسر
+FPS_ONLY = FPS
+FPS_CPU = FPS، CPU، RAM
+FPS_ALL = FPS، CPU، RAM، الدقة
 
 # ---- الإعدادات، صفحة الرسوميات ----
 PRESET = إعداد جاهز
@@ -77,6 +80,7 @@ ANALOG_STICK = العصا التناظرية
 INVERT = عكس
 DEAD_ZONE = المنطقة الميتة
 SENSITIVITY = الحساسية
+RUMBLE = الاهتزاز
 RESET_DEFAULT = استعادة الافتراضي
 STICK_LEFT = العصا اليسرى
 STICK_RIGHT = العصا اليمنى

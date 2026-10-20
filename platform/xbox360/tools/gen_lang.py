@@ -235,7 +235,7 @@ def main():
         onoff = [t["ON"], t["OFF"]]
         menus = {
             "settings": [("CPU_NEXT", [t["RECOMPILER"], t["INTERPRETER"]], 1), ("RSP_NEXT", ["HLE"], 1), ("AUDIO_MARGIN", ["500 ms"], 1),
-                         ("SHOW_FPS", onoff, 1), ("GRAPHICS", [], 1), ("CONTROLS", [t["CUSTOM"], t["DEFAULT"]], 0),
+                         ("SHOW_FPS", [t["OFF"], t["FPS_ONLY"], t["FPS_CPU"], t["FPS_ALL"]], 1), ("GRAPHICS", [], 1), ("CONTROLS", [t["CUSTOM"], t["DEFAULT"]], 0),
                          ("LANGUAGE", names, 1), ("ART_DOWNLOADS", onoff, 1), ("ART_ALL", [], 1), ("SAVE_ALL", [], 1),
                          ("SAVE_GAME", [], 1), ("BACK", [], 1)],
             "graphics": [("PRESET", [t["PRESET_ORIGINAL"], t["PRESET_ENHANCED"], t["PRESET_SMOOTH"], t["PRESET_CRT"], t["CUSTOM"]], 1),
@@ -268,7 +268,7 @@ def main():
             check(code, "controls row %s with its default input" % key, width(t[key], 20, True) + footer_width(pad), col)
             check(code, "controls row %s while waiting" % key, width(t[key], 20, True) + width(t["PRESS_INPUT"], 18, True), col)
         for key, values in (("ANALOG_STICK", [t["STICK_LEFT"], t["STICK_RIGHT"], t["STICK_DPAD"], t["OFF"]]),
-                            ("INVERT", [t["OFF"], "X", "Y", t["X_AND_Y"]]), ("DEAD_ZONE", ["25%"]), ("SENSITIVITY", ["100%"]),
+                            ("INVERT", [t["OFF"], "X", "Y", t["X_AND_Y"]]), ("DEAD_ZONE", ["25%"]), ("SENSITIVITY", ["100%"]), ("RUMBLE", [t["ON"], t["OFF"]]),
                             ("RESET_DEFAULT", []), ("BACK", [])):
             check(code, "controls row %s with its widest value" % key,
                   width(t[key], 20, True) + max([value_width(v) for v in values] + [0]), col)

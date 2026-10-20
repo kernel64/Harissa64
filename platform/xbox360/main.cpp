@@ -775,6 +775,30 @@ static void PadFromXInput(const XINPUT_GAMEPAD *g, int port, H64Pad *pad)
     h64_padmap_apply(m, &in, pad);
 }
 
+// Rumble Pak motors (core: sys->rumbleMotor) on the controllers: what each
+// one was last told, so XInputSetState runs only on a change. `stop` (menu,
+// end of the game) or the setting off: every motor stops.
+static u8 s_rumbleOut[4];
+static int s_rumbleOn = 1;   // Settings > Controls > Rumble Pak
+
+static void RumbleUpdate(H64System *sys, int stop)
+{
+    int i;
+    for (i = 0; i < 4; i++)
+    {
+        int connected = i == 0 ? s_padValid : s_padsMoreValid[i - 1];
+        u8 want = (u8)(!stop && s_rumbleOn && connected && sys && sys->rumbleMotor[i]);
+        if (want != s_rumbleOut[i])
+        {
+            XINPUT_VIBRATION v;
+            v.wLeftMotorSpeed = want ? 0xC000 : 0;   // the N64 pad's one motor: mostly the heavy one
+            v.wRightMotorSpeed = want ? 0x6000 : 0;
+            XInputSetState((DWORD)i, &v);
+            s_rumbleOut[i] = want;
+        }
+    }
+}
+
 // Called by the PIF just before the game reads the controllers. Controller n
 // (XInput user n) is N64 port n + 1; port 1 is always plugged in, ports 2-4
 // while their controller is connected.
@@ -888,7 +912,7 @@ static void OsdT(int id, int num)
 }
 
 static int s_showFps;               // showfps=1: frames shown per second in the top-right corner
-static char s_fpsText[16];
+static char s_fpsText[160];          // "60.0 FPS"; showfps=2: also CPU and RAM; 3: and the resolution
 static UiMenu s_menu;
 static int s_menuOpen;              // the in-game menu is drawn over the frozen frame
 static int s_aboutOpen;             // ... showing the About panel
@@ -901,7 +925,8 @@ static void OverlayHook(void *, IDirect3DDevice9 *dev)
     int fps = s_showFps && s_fpsText[0], osd = s_osd[0] && left >= 0;
     if (!fps && !osd && !s_menuOpen) return;
     UiBegin(dev);
-    if (fps) UiFpsBadge(s_fpsText);
+    if (fps && s_showFps >= 2) UiPerfPanel(s_fpsText);
+    else if (fps) UiFpsBadge(s_fpsText);
     if (s_menuOpen && s_aboutOpen) AboutDraw();
     else if (s_menuOpen) UiMenuDraw(&s_menu);
     if (osd) UiToast(s_osd, (float)(OSD_MS - left), (float)OSD_MS);
@@ -1002,6 +1027,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
                 xb_audio_set_target_ms(c->audioMs);
                 ApplyGraphics(sys, renderer, c);
                 s_showFps = c->showFps;
+                s_rumbleOn = c->rumble;
             }
             else if (r == SET_SAVE_ALL || r == SET_SAVE_GAME)
             {
@@ -1074,6 +1100,7 @@ static int GameMenuSafe(H64System *sys, H64Renderer *renderer, Config *c)
     LogFlush();
     __try
     {
+        RumbleUpdate(sys, 1);   // no vibration over the menu
         r = GameMenu(sys, renderer, c);
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -1092,6 +1119,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     int result = RG_DASHBOARD, menuRequest = 0;
     u32 fpsFrames = 0;
     double fpsStart = QpcMs();
+    LONGLONG busyTicks = 0;   // time running and presenting since fpsStart (the details' CPU load)
     char rom[256];
     u8 *data;
     u32 size = 0;
@@ -1139,6 +1167,13 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
     s_padMaps = c->padMap;
+    // Rumble Paks in the controllers of the games that support one (port 1
+    // keeps its Controller Pak when the game uses that; the setting only
+    // mutes the motors, so it can change during the game).
+    s_rumbleOn = c->rumble;
+    sys->rumblePaks = h64_rom_rumble(&sys->rom) ? (sys->save->pak ? 0xEu : 0xFu) : 0;
+    H64_INFO("[main] rumble pak: %s%s", sys->rumblePaks ? (sys->save->pak ? "ports 2-4 (Controller Pak on port 1)" : "every port") : "not supported by the game",
+             sys->rumblePaks && !c->rumble ? ", motors off (setting)" : "");
     sys->profClock = ProfClock;
     s_script = c->input.count ? &c->input : NULL;
     xb_audio_set_target_ms(c->audioMs);
@@ -1232,6 +1267,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             if (!s_script)
                 for (k = 0; k < 3; k++) if (s_padsMoreValid[k]) sys->padMask |= 2u << k;
         }
+        RumbleUpdate(sys, 0);
         // BACK held for 3 s goes back to the ROM list (the dashboard is left
         // only from the in-game menu or the ROM list); with BACK held, RB/LB
         // save/load a state and the D-pad changes the slot. The hold time adds
@@ -1334,6 +1370,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         QueryPerformanceCounter(&t2);
         profRun += t1.QuadPart - t0.QuadPart;
         profPresent += t2.QuadPart - t1.QuadPart;
+        busyTicks += t2.QuadPart - t0.QuadPart;
         {
             double r = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart, pr = (double)(t2.QuadPart - t1.QuadPart) * 1000.0 / freq.QuadPart;
             if (r > s_maxRun) s_maxRun = r;
@@ -1345,7 +1382,29 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         if (QpcMs() - fpsStart >= 1000.0)
         {
             double nowMs = QpcMs();
-            sprintf(s_fpsText, "%.1f FPS", fpsFrames * 1000.0 / (nowMs - fpsStart));
+            if (s_showFps >= 2)
+            {
+                // Details (Settings > Show FPS): the emulation thread's load
+                // (time spent running the N64 and presenting, not waiting for
+                // the next frame), memory in use, the internal resolution and
+                // the N64's picture.
+                MEMORYSTATUS ms;
+                u32 rw = 0, rh = 0, vw = sys->vi.regs[2] & 0xFFF, vs = sys->vi.regs[10], ys = sys->vi.regs[13] & 0xFFF;   // width, V_START, Y_SCALE
+                u32 vh = (((vs & 0x3FF) - ((vs >> 16) & 0x3FF)) / 2) * ys / 1024;
+                double load = busyTicks * 100000.0 / (double)freq.QuadPart / (nowMs - fpsStart);
+                GlobalMemoryStatus(&ms);
+                h64_xenos_internal_size(renderer, &rw, &rh);
+                _snprintf(s_fpsText, sizeof(s_fpsText) - 1, "%.1f FPS\nCPU %d%%\nRAM %u / %u MB",
+                          fpsFrames * 1000.0 / (nowMs - fpsStart), (int)(load > 100.0 ? 100.0 : load),
+                          (u32)((ms.dwTotalPhys - ms.dwAvailPhys) >> 20), (u32)(ms.dwTotalPhys >> 20));
+                s_fpsText[sizeof(s_fpsText) - 1] = 0;
+                if (s_showFps >= 3)   // and the resolution
+                    _snprintf(s_fpsText + strlen(s_fpsText), sizeof(s_fpsText) - 1 - strlen(s_fpsText), "\n%ux%u (N64 %ux%u)", rw, rh, vw, vh);
+                s_fpsText[sizeof(s_fpsText) - 1] = 0;
+            }
+            else
+                sprintf(s_fpsText, "%.1f FPS", fpsFrames * 1000.0 / (nowMs - fpsStart));
+            busyTicks = 0;
             fpsFrames = 0;
             fpsStart = nowMs;
         }
@@ -1517,9 +1576,9 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                          pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_TLB] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          pr[H64_PROF_WAIT_TASK] * k, pr[H64_PROF_WAIT_DPC] * k, pr[H64_PROF_WAIT_START] * k,
                          s_gfxQ.thread ? " (graphics and audio HLE run on workers, beside cpu)" : "");
-                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses, %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes",
+                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses, %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes, %u CPU sprite presents",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
-                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads);
+                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads, xs.cpuSprites);
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;
@@ -1529,6 +1588,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             instrAtPerf = sys->cpu.instructions;
         }
     }
+    RumbleUpdate(sys, 1);
     WorkersStop(sys);
     SavesTick(sys, presented, 1);
     LogFlush();

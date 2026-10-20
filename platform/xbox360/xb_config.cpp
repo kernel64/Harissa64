@@ -44,6 +44,7 @@ void ConfigDefaults(Config *c)
     c->lang[0] = 0;
     c->uiLang[0] = 0;
     c->langPick = 0;
+    c->rumble = 1;
     c->langAuto = 0;
     c->fpuFlags = 1;
     c->jitFpu = 1;
@@ -111,7 +112,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);
         else if (!strcmp(line, "browsersel")) { strncpy(c->browserSel, eq + 1, sizeof(c->browserSel) - 1); c->browserSel[sizeof(c->browserSel) - 1] = 0; }
         else if (!strcmp(line, "artall")) c->artAll = atoi(eq + 1);
-        else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtol(eq + 1, NULL, 16);
+        else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtoul(eq + 1, NULL, 16);   // strtoul: bit 31 is a flag
         else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "aboutat")) c->aboutAt = (u32)atoi(eq + 1);
@@ -130,6 +131,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "lang")) { strncpy(c->lang, eq + 1, sizeof(c->lang) - 1); c->lang[sizeof(c->lang) - 1] = 0; }
         else if (!strcmp(line, "uilang")) { strncpy(c->uiLang, eq + 1, sizeof(c->uiLang) - 1); c->uiLang[sizeof(c->uiLang) - 1] = 0; }
         else if (!strcmp(line, "langpick")) c->langPick = atoi(eq + 1);
+        else if (!strcmp(line, "rumble")) c->rumble = atoi(eq + 1);
         else if (!strcmp(line, "langauto")) c->langAuto = atoi(eq + 1);
         else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
         else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
@@ -194,7 +196,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
-    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\n", c->zoom, c->offsetX, c->offsetY);
+    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\nrumble=%d\n", c->zoom, c->offsetX, c->offsetY, c->rumble);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.

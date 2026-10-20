@@ -3844,6 +3844,7 @@ int h64_gfx_task_known(H64System *sys, H64Gfx *g)
 }
 
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync);
+static int parse_task_lists(H64System *sys, H64Gfx *g, int *fullSync);
 static int gfx_loop(H64System *sys, H64Gfx *g, int *fullSync);
 
 // How long the real microcode would keep the RSP busy, in CPU cycles: 130 RCP
@@ -3977,7 +3978,38 @@ void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
 #include "h64_gfx_f5.inc"
 #include "h64_gfx_turbo3d.inc"
 
+// Profile gfxCpuSprites: the RDRAM of the 16-bit frames (at least 256 pixels
+// wide) this task drew, as it is now. The CPU draws its sprites there once the
+// task is done; the renderer shows the pixels that changed since.
+static void cpu_sprite_base(H64System *sys, H64Gfx *g, u32 cimgFirst)
+{
+    u32 n, k;
+    for (n = cimgFirst; n != g->cimgNext && n - cimgFirst < 8; n++)
+    {
+        u32 start = g->cimg[n & 7][0], bytes = g->cimg[n & 7][1] - start;
+        H64CpuSprite *c = 0;
+        if (bytes < 256 * 240 * 2 || bytes > H64_CPU_SPRITE_MAX || start + bytes > H64_RDRAM_SIZE) continue;
+        for (k = 0; k < 4 && !c; k++)
+            if (sys->cpuSprite[k].bytes && sys->cpuSprite[k].addr == start) c = &sys->cpuSprite[k];
+        if (!c) c = &sys->cpuSprite[sys->cpuSpriteNext++ & 3];
+        if (!c->data) c->data = (u8 *)malloc(H64_CPU_SPRITE_MAX);
+        if (!c->data) { c->bytes = 0; continue; }
+        c->bytes = 0;   // not valid while it is copied
+        memcpy(c->data, sys->rdram + start, bytes);
+        c->addr = start;
+        c->bytes = bytes;
+    }
+}
+
 static int parse_task(H64System *sys, H64Gfx *g, int *fullSync)
+{
+    u32 cimgFirst = g->cimgNext;
+    int r = parse_task_lists(sys, g, fullSync);
+    if (r && sys->options.gfxCpuSprites) cpu_sprite_base(sys, g, cimgFirst);
+    return r;
+}
+
+static int parse_task_lists(H64System *sys, H64Gfx *g, int *fullSync)
 {
     const u8 *dmem = sys->spMem;
     u32 ucStart = h64_load_be32(dmem + 0xFD0), ucData = h64_load_be32(dmem + 0xFD8);

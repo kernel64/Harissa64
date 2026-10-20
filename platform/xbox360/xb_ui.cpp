@@ -808,6 +808,21 @@ void UiFpsBadge(const char *text)
     UiText(UI_BOLD, 17, x + w * 0.5f, y + h * 0.5f, UI_COL_TEXT, text, UI_CENTER);
 }
 
+void UiPerfPanel(const char *text)
+{
+    int lines = 1;
+    const char *p;
+    float w, h, x, y;
+    for (p = text; *p; p++) lines += *p == '\n';
+    w = UiTextWidth(UI_BOLD, 17, text) + 30;
+    h = 14 + lines * 17 * 1.35f;
+    x = UI_WIDTH - UI_SAFE_X - w;
+    y = UI_SAFE_Y;
+    UiRoundRect(x, y, w, h, 14, D3DCOLOR_ARGB(190, 24, 26, 34), D3DCOLOR_ARGB(190, 16, 17, 23));
+    UiRoundRing(x, y, w, h, 14, 1.0f, UI_COL_LINE);
+    UiText(UI_BOLD, 17, x + 15, y + 7 + 17 * 1.35f * 0.5f, UI_COL_TEXT, text, UI_LEFT);
+}
+
 // ---- Menu input ----
 // A held direction or shoulder button repeats (LB/RB page through the ROM
 // list as if pressed again and again), faster after REPEAT_FAST_AFTER_MS.

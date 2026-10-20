@@ -39,7 +39,7 @@ def main():
     game, work = os.path.join(a.dir, 'game'), os.path.join(a.dir, 'work')
     cache = os.path.join(work, 'cache')
     os.makedirs(OUT, exist_ok=True)
-    shutil.copyfile(os.path.join(ROOT, 'platform', 'xbox360', 'Release', 'harissa64v2.xex'), os.path.join(game, 'harissa64v2.xex'))
+    shutil.copyfile(os.environ.get('H64_XEX') or os.path.join(ROOT, 'platform', 'xbox360', 'Release', 'harissa64v2.xex'), os.path.join(game, 'harissa64v2.xex'))
     ext = os.path.splitext(a.rom)[1].lower()
     romname = 'rom' + ext
     shutil.copyfile(os.path.join(ROOT, 'xbox64', 'Release', 'roms', a.rom), os.path.join(game, romname))

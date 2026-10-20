@@ -478,6 +478,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--strict")) strictCpu = 1;
         else if (!strcmp(argv[i], "--gameflags") && i + 1 < argc) { gameFlags = (u32)strtoul(argv[++i], 0, 16); noProfile = 2; }
         else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--jit-inval") && i + 1 < argc) h64_jit_log_invalidations((u32)atoi(argv[++i]));   // log writes that drop blocks
         else if (!strcmp(argv[i], "--peek") && i + 1 < argc) peekVa = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
@@ -606,6 +607,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         char folder[64];
         h64_save_folder_name(&sys->rom, folder, sizeof(folder));
         printf("[info] save folder name: %s\n", folder);
+        printf("[info] rumble pak: %s\n", h64_rom_rumble(&sys->rom) ? "yes" : "no");
+        printf("[info] header CRCs: %08X %08X\n", sys->rom.crc1, sys->rom.crc2);
         if (gameDb) print_game_info(gameDb, &sys->rom, path);
         h64_system_free(sys);
         free(sys);
