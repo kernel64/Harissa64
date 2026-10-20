@@ -19,7 +19,10 @@ static const GameProfile s_profiles[] = {
     { "NFU", "Conker's Bad Fur Day", H64_GP_LATE_PARSE },
     // Each player's view is drawn with a scissor wider than the view: the
     // microcode's viewport rejection and guard band clipping keep them apart.
-    { "NKT", "Mario Kart 64", H64_GP_VIEWPORT_CLIP },
+    // Its trackside screens (Luigi Raceway, Wario Stadium...) show the race:
+    // the CPU copies part of the frame on screen into their texture, a frame
+    // only the GPU held (a black rectangle). The shown frame goes back to RDRAM.
+    { "NKT", "Mario Kart 64", H64_GP_VIEWPORT_CLIP | H64_GP_FRAME_TO_RDRAM },
     // Textures and palettes kept where small images were drawn earlier.
     { "NMQ", "Paper Mario", H64_GP_CPU_WRITTEN },
     // A null pointer read at boot with the HLE boot: the game stopped. Its
@@ -180,6 +183,9 @@ static const GameProfile s_profiles[] = {
     // Its animated 24x24 32-bit textures are declared with 256x256 masks: each
     // was decoded as 65536 texels and again every frame (30-35 VI/s in races).
     { "NML", "Mickey's Speedway USA", H64_GP_MASK_TO_TILE },
+    // Its intro video is a 320 x 480 interlaced frame (the VI line steps two
+    // image lines): its top half was shown stretched over the screen.
+    { "NEP", "Star Wars Episode I: Racer", H64_GP_TALL_FRAME },
     // Its backgrounds and sprites are filtered rectangles drawn 1:1 with an
     // alpha test, over magenta transparent texels: the N64 samples whole
     // texels there, a higher resolution filtered magenta into their edges.
