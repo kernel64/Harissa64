@@ -63,6 +63,9 @@ With the 4:3 resolutions you get the original shape, with black bars on the side
 **Stretch to 16:9**
 Pulls the 4:3 picture wider to fill a wide TV, at any resolution. Everything looks a bit wider, but nothing is missing. With HD 1280x720 it replaces the widescreen view, which helps games that look wrong in widescreen.
 
+**Picture size, Picture left/right, Picture up/down**
+Fit the picture to your TV. *Picture size* makes it bigger or smaller (100% is the normal size): go a little above 100% if your TV shows black borders around the picture, or below if it cuts the edges. The two others move the picture, if it is not centred on your screen.
+
 **V-Sync**
 Off by default. When on, each picture waits for the TV to be ready, so the image doesn't tear (a line cutting through the picture when the camera moves). When a game is late on a picture, that picture is shown at once instead of waiting; you may see a tear on that picture only. Some busy games run slower with it on, so turn it on per game where tearing bothers you. If you never want a tear, even when a game slows down, put `vsync=2` in harissa64v2.ini.
 

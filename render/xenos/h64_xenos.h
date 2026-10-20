@@ -89,6 +89,8 @@ struct H64XenosOptions
     int brightness;  // 0 as the console, 1 lighter, 2 much lighter (dark tones lifted, white kept)
     int vsync;       // 1: frames on time wait for the TV's refresh, a late one goes at once; 2: late ones wait too (but near the top)
     int deflicker;   // 1: each picture shown is mixed half and half with the previous one
+    int zoom;        // picture size in percent (100: as the aspect gives; more crops the border)
+    int offsetX, offsetY;   // picture position on the 1280x720 output, in pixels
 };
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);

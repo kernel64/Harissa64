@@ -47,6 +47,7 @@ void ConfigDefaults(Config *c)
     c->fpCache = 1;
     c->fastFpu = 1;  // host FPU without FCR31 cause/flag tracking, as mupen64plus
     c->fullExits = 0;
+    c->statusFast = 1;
     c->strict = 0;
     c->superblocks = 1;
     c->smooth = 1;
@@ -58,6 +59,8 @@ void ConfigDefaults(Config *c)
     c->brightness = 0;
     c->vsync = 0;   // off by default (as 2.0.1): with it, waits on the GPU also wait for the TV
     c->deflicker = 0;
+    c->zoom = 100;
+    c->offsetX = c->offsetY = 0;
     c->stretch = 0;
     c->asyncGfx = 1;
     c->parseWorker = 1;
@@ -126,6 +129,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "fpcache")) c->fpCache = atoi(eq + 1);
         else if (!strcmp(line, "fastfpu")) c->fastFpu = atoi(eq + 1);
         else if (!strcmp(line, "fullexits")) c->fullExits = atoi(eq + 1);
+        else if (!strcmp(line, "statusfast")) c->statusFast = atoi(eq + 1);
         else if (!strcmp(line, "strict")) c->strict = atoi(eq + 1);
         else if (!strcmp(line, "superblocks")) c->superblocks = atoi(eq + 1);
         else if (!strcmp(line, "smooth")) c->smooth = atoi(eq + 1);
@@ -138,6 +142,9 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "vsync")) vsync = atoi(eq + 1);
         else if (!strcmp(line, "settingsver")) settingsVer = atoi(eq + 1);
         else if (!strcmp(line, "deflicker")) c->deflicker = atoi(eq + 1);
+        else if (!strcmp(line, "zoom")) c->zoom = atoi(eq + 1);
+        else if (!strcmp(line, "posx")) c->offsetX = atoi(eq + 1);
+        else if (!strcmp(line, "posy")) c->offsetY = atoi(eq + 1);
         else if (!strcmp(line, "stretch")) c->stretch = atoi(eq + 1);
         else if (!strcmp(line, "blur")) c->blur = atoi(eq + 1);
         else if (!strcmp(line, "asyncgfx")) c->asyncGfx = atoi(eq + 1);
@@ -179,6 +186,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
+    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\n", c->zoom, c->offsetX, c->offsetY);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.

@@ -214,6 +214,7 @@ struct Xenos
     IDirect3DTexture9 *rbTex;      // its resolve, in CPU-cached memory (D3DUSAGE_CPU_CACHED_MEMORY)
     IDirect3DTexture9 *shotTex;    // screenshots: the shown frame resolved into CPU-cached memory (made on first use)
     int deflicker;                 // option: pictures mixed with the previous one (deflicker_pass)
+    int zoom, offsetX, offsetY;    // option: picture size (percent) and position (output pixels)
     IDirect3DTexture9 *dfTex[2];   // the last two pictures shown, before the mix (made on first use)
     int dfCur, dfValid;
     IDirect3DPixelShader9 *psMix;
@@ -1371,22 +1372,25 @@ static void draw_display(Xenos *x, IDirect3DTexture9 *tex, const ViGeom *g, floa
     h = bh;
     w = x->aspect ? bw : bh * 4.0f / 3.0f;
     if (w > bw) { w = bw; h = bw * 3.0f / 4.0f; }
+    // The player's calibration (GitHub issue #11): size and position.
+    w *= x->zoom / 100.0f;
+    h *= x->zoom / 100.0f;
     if (!lines) lines = 240;
     if (!width) width = 320;
     if (g)
     {
         u0 = (g->sx0 + ox) * uPer; u1 = (g->sx1 + ox) * uPer;
         v0 = (g->sy0 + oy) * vPer; v1 = (g->sy1 + oy) * vPer;
-        px0 = (bw - w) / 2 + g->dx0 * w; pw = (g->dx1 - g->dx0) * w;
-        py0 = (bh - h) / 2 + g->dy0 * h; ph = (g->dy1 - g->dy0) * h;
+        px0 = (bw - w) / 2 + x->offsetX + g->dx0 * w; pw = (g->dx1 - g->dx0) * w;
+        py0 = (bh - h) / 2 + x->offsetY + g->dy0 * h; ph = (g->dy1 - g->dy0) * h;
         lines = (u32)g->lines;
     }
     else
     {
         u0 = v0 = 0.0f;
         u1 = width * uPer; v1 = lines * vPer;
-        px0 = (bw - w) / 2; pw = w;
-        py0 = (bh - h) / 2; ph = h;
+        px0 = (bw - w) / 2 + x->offsetX; pw = w;
+        py0 = (bh - h) / 2 + x->offsetY; ph = h;
     }
     ps = display_shader(x);
     if (!ps) ps = x->smooth && x->psSmooth ? x->psSmooth : x->psCopy;
@@ -3459,6 +3463,9 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     x->vsync = o->vsync;
     if (!o->deflicker) x->dfValid = 0;
     x->deflicker = o->deflicker != 0;
+    x->zoom = o->zoom < 50 || o->zoom > 200 ? 100 : o->zoom;
+    x->offsetX = o->offsetX;
+    x->offsetY = o->offsetY;
     if (o->aspect != x->aspect) x->stateDirty = 1;   // the scissor moves in widescreen
     x->aspect = o->aspect < 0 || o->aspect > 2 ? 0 : o->aspect;
     if (o->texFilter != x->texFilter)
