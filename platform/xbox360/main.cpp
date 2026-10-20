@@ -34,6 +34,7 @@
 #include "../../render/xenos/h64_xenos.h"
 #include "../../tests/unit/unit_tests.h"
 #include "xb_config.h"
+#include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_menu.h"
 #include "xb_audio.h"
@@ -192,6 +193,38 @@ static void LoadConfig(Config *c)
     ConfigParseFile(c, "game:\\harissa64v2.ini");
 }
 
+// The menus' language: uilang= (checks) first, then lang= of the menu's
+// settings file. Without one (the first start), the language list, starting
+// on the console's language, unless a check runs (`canAsk` 0: English); the
+// choice is written to the settings file. langpick=1 shows the list anyway.
+static void ChooseLanguage(IDirect3DDevice9 *dev, const Config *cfg, const char *settingsPath, int canAsk)
+{
+    static Config menu;
+    int lang;
+    if (cfg->uiLang[0])
+    {
+        lang = LangFromCode(cfg->uiLang);
+        LangSet(lang < 0 ? LANG_EN : lang);
+        H64_INFO("[lang] menus in %s (uilang=)", LangCode(LangGet()));
+        return;
+    }
+    menu = *cfg;
+    if (settingsPath[0]) ConfigParseFile(&menu, settingsPath);
+    lang = LangFromCode(menu.lang);
+    if ((lang >= 0 && !cfg->langPick) || !dev || (!canAsk && !cfg->langPick))
+    {
+        LangSet(lang >= 0 ? lang : LANG_EN);
+        H64_INFO("[lang] menus in %s%s", LangCode(LangGet()), lang >= 0 ? "" : " (none chosen yet)");
+        return;
+    }
+    if (cfg->langPick >= 2) lang = cfg->langPick - 2;
+    LanguageScreenAuto(cfg->langAuto);
+    lang = LanguageScreen(dev, lang >= 0 ? lang : LangFromConsole(), 1);
+    LangSet(lang);
+    if (settingsPath[0] && !ConfigWriteLang(settingsPath, LangCode(lang))) H64_WARN("[lang] cannot write %s", settingsPath);
+    H64_INFO("[lang] menus in %s (chosen at start)", LangCode(lang));
+}
+
 // Shows a message until BACK is pressed (and released).
 static void MessageScreen(IDirect3DDevice9 *dev, const char *title, const char *text, D3DCOLOR color)
 {
@@ -211,7 +244,7 @@ static void MessageScreen(IDirect3DDevice9 *dev, const char *title, const char *
             UiText(UI_BOLD, 30, x + 52, y + 54, UI_COL_TEXT, title, UI_LEFT);
             UiTextWrap(UI_REGULAR, 21, w - 104, 12, text, wrapped, sizeof(wrapped));
             UiText(UI_REGULAR, 21, x + 52, y + 120, UI_COL_TEXT2, wrapped, UI_LEFT);
-            UiScreenFooter("BACK:Continue");
+            UiScreenFooter(Tr(T_FOOT_CONTINUE));
             UiEnd();
             dev->Present(NULL, NULL, NULL, NULL);
         }
@@ -837,16 +870,21 @@ static void SavesTick(H64System *sys, u32 presented, int leaving)
 // D-pad left/right change the slot. A message shows the result for 2 s.
 static int s_stateSlot = 1;
 static int s_statePending;          // a save waits for a quiet point (no HLE task in progress)
-static char s_osd[64];
+static char s_osd[160];
 static DWORD s_osdUntil;
 #define OSD_MS 2000                 // how long a toast stays
 
-static void Osd(const char *text)
+// A toast from a menu text (T_*), with a number for its %d if it has one;
+// the log gets the English text.
+static void OsdT(int id, int num)
 {
-    strncpy(s_osd, text, sizeof(s_osd) - 1);
+    char en[160];
+    _snprintf(s_osd, sizeof(s_osd) - 1, Tr(id), num);
     s_osd[sizeof(s_osd) - 1] = 0;
+    _snprintf(en, sizeof(en) - 1, TrIn(LANG_EN, id), num);
+    en[sizeof(en) - 1] = 0;
     s_osdUntil = GetTickCount() + OSD_MS;
-    H64_INFO("[main] %s", text);
+    H64_INFO("[main] %s", en);
 }
 
 static int s_showFps;               // showfps=1: frames shown per second in the top-right corner
@@ -880,38 +918,30 @@ static void StatePath(char *out, size_t size)
 static int SaveStateNow(H64System *sys)
 {
     std::vector<u8> st;
-    char path[160], msg[64];
+    char path[160];
     FILE *f;
+    int ok;
     if (!h64_state_quiet(sys)) return 0;
     h64_state_save(sys, &st);
     StatePath(path, sizeof(path));
     f = fopen(path, "wb");
-    if (f && fwrite(&st[0], 1, st.size(), f) == st.size())
-        _snprintf(msg, sizeof(msg), "State %d saved", s_stateSlot);
-    else
-        _snprintf(msg, sizeof(msg), "State %d: write failed", s_stateSlot);
+    ok = f && fwrite(&st[0], 1, st.size(), f) == st.size();
     if (f) fclose(f);
-    msg[sizeof(msg) - 1] = 0;
-    Osd(msg);
+    OsdT(ok ? T_STATE_SAVED : T_STATE_WRITE_FAILED, s_stateSlot);
     return 1;
 }
 
 static void LoadStateNow(H64System *sys)
 {
-    char path[160], msg[64];
+    char path[160];
     u32 size = 0;
     u8 *data;
     StatePath(path, sizeof(path));
     data = LoadFile(path, &size);
-    if (!data)
-        _snprintf(msg, sizeof(msg), "No state in slot %d", s_stateSlot);
-    else if (h64_state_load(sys, data, size))
-        _snprintf(msg, sizeof(msg), "State %d: cannot load it", s_stateSlot);
-    else
-        _snprintf(msg, sizeof(msg), "State %d loaded", s_stateSlot);
+    if (!data) OsdT(T_NO_STATE, s_stateSlot);
+    else if (h64_state_load(sys, data, size)) OsdT(T_STATE_LOAD_FAILED, s_stateSlot);
+    else OsdT(T_STATE_LOADED, s_stateSlot);
     free(data);
-    msg[sizeof(msg) - 1] = 0;
-    Osd(msg);
 }
 
 // ---- In-game menu ----
@@ -927,16 +957,16 @@ static char s_profilePath[160];     // <drive>:\config\<game>.ini
 static void BuildGameMenu(void)
 {
     char slot[16];
-    UiMenuClear(&s_menu, "Paused", "A:Select|DPAD:Change|X:About|B/START:Resume");
-    UiMenuAdd(&s_menu, "Resume", "");
-    UiMenuAdd(&s_menu, "Save state", "");
-    UiMenuAdd(&s_menu, "Load state", "");
+    UiMenuClear(&s_menu, Tr(T_PAUSED), Tr(T_FOOT_PAUSED));
+    UiMenuAdd(&s_menu, Tr(T_RESUME), "");
+    UiMenuAdd(&s_menu, Tr(T_SAVE_STATE), "");
+    UiMenuAdd(&s_menu, Tr(T_LOAD_STATE), "");
     sprintf(slot, "< %d >", s_stateSlot);
-    UiMenuAdd(&s_menu, "State slot", slot);
-    UiMenuAdd(&s_menu, "Settings", "");
-    UiMenuAdd(&s_menu, "Reset the game", "");
-    UiMenuAdd(&s_menu, "Back to the ROM list", "");
-    UiMenuAdd(&s_menu, "Quit to the dashboard", "");
+    UiMenuAdd(&s_menu, Tr(T_STATE_SLOT), slot);
+    UiMenuAdd(&s_menu, Tr(T_SETTINGS), "");
+    UiMenuAdd(&s_menu, Tr(T_RESET_GAME), "");
+    UiMenuAdd(&s_menu, Tr(T_BACK_TO_LIST), "");
+    UiMenuAdd(&s_menu, Tr(T_QUIT_DASHBOARD), "");
 }
 
 static void ResetGame(H64System *sys)
@@ -945,7 +975,7 @@ static void ResetGame(H64System *sys)
     if (sys->asyncAudioWait) sys->asyncAudioWait(sys->asyncUser);
     h64_system_reset(sys);
     if (sys->renderer && sys->renderer->reset) sys->renderer->reset(sys->renderer->user);
-    Osd("Game reset");
+    OsdT(T_GAME_RESET, 0);
 }
 
 // Runs the menu; returns RG_CONTINUE, RG_BROWSER or RG_DASHBOARD.
@@ -976,9 +1006,9 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
             else if (r == SET_SAVE_ALL || r == SET_SAVE_GAME)
             {
                 const char *path = r == SET_SAVE_ALL ? s_settingsPath : s_profilePath;
-                if (!path[0]) Osd("Not saved: started by rom= or a script");
-                else Osd(ConfigWriteMenuKeys(c, path, r == SET_SAVE_ALL) ? (r == SET_SAVE_ALL ? "Saved for all games" : "Saved for this game")
-                                                                         : "Settings: write failed");
+                if (!path[0]) OsdT(T_NOT_SAVED_SCRIPT, 0);
+                else OsdT(ConfigWriteMenuKeys(c, path, r == SET_SAVE_ALL) ? (r == SET_SAVE_ALL ? T_SAVED_ALL : T_SAVED_GAME)
+                                                                         : T_SETTINGS_WRITE_FAILED, 0);
             }
             if (r == SET_BACK || r == SET_SAVE_ALL || r == SET_SAVE_GAME)
             {
@@ -1086,14 +1116,14 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     }
     else if (!FindRom(c, rom, sizeof(rom)))
     {
-        MessageScreen(dev, "No ROM found", "Put a ROM at game:\\test.z64 or in game:\\roms\\", D3DCOLOR_XRGB(240, 200, 60));
+        MessageScreen(dev, Tr(T_NO_ROM), Tr(T_PUT_ROM), D3DCOLOR_XRGB(240, 200, 60));
         return RG_DASHBOARD;
     }
     data = RomFileLoad(rom, &size);
-    if (!data) { MessageScreen(dev, "Cannot read the ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
+    if (!data) { MessageScreen(dev, Tr(T_CANNOT_READ), rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys = MakeSystem(data, size, jit);
     free(data);
-    if (!sys) { MessageScreen(dev, "Not an N64 ROM", rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
+    if (!sys) { MessageScreen(dev, Tr(T_NOT_N64), rom, D3DCOLOR_XRGB(240, 60, 60)); return RG_BROWSER; }
     sys->options.hleGfx = c->hle;
     sys->options.gfxTiming = c->gfxTiming;
     sys->options.strictCpu = c->strict;
@@ -1119,7 +1149,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         sys->aiUser = NULL;
     }
     renderer = h64_xenos_create(sys, dev);
-    if (!renderer) { MessageScreen(dev, "Renderer initialisation failed", "See harissa64v2.log", D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
+    if (!renderer) { MessageScreen(dev, Tr(T_RENDERER_FAILED), Tr(T_SEE_LOG), D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);
     ApplyGraphics(sys, renderer, c);
     if (c->softRenderer) sys->options.rdpStateOnly = 0;
@@ -1229,18 +1259,15 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) { LoadStateNow(sys); backUsed = 1; }
             if (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT))
             {
-                char msg[32];
                 s_stateSlot += (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : -1;
                 if (s_stateSlot < 1) s_stateSlot = 9;
                 if (s_stateSlot > 9) s_stateSlot = 1;
-                _snprintf(msg, sizeof(msg), "Slot %d", s_stateSlot);
-                msg[sizeof(msg) - 1] = 0;
-                Osd(msg);
+                OsdT(T_SLOT, s_stateSlot);
                 backUsed = 1;
             }
             if (!backUsed && backHeldMs >= 1000.0 && !backHinted)
             {
-                Osd("Keep holding BACK: ROM list");
+                OsdT(T_KEEP_HOLDING, 0);
                 backHinted = 1;
             }
             if (!backUsed && backHeldMs >= 3000.0)
@@ -1513,7 +1540,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     FreeSystem(sys);
     H64_INFO("[main] game ended: %s", result == RG_BROWSER ? "ROM list" : "dashboard");
     LogFlush();
-    if (s_crashed) MessageScreen(dev, "The game crashed", s_crashText, D3DCOLOR_XRGB(240, 60, 60));
+    if (s_crashed) MessageScreen(dev, Tr(T_CRASHED), s_crashText, D3DCOLOR_XRGB(240, 60, 60));
     return result;
 }
 
@@ -1607,20 +1634,29 @@ int __cdecl main()
         // with harissa64v2.ini alone; otherwise the ROM browser, with the
         // menu's settings and the game's profile over harissa64v2.ini.
         int scripted = cfg.input.count || cfg.exitAfter || cfg.trace || cfg.shotCount || cfg.loadState || cfg.saveStateAt;
+        // Checks driven by harissa64v2.ini: no language list.
+        int checks = cfg.autoStart || cfg.controlsTest >= 0 || cfg.browserDemo || cfg.artAll || cfg.browserSel[0] || cfg.browserAt ||
+                     cfg.menuAt || cfg.aboutAt;
+        char dir[64], menuFile[160];
+        _snprintf(dir, sizeof(dir), "%s:\\config", s_logDrive);
+        dir[sizeof(dir) - 1] = 0;
+        _snprintf(menuFile, sizeof(menuFile), "%s\\settings.ini", dir);
+        menuFile[sizeof(menuFile) - 1] = 0;
         if (scripted || cfg.rom[0] || GetFileAttributesA("game:\\test.z64") != 0xFFFFFFFF)
         {
             s_settingsPath[0] = s_profilePath[0] = 0;
+            ChooseLanguage(dev, &cfg, menuFile, 0);
+            SettingsSetLangFile("");
             RunGame(dev, &cfg, NULL);
         }
         else
         {
             static Config base, game;
-            char dir[64], path[256], folder[64];
-            _snprintf(dir, sizeof(dir), "%s:\\config", s_logDrive);
-            dir[sizeof(dir) - 1] = 0;
+            char path[256], folder[64];
             CreateDirectoryA(dir, NULL);
-            _snprintf(s_settingsPath, sizeof(s_settingsPath), "%s\\settings.ini", dir);
-            s_settingsPath[sizeof(s_settingsPath) - 1] = 0;
+            strcpy(s_settingsPath, menuFile);
+            ChooseLanguage(dev, &cfg, s_settingsPath, !checks);
+            SettingsSetLangFile(s_settingsPath);
             for (;;)
             {
                 base = cfg;

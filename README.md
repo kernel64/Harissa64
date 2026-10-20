@@ -18,6 +18,8 @@ Use it only with games you own. No ROMs are included, and none will be.
 2. Make a `roms` folder next to the `.xex` and put your games in it.
 3. Scan the folder in your dashboard, then start Harissa64. Pick a game in the list and press A.
 
+The first time, Harissa64 asks for your language: English, Spanish, German, French, Arabic, Portuguese (Brazil) or Russian. You can change it later in **Settings > Language**.
+
 The emulator remembers the last game you picked. In Aurora it shows up as "Harissa64" with a pepper icon. A cover and a background are in the `art` folder: in Aurora, open the game's menu, go to the asset manager and load them from there.
 
 ## Controls
@@ -90,6 +92,6 @@ You need Visual Studio 2010 and the Xbox 360 SDK. Open `platform/xbox360/harissa
 
 ## Credits and licence
 
-Harissa64 is free software under the GPL v2, see [LICENSE](LICENSE). Some parts come from or are based on other open-source projects (ares, ParaLLEl-RDP, mupen64plus, libdragon, GLideN64, zlib and others), and the interface uses the Inter font. [THIRD_PARTY.md](THIRD_PARTY.md) lists them with their licences. Thanks to all of them.
+Harissa64 is free software under the GPL v2, see [LICENSE](LICENSE). Some parts come from or are based on other open-source projects (ares, ParaLLEl-RDP, mupen64plus, libdragon, GLideN64, zlib and others), and the interface uses the Inter and Noto Sans Arabic fonts. [THIRD_PARTY.md](THIRD_PARTY.md) lists them with their licences. Thanks to all of them.
 
 Nintendo 64 is a trademark of Nintendo. This project is not affiliated with or endorsed by Nintendo.

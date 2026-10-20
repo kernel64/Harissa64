@@ -29,6 +29,9 @@ Shows the speed in a corner of the screen. 60 means full speed (50 for European 
 
 **Graphics** and **Controls** open their own pages, described below.
 
+**Language**
+The language of the menus: English, Spanish, German, French, Arabic, Portuguese (Brazil) or Russian. Left and right change it straight away. From the game list, A opens the list with the flags. The choice is kept for every game, without saving. Game names and game info stay as they are (mostly in English), and so does the About page.
+
 These two are only there when you open the settings from the game list:
 
 **Box art downloads**

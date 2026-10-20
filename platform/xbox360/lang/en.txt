@@ -1,0 +1,209 @@
+# Harissa64 V2 - menu texts, English (the reference: every language has the same keys).
+#
+# One text per line: KEY = text. "\n" starts a new line. %d (a number) and %s
+# (a word or a name) are filled in by the emulator: keep each of them, in the
+# same order. Button prompts ("A:Select|B:Back") are button:label pairs
+# separated by "|": translate only the labels, never the buttons, and never put
+# ":" or "|" in a label. Keep texts about as short as the English ones: the
+# menus have fixed widths (tools/gen_lang.py checks them).
+#
+# After a change: python platform/xbox360/tools/gen_lang.py (writes xb_lang_table.h).
+
+# The language's own name, shown in the language list.
+LANG_NAME = English
+LANG_TITLE = Choose your language
+FOOT_LANG_FIRST = A:Confirm
+FOOT_LANG = A:Confirm|B:Back
+
+# ---- Settings, main page ----
+SETTINGS = Settings
+SETTINGS_ALL = Settings: all games
+FOOT_SELECT = A:Select|DPAD:Change|B:Back
+CPU_NEXT = CPU (next start)
+RSP_NEXT = RSP (next start)
+AUDIO_MARGIN = Audio margin
+SHOW_FPS = Show FPS
+GRAPHICS = Graphics
+CONTROLS = Controls
+LANGUAGE = Language
+ART_DOWNLOADS = Box art downloads
+ART_ALL = Get box art for all games
+SAVE_ALL = Save for all games
+SAVE_GAME = Save for this game only
+BACK = Back
+ON = On
+OFF = Off
+CUSTOM = Custom
+DEFAULT = Default
+RECOMPILER = Recompiler
+INTERPRETER = Interpreter
+
+# ---- Settings, Graphics page ----
+PRESET = Preset
+RESOLUTION = Resolution
+STRETCH = Stretch to 16:9
+PIC_SIZE = Picture size
+PIC_LR = Picture left/right
+PIC_UD = Picture up/down
+BRIGHTNESS = Brightness
+VSYNC = V-Sync
+ANTIFLICKER = Anti-flicker
+TEXFILTER = Texture filter
+FXAA = Edge smoothing (FXAA)
+SHARPEN = Sharpen
+BLUR = Blur
+SCREEN_EFFECT = Screen effect
+PRESET_ORIGINAL = Original
+PRESET_ENHANCED = N64 Enhanced
+PRESET_SMOOTH = N64 Smooth
+PRESET_CRT = N64 CRT
+RES_NATIVE = Native 320x240
+FILTER_3POINT = N64 3-point
+FILTER_BILINEAR = Bilinear
+FILTER_NEAREST = Nearest
+LOW = Low
+HIGH = High
+SOFT = Soft
+STRONG = Strong
+SCREEN_NONE = None
+SCANLINES = Scanlines
+CRT = CRT
+CRT_CURVED = CRT curved
+LCD_GRID = LCD grid
+LIGHT_SCANLINES = Light scanlines
+NORMAL = Normal
+LIGHTER = Lighter
+MUCH_LIGHTER = Much lighter
+
+# ---- Settings, Controls page ----
+HEAD_BUTTONS = BUTTONS
+HEAD_DPAD = D-PAD
+HEAD_CBUTTONS = C BUTTONS
+HEAD_STICK = ANALOG STICK
+PLAYER = Player %d
+USED_WHEN = Used when controller %d is connected
+ANALOG_STICK = Analog stick
+INVERT = Invert
+DEAD_ZONE = Dead zone
+SENSITIVITY = Sensitivity
+RESET_DEFAULT = Reset to default
+STICK_LEFT = Left stick
+STICK_RIGHT = Right stick
+STICK_DPAD = D-pad
+X_AND_Y = X and Y
+PRESS_INPUT = Press an input...
+NO_INPUT_SET = None
+N_INPUTS = %d inputs
+PRESS_FOR = Press the input for %s
+FOOT_CANCEL = BACK:Cancel
+FOOT_CTL_BUTTON = A:Set|Y:Add|X:Clear|LB/RB:Player|B:Back
+FOOT_CTL_OTHER = A:Select|DPAD:Change|LB/RB:Player|B:Back
+BACK_RESERVED = BACK stays reserved for the emulator's menu
+CANCELLED = Cancelled
+NO_INPUT = No input: unchanged
+DEFAULT_CONTROLS = Default controls
+# "C-up: Left stick up set" (the N64 control, then the Xbox input).
+INPUT_SET = %s: %s set
+INPUT_ADDED = %s: %s added
+# Directions in button prompts ("DPAD:Up") and stick clicks ("LS:Click").
+DIR_UP = Up
+DIR_DOWN = Down
+DIR_LEFT = Left
+DIR_RIGHT = Right
+CLICK = Click
+# The N64 controls.
+N64_DUP = D-pad up
+N64_DDOWN = D-pad down
+N64_DLEFT = D-pad left
+N64_DRIGHT = D-pad right
+N64_CUP = C-up
+N64_CDOWN = C-down
+N64_CLEFT = C-left
+N64_CRIGHT = C-right
+# The Xbox 360 inputs.
+SRC_DUP = D-pad up
+SRC_DDOWN = D-pad down
+SRC_DLEFT = D-pad left
+SRC_DRIGHT = D-pad right
+SRC_LS = Left stick click
+SRC_RS = Right stick click
+SRC_LUP = Left stick up
+SRC_LDOWN = Left stick down
+SRC_LLEFT = Left stick left
+SRC_LRIGHT = Left stick right
+SRC_RUP = Right stick up
+SRC_RDOWN = Right stick down
+SRC_RLEFT = Right stick left
+SRC_RRIGHT = Right stick right
+
+# ---- Leaving ----
+QUIT_ASK = Quit to the dashboard?
+FOOT_QUIT = A:Quit|B:Stay
+
+# ---- Game list ----
+DOWNLOADING = Downloading
+ONE_PLAYER = 1 player
+N_PLAYERS = %s players
+WIKI_TEXT = Text: Wikipedia (CC BY-SA)
+NOT_N64 = Not an N64 ROM
+GAME_CODE = GAME CODE
+SIZE = SIZE
+SAVE = SAVE
+SAVE_NONE = none
+SAVE_UNKNOWN = unknown (EEPROM 4 Kbit, SRAM or FlashRAM)
+NO_ROM = No ROM found
+COPY_ROMS = Copy .z64, .n64, .v64 or .zip files
+INTO_ROMS = into game:\roms\
+FOOT_BROWSER = A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard
+FOOT_BROWSER_EMPTY = Y:Settings|X:About|BACK:Dashboard
+ART_PROGRESS = Box art %d / %d
+ART_CONNECTING = Box art: connecting…
+UPDATE_AVAILABLE = Harissa64 %s is available on GitHub
+NO_DOWNLOADS = Downloads are not available here
+GETTING_ART = Getting box art for all games…
+ART_DONE = Box art: %d of %d games have a picture
+ART_DONE_LOST = Box art: %d of %d games have a picture (connection lost)
+REGION_USA = USA
+REGION_JAPAN = Japan
+REGION_EUROPE = Europe
+REGION_GERMANY = Germany
+REGION_FRANCE = France
+REGION_ITALY = Italy
+REGION_SPAIN = Spain
+REGION_AUSTRALIA = Australia
+REGION_ASIA = Asia
+REGION_BRAZIL = Brazil
+REGION_CHINA = China
+REGION_KOREA = Korea
+REGION_NETHERLANDS = Netherlands
+REGION_SCANDINAVIA = Scandinavia
+REGION_CANADA = Canada
+
+# ---- In game ----
+PAUSED = Paused
+FOOT_PAUSED = A:Select|DPAD:Change|X:About|B/START:Resume
+RESUME = Resume
+SAVE_STATE = Save state
+LOAD_STATE = Load state
+STATE_SLOT = State slot
+RESET_GAME = Reset the game
+BACK_TO_LIST = Back to the ROM list
+QUIT_DASHBOARD = Quit to the dashboard
+GAME_RESET = Game reset
+STATE_SAVED = State %d saved
+STATE_WRITE_FAILED = State %d: write failed
+NO_STATE = No state in slot %d
+STATE_LOAD_FAILED = State %d: cannot load it
+STATE_LOADED = State %d loaded
+SLOT = Slot %d
+KEEP_HOLDING = Keep holding BACK: ROM list
+NOT_SAVED_SCRIPT = Not saved: started by rom= or a script
+SAVED_ALL = Saved for all games
+SAVED_GAME = Saved for this game
+SETTINGS_WRITE_FAILED = Settings: write failed
+FOOT_CONTINUE = BACK:Continue
+PUT_ROM = Put a ROM at game:\test.z64 or in game:\roms\
+CANNOT_READ = Cannot read the ROM
+RENDERER_FAILED = Renderer initialisation failed
+SEE_LOG = See harissa64v2.log
+CRASHED = The game crashed

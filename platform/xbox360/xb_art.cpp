@@ -15,6 +15,7 @@
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_png.h"
 #include "xb_art.h"
+#include "xb_lang.h"
 #include "xb_menu.h"
 #include "xb_net.h"
 
@@ -526,11 +527,10 @@ static int step_bulk(void)
         s_bulkPos = pos + 1;
         if (s_bulkPos >= total)
         {
-            char text[128];
+            char text[256];
             s_status.bulk = 0;
             s_bulk.clear();
-            _snprintf(text, sizeof(text) - 1, "Box art: %d of %d games have a picture%s", s_status.covers, (int)total,
-                      s_status.offline ? " (connection lost)" : "");
+            _snprintf(text, sizeof(text) - 1, Tr(s_status.offline ? T_ART_DONE_LOST : T_ART_DONE), s_status.covers, (int)total);
             text[sizeof(text) - 1] = 0;
             s_note = text;
             H64_INFO("[art] download all: %d games, %d identified, %d with box art", (int)total, s_status.found, s_status.covers);
