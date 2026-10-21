@@ -3994,8 +3994,19 @@ static void cpu_sprite_base(H64System *sys, H64Gfx *g, u32 cimgFirst)
         if (!c) c = &sys->cpuSprite[sys->cpuSpriteNext++ & 3];
         if (!c->data) c->data = (u8 *)malloc(H64_CPU_SPRITE_MAX);
         if (!c->data) { c->bytes = 0; continue; }
-        c->bytes = 0;   // not valid while it is copied
-        memcpy(c->data, sys->rdram + start, bytes);
+        c->bytes = 0;   // not valid while it is written
+        // The frame's memory gets a mark the CPU's drawings will differ from
+        // (the GPU never writes it). Comparing with what the memory held
+        // instead missed the pixels of a capsule drawn over the same colours
+        // two frames earlier in that buffer: half capsules.
+        {
+            u32 i;
+            for (i = 0; i + 1 < bytes; i += 2)
+            {
+                c->data[i] = sys->rdram[start + i] = (u8)(H64_CPU_SPRITE_MARK >> 8);
+                c->data[i + 1] = sys->rdram[start + i + 1] = (u8)H64_CPU_SPRITE_MARK;
+            }
+        }
         c->addr = start;
         c->bytes = bytes;
     }

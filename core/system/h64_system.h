@@ -157,6 +157,7 @@ struct H64CpuSprite
     u8 *data;            // malloc'd, up to H64_CPU_SPRITE_MAX bytes
 };
 #define H64_CPU_SPRITE_MAX (640 * 480 * 2)
+#define H64_CPU_SPRITE_MARK 0x0002u   // the 16-bit pixel a frame's memory holds until the CPU draws there
 
 struct H64System
 {
