@@ -7,8 +7,14 @@ spread) to the nearest outline (atlas pixels, clamped), so one atlas gives
 smooth anti-aliased text at any size, and soft shadows by sampling it with a
 wider edge.
 
-Glyphs: Inter Regular and Inter SemiBold (third_party/inter, SIL OFL 1.1),
-ASCII 32-126 plus a few extras mapped to the codes 0x80.. (see EXTRAS).
+Glyphs: Inter Regular and Inter SemiBold (third_party/inter, SIL OFL 1.1):
+ASCII 32-126, a few signs (EXTRAS), accented Latin letters and Cyrillic (the
+menu languages); Arabic from Noto Sans Arabic Regular and SemiBold
+(third_party/noto-arabic, SIL OFL 1.1): the presentation forms (letters already
+in their joined shape: the translations are shaped by gen_lang.py) and Arabic
+punctuation. The glyphs are listed by Unicode code point (UTF-8 text). The
+first ones (ASCII and EXTRAS of both fonts) are packed first, at the places
+they had before the other scripts were added.
 Logo: a chili pepper drawn here from discs swept along Bezier curves (body,
 highlight, stem and calyx), one SDF layer each, tinted at run time.
 
@@ -24,14 +30,24 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 FONTS = [os.path.join(ROOT, "third_party", "inter", "Inter-Regular.ttf"),
          os.path.join(ROOT, "third_party", "inter", "Inter-SemiBold.ttf")]
+ARABIC_FONTS = [os.path.join(ROOT, "third_party", "noto-arabic", "NotoSansArabic-Regular.ttf"),
+                os.path.join(ROOT, "third_party", "noto-arabic", "NotoSansArabic-SemiBold.ttf")]
 OUT = os.path.join(ROOT, "platform", "xbox360", "xb_ui_atlas.h")
 
 BASE = 40          # em size of the atlas glyphs (atlas pixels)
 SPREAD = 5         # distance range on each side of the outline (atlas pixels)
 SS = 4             # supersampling of the binary shapes the distances come from
-ATLAS_W, ATLAS_H = 1024, 512
-# Extras: code in the UI strings -> Unicode character.
-EXTRAS = [(0x80, "‹"), (0x81, "›"), (0x82, "…"), (0x83, "•"), (0x84, "·")]
+ATLAS_W, ATLAS_MAX_H = 1024, 4096   # the height is what the glyphs need, rounded up to a power of two
+# Signs the UI uses (packed right after ASCII, as before): single angle quotes, ellipsis, bullet, middle dot.
+EXTRAS = [0x2039, 0x203A, 0x2026, 0x2022, 0x00B7]
+# Accented Latin letters (Spanish, German, French, Portuguese), Latin signs, Cyrillic (Russian).
+LATIN = [0xA1, 0xAA, 0xAB, 0xB0, 0xBA, 0xBB, 0xBF] + list(range(0xC0, 0x100)) + [0x152, 0x153, 0x178,
+         0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x201E, 0x20AC]
+CYRILLIC = [0x401] + list(range(0x410, 0x450)) + [0x451, 0x2116]
+# Arabic: comma, semicolon, question mark, and the presentation forms B (FE80-FEFC).
+# They are drawn larger than the font's em, so that an alef is as tall as a
+# Latin capital (Noto's Arabic looks small next to Inter otherwise).
+ARABIC = [0x060C, 0x061B, 0x061F] + list(range(0xFE80, 0xFEFD))
 LOGO = 128         # logo layers: LOGO x LOGO atlas pixels for a 256-unit drawing
 LOGO_SPREAD = 10
 
@@ -190,9 +206,10 @@ def main():
     ap.add_argument("--png", help="also write the atlas as a PNG (preview)")
     args = ap.parse_args()
 
-    atlas = np.zeros((ATLAS_H, ATLAS_W), dtype=np.uint8)
-    pk = Packer(ATLAS_W, ATLAS_H)
-    chars = [(c, chr(c)) for c in range(32, 127)] + EXTRAS
+    atlas = np.zeros((ATLAS_MAX_H, ATLAS_W), dtype=np.uint8)
+    pk = Packer(ATLAS_W, ATLAS_MAX_H)
+    first = [c for c in range(32, 127)] + EXTRAS
+    later = LATIN + CYRILLIC
     fonts = []
     # Logo layers first (largest).
     logos = []
@@ -200,45 +217,71 @@ def main():
         x, y = pk.place(sd.shape[1], sd.shape[0])
         atlas[y:y + sd.shape[0], x:x + sd.shape[1]] = sd
         logos.append((x, y, sd.shape[1], sd.shape[0]))
+
+    def put(font_hi, code, glyphs):
+        sd, left, top, adv = glyph_sdf(font_hi, chr(code))
+        if sd is None:
+            glyphs[code] = (0, 0, 0, 0, 0.0, 0.0, adv)
+            return
+        x, y = pk.place(sd.shape[1], sd.shape[0])
+        atlas[y:y + sd.shape[0], x:x + sd.shape[1]] = sd
+        glyphs[code] = (x, y, sd.shape[1], sd.shape[0], left, top, adv)
+
+    his = []
     for path in FONTS:
         hi = ImageFont.truetype(path, BASE * SS)
         asc, desc = hi.getmetrics()
         cap = -hi.getbbox("H", anchor="ls")[1] / SS
         xh = -hi.getbbox("x", anchor="ls")[1] / SS
         glyphs = {}
-        for code, ch in chars:
-            sd, left, top, adv = glyph_sdf(hi, ch)
-            if sd is None:
-                glyphs[code] = (0, 0, 0, 0, 0.0, 0.0, adv)
-                continue
-            x, y = pk.place(sd.shape[1], sd.shape[0])
-            atlas[y:y + sd.shape[0], x:x + sd.shape[1]] = sd
-            glyphs[code] = (x, y, sd.shape[1], sd.shape[0], left, top, adv)
+        for code in first:
+            put(hi, code, glyphs)
         fonts.append((os.path.basename(path), asc / SS, desc / SS, cap, xh, glyphs))
+        his.append(hi)
         print("%s: ascent %.1f descent %.1f cap %.1f x %.1f" % (os.path.basename(path), asc / SS, desc / SS, cap, xh))
+    # Then the other scripts, after the glyphs that were there first.
+    for i in range(len(FONTS)):
+        for code in later:
+            put(his[i], code, fonts[i][5])
+    for i, path in enumerate(ARABIC_FONTS):
+        probe = ImageFont.truetype(path, BASE * SS)
+        alef = -probe.getbbox(chr(0xFE8D), anchor="ls")[1] / SS
+        scale = fonts[i][3] / alef
+        ar = ImageFont.truetype(path, int(round(BASE * SS * scale)))
+        print("%s: alef %.1f, drawn x%.3f" % (os.path.basename(path), alef, scale))
+        for code in ARABIC:
+            put(ar, code, fonts[i][5])
     used = pk.y + pk.row
-    print("atlas %dx%d, %d rows used" % (ATLAS_W, ATLAS_H, used))
+    # A power of two: texture coordinates (y / height) stay exact, so the glyphs
+    # that were there before the other scripts sample the same texels as then.
+    atlas_h = 512
+    while atlas_h < used + 1:
+        atlas_h *= 2
+    atlas = atlas[:atlas_h]
+    print("atlas %dx%d, %d rows used" % (ATLAS_W, atlas_h, used))
     if args.png:
         Image.fromarray(atlas).save(args.png)
+    codes = sorted(set(first + later + ARABIC))
+    assert codes[:95] == list(range(32, 127))
 
     packed = rle(atlas.tobytes())
-    print("RLE: %d -> %d bytes" % (ATLAS_W * ATLAS_H, len(packed)))
+    print("RLE: %d -> %d bytes" % (ATLAS_W * atlas_h, len(packed)))
     lines = []
     lines.append("// Harissa64 V2 - front-end glyph atlas. GENERATED by platform/xbox360/tools/gen_ui_atlas.py: do not edit.")
     lines.append("// Signed distance field, 8 bits: 0.5 + distance / (2 * spread) (inside > 0.5), RLE-coded:")
     lines.append("// c < 128: c + 1 literal bytes follow; c >= 128: the next byte repeated c - 126 times.")
     lines.append("// Glyphs: Inter Regular and SemiBold (c) 2016 The Inter Project Authors, SIL Open Font License 1.1")
-    lines.append("// (third_party/inter/OFL.txt). Logo: the Harissa pepper, drawn by the generator.")
+    lines.append("// (third_party/inter/OFL.txt); Arabic: Noto Sans Arabic Regular and SemiBold (c) 2022 The Noto Project Authors,")
+    lines.append("// SIL Open Font License 1.1 (third_party/noto-arabic/OFL.txt). Logo: the Harissa pepper, drawn by the generator.")
     lines.append("#ifndef XB_UI_ATLAS_H")
     lines.append("#define XB_UI_ATLAS_H")
     lines.append("")
     lines.append("#define UI_ATLAS_W %d" % ATLAS_W)
-    lines.append("#define UI_ATLAS_H %d" % ATLAS_H)
+    lines.append("#define UI_ATLAS_H %d" % atlas_h)
     lines.append("#define UI_ATLAS_BASE %d.0f      // em size of the glyphs, atlas pixels" % BASE)
     lines.append("#define UI_ATLAS_SPREAD %d.0f" % SPREAD)
     lines.append("#define UI_ATLAS_LOGO_SPREAD %d.0f" % LOGO_SPREAD)
-    lines.append("#define UI_ATLAS_FIRST 32")
-    lines.append("#define UI_ATLAS_COUNT %d      // codes 32..0x%02X" % (chars[-1][0] - 32 + 1, chars[-1][0]))
+    lines.append("#define UI_ATLAS_COUNT %d      // glyphs per font, by code point (s_atlasCode); the first 95 are ASCII 32..126" % len(codes))
     lines.append("")
     lines.append("// One glyph: atlas rectangle, its top-left relative to the pen on the baseline, advance (em units of UI_ATLAS_BASE).")
     lines.append("struct UiAtlasGlyph { unsigned short x, y, w, h; float left, top, advance; };")
@@ -250,12 +293,18 @@ def main():
         lines.append("    { %.3ff, %.3ff, %.3ff, %.3ff },   // %s" % (asc, desc, cap, xh, name))
     lines.append("};")
     lines.append("")
+    lines.append("// The Unicode code point of each glyph, in increasing order.")
+    lines.append("static const unsigned short s_atlasCode[UI_ATLAS_COUNT] = {")
+    for i in range(0, len(codes), 16):
+        lines.append("    " + ", ".join("0x%04X" % c for c in codes[i:i + 16]) + ",")
+    lines.append("};")
+    lines.append("")
     lines.append("static const UiAtlasGlyph s_atlasGlyph[%d][UI_ATLAS_COUNT] = {" % len(fonts))
     for name, _, _, _, _, glyphs in fonts:
         lines.append("  {   // %s" % name)
-        for code in range(32, chars[-1][0] + 1):
+        for code in codes:
             g = glyphs.get(code, (0, 0, 0, 0, 0.0, 0.0, 0.0))
-            lines.append("    { %d, %d, %d, %d, %.3ff, %.3ff, %.3ff }," % g)
+            lines.append("    { %d, %d, %d, %d, %.3ff, %.3ff, %.3ff },   // U+%04X" % (g + (code,)))
         lines.append("  },")
     lines.append("};")
     lines.append("")

@@ -1312,7 +1312,24 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
         if (!sys->options.rdpStateOnly || st->softDraw) draw(sys, st, &ts, &a);
         return;
     }
-    case 0x24: if (!sys->options.rdpStateOnly || st->softDraw) rectangle(sys, st, w, 1, 0); return;
+    case 0x24:
+        if (sys->options.rdpLogFrame && sys->vi.frames >= sys->options.rdpLogFrame && sys->vi.frames < sys->options.rdpLogFrame + 4)
+        {
+            // --rdp-log: the first texels of the rectangle, as a GPU renderer decodes them.
+            const H64RdpTile *tl = &st->tiles[(w[1] >> 24) & 7];
+            u32 s0 = (w[2] >> 21) & 0x7FF, t0 = (w[2] >> 5) & 0x7FF, k, row[8];
+            int tlut = (st->rasterFlags & RS_TLUT) != 0, tlutType = (st->rasterFlags & RS_TLUT_TYPE) != 0;
+            u32 rs = s0 - (tl->slo >> 2), rt = t0 - (tl->tlo >> 2);
+            H64RdpTexel tx[8];
+            for (k = 0; k < 8; k++) h64_rdp_fetch_texel(st, tl, rs + k, rt, tlut, tlutType, &tx[k]);
+            if (!h64_rdp_fetch_row_argb(st, tl, rs, rt, 8, tlut, row)) row[0] = row[1] = 0xDEADBEEF;
+            H64_INFO("[rdp]   texels fmt %u size %u tlut %d/%d pal %u at %u,%u: %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X | row %08X %08X",
+                     tl->fmt, tl->size, tlut, tlutType, tl->palette, rs, rt, tx[0].c[0] & 255, tx[0].c[1] & 255, tx[0].c[2] & 255, tx[0].c[3] & 255,
+                     tx[1].c[0] & 255, tx[1].c[1] & 255, tx[1].c[2] & 255, tx[1].c[3] & 255, tx[4].c[0] & 255, tx[4].c[1] & 255,
+                     tx[4].c[2] & 255, tx[4].c[3] & 255, row[0], row[1]);
+        }
+        if (!sys->options.rdpStateOnly || st->softDraw) rectangle(sys, st, w, 1, 0);
+        return;
     case 0x25: if (!sys->options.rdpStateOnly || st->softDraw) rectangle(sys, st, w, 1, 1); return;
     case 0x36: if (!sys->options.rdpStateOnly || st->softDraw) rectangle(sys, st, w, 0, 0); return;
     case 0x26: case 0x27: case 0x28: case 0x29: return;   // syncs (SYNC_FULL handled by the interface)

@@ -23,6 +23,33 @@ static const SaveCodeEntry s_saveByCode[] = {
 #include "h64_savedb_codes.inc"
 };
 
+struct RumbleDbEntry { u32 crc1, crc2; };
+static const RumbleDbEntry s_rumbleDb[] = {
+#include "h64_rumbledb.inc"
+};
+struct RumbleCodeEntry { char code[5]; };
+static const RumbleCodeEntry s_rumbleByCode[] = {
+#include "h64_rumbledb_codes.inc"
+};
+
+int h64_rom_rumble(const H64Rom *rom)
+{
+    int lo = 0, hi = (int)(sizeof(s_rumbleDb) / sizeof(s_rumbleDb[0])) - 1;
+    unsigned i;
+    while (lo <= hi)   // sorted by CRC1, then CRC2
+    {
+        int mid = (lo + hi) / 2;
+        const RumbleDbEntry *e = &s_rumbleDb[mid];
+        if (e->crc1 == rom->crc1 && e->crc2 == rom->crc2) return 1;
+        if (e->crc1 < rom->crc1 || (e->crc1 == rom->crc1 && e->crc2 < rom->crc2)) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    // ROM hacks keep their game's code (Smash Remix, Mario Kart 64 hacks).
+    for (i = 0; i < sizeof(s_rumbleByCode) / sizeof(s_rumbleByCode[0]); i++)
+        if (s_rumbleByCode[i].code[0] && !memcmp(s_rumbleByCode[i].code, rom->gameCode, 3)) return 1;
+    return 0;
+}
+
 int h64_save_type_for_rom(const H64Rom *rom, int *pak)
 {
     int lo = 0, hi = (int)(sizeof(s_saveDb) / sizeof(s_saveDb[0])) - 1;

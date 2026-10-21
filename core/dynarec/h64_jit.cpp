@@ -22,7 +22,10 @@ void h64_jit_reset(H64System *sys)
     memset(j->fetch, 0xFF, sizeof(j->fetch));
     j->tlbLinkCount = 0;
     memset(j->tlbHead, 0xFF, sizeof(j->tlbHead));
-    memset(j->indPc, 0, 1024 * sizeof(u32));
+    // Empty entries hold a misaligned pc that rtIndirect never looks up: with 0,
+    // a jump to address 0 (Bomberman 64 after START) found an empty entry and
+    // branched to a null block.
+    memset(j->indPc, 0xFF, 1024 * sizeof(u32));
     memset(j->indBody, 0, 1024 * sizeof(u32 *));
     memset(j->indEnt, 0xFF, 1024);
     memset(j->codeMap, 0, (H64_RDRAM_SIZE >> H64_JIT_CHUNK_SHIFT) * sizeof(u16));
@@ -150,9 +153,13 @@ static void unlink_block(H64Jit *j, H64JitBlock *b)
     b->linkHead = -1;
     {
         u32 k = (b->vpc >> 2) & 1023;   // its indirect-jump entry
-        if (j->indBody[k] == b->body) { j->indBody[k] = 0; j->indPc[k] = 0; j->indEnt[k] = -1; }
+        if (j->indBody[k] == b->body) { j->indBody[k] = 0; j->indPc[k] = 0xFFFFFFFFu; j->indEnt[k] = -1; }
     }
 }
+
+static u32 s_invalLog;   // h64test --jit-inval N: the first N invalidating writes are logged
+
+void h64_jit_log_invalidations(u32 count) { s_invalLog = count; }
 
 void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
 {
@@ -183,6 +190,12 @@ void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len)
         }
         if (!hit) continue;
         j->stats.invalidations++;
+        if (s_invalLog)
+        {
+            s_invalLog--;
+            H64_INFO("[jit] write %06X+%u drops blocks of page %05X (cpu pc %08X, frame %u)", paddr, len, p << 12,
+                     (u32)sys->cpu.pc, sys->vi.frames);
+        }
         // Linked blocks run without the dispatcher updating curPage: any
         // invalidation stops the block being run.
         j->curInvalidated = 1;

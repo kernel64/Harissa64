@@ -353,41 +353,160 @@ void UiPanel(float x, float y, float w, float h, float r)
 }
 
 // ---- Text ----
-static const UiAtlasGlyph *glyph(int font, unsigned char c)
+// Text is UTF-8. A malformed byte shows as '?', as do characters the atlas
+// does not have. Lines holding Arabic are shown right to left (ui_bidi).
+#define UI_BIDI_MAX 512
+
+// The next code point of [*pp, end); moves *pp past it.
+static u32 utf8_next(const char **pp, const char *end)
 {
-    if (c < UI_ATLAS_FIRST || c >= UI_ATLAS_FIRST + UI_ATLAS_COUNT) c = '?';
-    return &s_atlasGlyph[font ? 1 : 0][c - UI_ATLAS_FIRST];
+    const u8 *p = (const u8 *)*pp;
+    u32 c = p[0];
+    int n, i;
+    if (c < 0x80) { *pp += 1; return c; }
+    if ((c & 0xE0) == 0xC0) { n = 1; c &= 0x1F; }
+    else if ((c & 0xF0) == 0xE0) { n = 2; c &= 0x0F; }
+    else if ((c & 0xF8) == 0xF0) { n = 3; c &= 0x07; }
+    else { *pp += 1; return '?'; }
+    if ((const char *)p + 1 + n > end) { *pp += 1; return '?'; }
+    for (i = 1; i <= n; i++)
+    {
+        if ((p[i] & 0xC0) != 0x80) { *pp += 1; return '?'; }
+        c = (c << 6) | (p[i] & 0x3F);
+    }
+    *pp += n + 1;
+    return c;
+}
+
+// Bytes of the UTF-8 character starting at `s` (1 for a malformed byte).
+static int utf8_len(const char *s)
+{
+    const char *p = s;
+    utf8_next(&p, s + strlen(s));
+    return (int)(p - s);
+}
+
+static const UiAtlasGlyph *glyph(int font, u32 c)
+{
+    int lo = 95, hi = UI_ATLAS_COUNT - 1;
+    const UiAtlasGlyph *g = s_atlasGlyph[font ? 1 : 0];
+    if (c >= 32 && c < 127) return &g[c - 32];   // ASCII: the first 95, in order
+    while (lo <= hi)
+    {
+        int mid = (lo + hi) >> 1;
+        if (s_atlasCode[mid] == c) return &g[mid];
+        if (s_atlasCode[mid] < c) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return &g['?' - 32];
 }
 
 static float line_width(int font, float size, const char *s, int n)
 {
     float w = 0, k = size / UI_ATLAS_BASE;
-    int i;
-    for (i = 0; i < n; i++) w += glyph(font, (unsigned char)s[i])->advance * k;
+    const char *end = s + n;
+    while (s < end) w += glyph(font, utf8_next(&s, end))->advance * k;
     return w;
+}
+
+// ---- Right to left ----
+static int is_rtl(u32 c) { return (c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF); }
+// Letters and digits of the left-to-right scripts.
+static int is_ltr(u32 c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= 0xC0 && c < 0x0590 && c != 0xD7 && c != 0xF7);
+}
+static u32 mirror(u32 c)
+{
+    switch (c)
+    {
+    case '(': return ')';
+    case ')': return '(';
+    case '[': return ']';
+    case ']': return '[';
+    case '<': return '>';
+    case '>': return '<';
+    case 0x2039: return 0x203A;
+    case 0x203A: return 0x2039;
+    case 0xAB: return 0xBB;
+    case 0xBB: return 0xAB;
+    }
+    return c;
+}
+
+// Puts a line holding right-to-left letters in display order (a simple form
+// of the Unicode bidirectional algorithm, right-to-left paragraph): runs of
+// Latin or Cyrillic words and numbers keep their order inside, everything else
+// reads from the right; signs between two left-to-right runs belong to them.
+static void ui_bidi(u32 *c, int n)
+{
+    u8 type[UI_BIDI_MAX];   // 1: left to right
+    int i, j;
+    for (i = 0; i < n; i++) type[i] = is_ltr(c[i]) ? 1 : 0;
+    for (i = 0; i < n; i++)
+    {
+        if (type[i] || is_rtl(c[i])) continue;
+        // Neutral: left to right when the strong characters on both sides are.
+        for (j = i; j < n && !type[j] && !is_rtl(c[j]); j++) {}
+        if (i > 0 && type[i - 1] && j < n && type[j])
+            while (i < j) type[i++] = 1;
+        i = j - 1;
+    }
+    for (i = 0, j = n - 1; i < j; i++, j--)
+    {
+        u32 t = c[i]; c[i] = c[j]; c[j] = t;
+        u8 y = type[i]; type[i] = type[j]; type[j] = y;
+    }
+    for (i = 0; i < n; i++)
+    {
+        if (!type[i]) { c[i] = mirror(c[i]); continue; }
+        for (j = i; j < n && type[j]; j++) {}
+        {
+            int a = i, b = j - 1;
+            while (a < b) { u32 t = c[a]; c[a] = c[b]; c[b] = t; a++; b--; }
+        }
+        i = j - 1;
+    }
+}
+
+static void draw_glyph(const UiAtlasGlyph *g, float *x, float baseline, float k, const float *p, D3DCOLOR color)
+{
+    if (g->w)
+    {
+        float gx = *x + g->left * k, gy = baseline + g->top * k;
+        quad(gx, gy, gx + g->w * k, gy + g->h * k, (float)g->x / UI_ATLAS_W, (float)g->y / UI_ATLAS_H,
+             (float)(g->x + g->w) / UI_ATLAS_W, (float)(g->y + g->h) / UI_ATLAS_H, 1.0f, 0.0f, p, color, color);
+    }
+    *x += g->advance * k;
 }
 
 // One line; `range` scales the edge sharpness (1: crisp), `bias` the edge offset.
 static void draw_line(int font, float size, float x, float baseline, D3DCOLOR color, const char *s, int n, float range, float bias)
 {
     float k = size / UI_ATLAS_BASE, p[4];
-    int i;
+    const char *end = s + n;
+    u32 cps[UI_BIDI_MAX];
+    int count = 0, rtl = 0, i;
     p[0] = 2.0f * UI_ATLAS_SPREAD * k * range;
     // Small text: a slightly heavier edge keeps it from looking thin on a TV.
     p[1] = bias + (size < 24.0f ? (24.0f - size) * 0.03f : 0.0f);
     p[2] = 0.0f;
     p[3] = 1.0f;
-    for (i = 0; i < n; i++)
+    while (s < end)
     {
-        const UiAtlasGlyph *g = glyph(font, (unsigned char)s[i]);
-        if (g->w)
+        u32 c = utf8_next(&s, end);
+        rtl |= is_rtl(c);
+        cps[count++] = c;
+        if (count == UI_BIDI_MAX)
         {
-            float gx = x + g->left * k, gy = baseline + g->top * k;
-            quad(gx, gy, gx + g->w * k, gy + g->h * k, (float)g->x / UI_ATLAS_W, (float)g->y / UI_ATLAS_H,
-                 (float)(g->x + g->w) / UI_ATLAS_W, (float)(g->y + g->h) / UI_ATLAS_H, 1.0f, 0.0f, p, color, color);
+            // A very long line: shown in pieces of UI_BIDI_MAX characters.
+            if (rtl) ui_bidi(cps, count);
+            for (i = 0; i < count; i++) draw_glyph(glyph(font, cps[i]), &x, baseline, k, p, color);
+            count = rtl = 0;
         }
-        x += g->advance * k;
     }
+    if (rtl) ui_bidi(cps, count);
+    for (i = 0; i < count; i++) draw_glyph(glyph(font, cps[i]), &x, baseline, k, p, color);
 }
 
 static float text_impl(int font, float size, float x, float cy, D3DCOLOR color, const char *text, int align, float range, float bias)
@@ -436,8 +555,10 @@ float UiTextWidth(int font, float size, const char *text)
 
 void UiTextFit(int font, float size, float maxW, const char *text, char *out, int outSize)
 {
-    int n = (int)strlen(text);
-    float ell = line_width(font, size, UI_CH_ELLIPSIS, 1);
+    const int ellBytes = (int)sizeof(UI_CH_ELLIPSIS) - 1;
+    int n = (int)strlen(text), cut = 0;
+    float ell = line_width(font, size, UI_CH_ELLIPSIS, ellBytes), w = 0, k = size / UI_ATLAS_BASE;
+    const char *p = text, *end = text + n;
     if (outSize <= 0) return;
     if (line_width(font, size, text, n) <= maxW || n == 0)
     {
@@ -445,11 +566,17 @@ void UiTextFit(int font, float size, float maxW, const char *text, char *out, in
         out[outSize - 1] = 0;
         return;
     }
-    while (n > 0 && (line_width(font, size, text, n) + ell > maxW || text[n - 1] == ' ')) n--;
-    if (n > outSize - 2) n = outSize - 2;
-    memcpy(out, text, n);
-    out[n] = UI_CH_ELLIPSIS[0];
-    out[n + 1] = 0;
+    // The longest start of whole characters that fits with the ellipsis, without a space at its end.
+    while (p < end)
+    {
+        const char *q = p;
+        w += glyph(font, utf8_next(&q, end))->advance * k;
+        if (w + ell > maxW || (int)(q - text) > outSize - 1 - ellBytes) break;
+        p = q;
+        if (p[-1] != ' ') cut = (int)(p - text);
+    }
+    memcpy(out, text, cut);
+    memcpy(out + cut, UI_CH_ELLIPSIS, ellBytes + 1);
 }
 
 int UiTextWrap(int font, float size, float maxW, int maxLines, const char *text, char *out, int outSize)
@@ -477,8 +604,10 @@ int UiTextWrap(int font, float size, float maxW, int maxLines, const char *text,
         {
             // Not even one word: cut it to the width.
             lastFit = p;
-            while (*lastFit && *lastFit != ' ' && *lastFit != '\n' && line_width(font, size, p, (int)(lastFit - p) + 1) <= maxW) lastFit++;
-            if (lastFit == p) lastFit++;
+            while (*lastFit && *lastFit != ' ' && *lastFit != '\n' &&
+                   line_width(font, size, p, (int)(lastFit - p) + utf8_len(lastFit)) <= maxW)
+                lastFit += utf8_len(lastFit);
+            if (lastFit == p) lastFit += utf8_len(lastFit);
         }
         n = (int)(lastFit - p);
         if (lines == maxLines - 1 && *lastFit && *lastFit != '\n' && lastFit[1])
@@ -677,6 +806,21 @@ void UiFpsBadge(const char *text)
     UiRoundRect(x, y, w, h, h * 0.5f, D3DCOLOR_ARGB(190, 24, 26, 34), D3DCOLOR_ARGB(190, 16, 17, 23));
     UiRoundRing(x, y, w, h, h * 0.5f, 1.0f, UI_COL_LINE);
     UiText(UI_BOLD, 17, x + w * 0.5f, y + h * 0.5f, UI_COL_TEXT, text, UI_CENTER);
+}
+
+void UiPerfPanel(const char *text)
+{
+    int lines = 1;
+    const char *p;
+    float w, h, x, y;
+    for (p = text; *p; p++) lines += *p == '\n';
+    w = UiTextWidth(UI_BOLD, 17, text) + 30;
+    h = 14 + lines * 17 * 1.35f;
+    x = UI_WIDTH - UI_SAFE_X - w;
+    y = UI_SAFE_Y;
+    UiRoundRect(x, y, w, h, 14, D3DCOLOR_ARGB(190, 24, 26, 34), D3DCOLOR_ARGB(190, 16, 17, 23));
+    UiRoundRing(x, y, w, h, 14, 1.0f, UI_COL_LINE);
+    UiText(UI_BOLD, 17, x + 15, y + 7 + 17 * 1.35f * 0.5f, UI_COL_TEXT, text, UI_LEFT);
 }
 
 // ---- Menu input ----

@@ -155,5 +155,7 @@ void h64_jit_run(H64System *sys, u64 cycles);
 void h64_jit_run_one(H64System *sys);
 // RDRAM [paddr, paddr + len) was written: drops the blocks of those pages.
 void h64_jit_invalidate(H64System *sys, u32 paddr, u32 len);
+// Debug (h64test --jit-inval N): logs the next N writes that drop blocks.
+void h64_jit_log_invalidations(u32 count);
 
 #endif

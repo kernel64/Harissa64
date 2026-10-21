@@ -114,6 +114,7 @@
     <ClCompile Include="xb_art.cpp" />
     <ClCompile Include="xb_audio.cpp" />
     <ClCompile Include="xb_config.cpp" />
+    <ClCompile Include="xb_lang.cpp" />
     <ClCompile Include="xb_menu.cpp" />
     <ClCompile Include="xb_ui.cpp" />
     <ClCompile Include="xb_net.cpp">
@@ -126,6 +127,8 @@
     <ClInclude Include="..\..\render\**\*.h" />
     <ClInclude Include="..\..\tests\unit\*.h" />
     <ClInclude Include="xb_ui_atlas.h" />
+    <ClInclude Include="xb_lang_table.h" />
+    <ClInclude Include="xb_flags.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="title\xex.xml" />

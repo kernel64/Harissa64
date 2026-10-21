@@ -1157,6 +1157,12 @@ void h64_jit_emit_runtime(H64System *sys)
 #endif
     j->memUsed = ((u32)(start - j->mem) + g.c.pos * 4 + 63) & ~63u;
     if (j->flushIcache) j->flushIcache(j->mem, j->memUsed);
+#define RT_OFF(p) (unsigned)((u8 *)(p) - j->mem)
+    H64_INFO("[jit] runtime at %p: exit +%X check +%X fpcheck +%X fpfinish +%X slow +%X link +%X indirect +%X tlbstale +%X fcstore +%X fcload +%X end +%X",
+             (void *)j->mem, RT_OFF(j->rtExit), RT_OFF(j->rtCheck[0][0]), RT_OFF(j->rtFpCheck[0][0]), RT_OFF(j->rtFpFinish[0]),
+             RT_OFF(j->rtSlow), RT_OFF(j->rtLink), RT_OFF(j->rtIndirect), RT_OFF(j->rtTlbStale), RT_OFF(j->rtFcStore),
+             RT_OFF(j->rtFcLoad), j->memUsed);
+#undef RT_OFF
 }
 
 // ---- Instruction classes ----

@@ -108,7 +108,13 @@ struct hle_t
 
     unsigned int sp_status;   // status bits the task sets when it ends (rsp_break)
     int forwarded;            // the task was left to the LLE RSP
-    u32 dirtyLo, dirtyHi;     // RDRAM range written by the task (for the recompiler)
+    u32 dirtyLo, dirtyHi;     // RDRAM range written by the task (all of it: hleAudioCheck)
+    // The separate ranges it wrote (for the recompiler, which drops the code
+    // they overlap): an audio task writes buffers far apart, and the range
+    // between them held the game's code (Duck Dodgers: 1.6 MB of blocks
+    // dropped and compiled again every frame, 5 frames a second).
+    u32 dirtyRange[8][2];
+    u32 dirtyCount;
     int streamFullSync;       // a streamed graphics task had a full sync (h64_hle_stream_poll)
     u8 *checkRam;             // hleAudioCheck: RDRAM copy the HLE ran on
     u8 *checkMask;            // hleAudioCheck: 1 for each RDRAM byte the HLE wrote
