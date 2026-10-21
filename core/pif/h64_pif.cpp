@@ -293,6 +293,13 @@ void h64_hle_boot(H64System *sys)
     {
         memset(sys->spMem, 0xFF, sizeof(sys->spMem));
         h64_store_be32(sys->spMem + 0x1000, 0x17D7);
+        // Its last stage runs from RDRAM: it copies its own code from
+        // ROM[0x4C0..0x764) to 0x80000000 (checked against the real IPL3 boot).
+        // Diddy Kong Racing reads 0x80000284 (0x240B17D7) when a golden balloon
+        // is touched and, without it, takes itself for a copy and never gives
+        // the balloon (its anti-copy checks, from the decompilation).
+        if (sys->rom.size >= 0x764)
+            memcpy(sys->rdram, sys->rom.data + 0x4C0, 0x764 - 0x4C0);
     }
     for (i = 0; i < len; i++)
     {
