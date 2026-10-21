@@ -67,9 +67,6 @@ static const GameProfile s_profiles[] = {
     // ~47 VI/s in a match): one whole copy instead, 60 VI/s. Draws the capsule
     // Mario throws into the frame with the CPU (H64_GP_CPU_SPRITES).
     { "NN6", "Dr. Mario 64", H64_GP_COPY_BACK_WHOLE | H64_GP_CPU_SPRITES },
-    // Its menus read the previous frame back two lines at a time (~120 copy
-    // backs a frame, ~7 VI/s): one whole copy instead.
-    { "NBM", "Bomberman 64", H64_GP_COPY_BACK_WHOLE },
     // The magnifying glass on the character select enlarges what is on
     // screen: it reads the frame shown with the CPU (empty without).
     // Both also need each task to start from the microcode's default other

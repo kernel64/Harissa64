@@ -252,10 +252,13 @@ struct Xenos
 static Xenos *X(H64Renderer *r) { return (Xenos *)r; }
 
 // ---------------------------------------------------------------- shaders
+static int s_logCompiles;   // xenosdebug=18: every pixel shader compile is logged first
+
 static IDirect3DPixelShader9 *compile_ps(IDirect3DDevice9 *dev, const char *src)
 {
     LPD3DXBUFFER code = NULL, err = NULL;
     IDirect3DPixelShader9 *ps = NULL;
+    if (s_logCompiles) H64_WARN("[xenos] compile_ps (%u bytes): %.200s", (u32)strlen(src), src + (strlen(src) > 600 ? strlen(src) - 600 : 0));
     HRESULT hr = D3DXCompileShader(src, (UINT)strlen(src), NULL, NULL, "main", "ps_3_0", 0, &code, &err, NULL);
     if (FAILED(hr))
     {
@@ -518,6 +521,14 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               (flags & KEY_DEPTH) ? "  float z = lw.y / lw.x;\n"
                                     "  o.d = saturate(z + zbias.x + zbias.y * max(abs(ddx(z)), abs(ddy(z))));\n"
                                     "  o.c += t0 * zbias.w;\n" : "", dbg);
+    if (x->debug == 18)
+    {
+        // xenosdebug=18: the combiner part of each shader before it is compiled
+        // (warnings reach the log file at once: a compile that crashes is seen).
+        H64_WARN("[xenos] compiling shader %08X%08X flags %X:", (u32)(key >> 32), (u32)key, flags);
+        H64_WARN("[xenos]   c0: %s", c0);
+        H64_WARN("[xenos]   c1: %s", c1);
+    }
     ps = compile_ps(x->dev, src);
     x->shaders[key] = ps;
     x->stats.shaderCompiles++;
@@ -3642,6 +3653,7 @@ void h64_xenos_set_debug(H64Renderer *r, int mode)
     else if (mode >= 8000) { x->debugFrom = (u32)(mode - 8000); mode = 8; }
     else if (mode == 9) x->debugFrom = 0;
     x->debug = mode;
+    s_logCompiles = mode == 18;
     x->shaders.clear();   // leaks the compiled shaders: debug only
     x->shaderT1.clear();
 }
