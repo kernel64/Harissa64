@@ -62,7 +62,9 @@ static const GameProfile s_profiles[] = {
     // Copies its background into the frame's memory through 512-pixel
     // images with copy-mode rectangles, then draws in a 328-pixel frame at
     // the same address (one slot for both showed horizontal streaks).
-    { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY | H64_GP_SLOT_BY_WIDTH },
+    // Its intro frames are 436 x 383 (the 4:3 guess, 327 lines, left a band
+    // of stripes at the bottom of the picture): the height from the scissor.
+    { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY | H64_GP_SLOT_BY_WIDTH | H64_GP_TALL_FRAME },
     // Reads its background back six lines at a time (~40 copy backs a frame,
     // ~47 VI/s in a match): one whole copy instead, 60 VI/s. Draws the capsule
     // Mario throws into the frame with the CPU (H64_GP_CPU_SPRITES).
