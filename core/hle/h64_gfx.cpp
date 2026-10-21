@@ -73,6 +73,8 @@ struct GfxUcode
     int omInit;  // each task starts from the microcode's default other modes (F3DLP)
     int cullOne; // F3DLX.Rej: culling both faces culls the back faces only
     int combineH;// F3DEX2 2.0xH (Pokemon Snap...): G_SPECIAL_1 combines the matrices, not a counted list
+    int beta;    // F3DBETA (Wave Race 64 (U), Shadows of the Empire): F3D with vertex indices * 5, G_TRI2 at 0xB1,
+                 // RDPHALF_1/2 at 0xB3/0xB2, G_PERSPNORM at 0xB4 (GLideN64 F3DBETA.cpp)
 };
 
 struct GfxVtx
@@ -526,11 +528,14 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->omInit = 0;
     u->cullOne = 0;
     u->combineH = 0;
+    u->beta = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
         // RDRAM holds 32-bit words byte-reversed).
         static const struct { u32 crc; int type, rare, noNear; const char *name; } known[] = {
+            { 0xD17906E2u, UC_F3D, RARE_NONE, 2, "F3DBETA (Wave Race 64 (U))" },
+            { 0x94C4C833u, UC_F3D, RARE_NONE, 2, "F3DBETA (Shadows of the Empire)" },
             { 0x302BCA09u, UC_F3D, RARE_GOLDEN, 0, "GoldenEye" },
             { 0x1C4F7869u, UC_F3D, RARE_PD, 0, "Perfect Dark" },
             { 0x6E6FC893u, UC_F3D, RARE_DKR, 0, "Diddy Kong Racing" },
@@ -569,7 +574,8 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             {
                 u->type = known[k].type;
                 u->rare = known[k].rare;
-                u->noNear = known[k].noNear;
+                u->noNear = known[k].noNear == 1;
+                u->beta = known[k].noNear == 2;
                 H64_INFO("[gfx] microcode at %06X: CRC %08X, %s's variant", u->start, crc, known[k].name);
                 return;
             }
@@ -673,7 +679,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
                 u->cull40 = o->cull40; u->flx = o->flx; u->s2v103 = o->s2v103; u->am = o->am; u->line = o->line;
-                u->combineH = o->combineH;
+                u->combineH = o->combineH; u->beta = o->beta;
                 u->omInit = o->omInit; u->cullOne = o->cullOne;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
@@ -2031,6 +2037,30 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
     u32 cmd = w0 >> 24;
     int ex = g->uc->type == UC_F3DEX;
     if (g->uc->rare && run_rare(g, w0, w1)) return;
+    if (g->uc->beta)
+    {
+        // F3DBETA: vertex buffer offsets in units of 5 (GLideN64 F3DBETA.cpp).
+        switch (cmd)
+        {
+        case 0x04: load_vertices(g, w1, (w0 >> 9) & 0x7F, ((w0 >> 16) & 0xFF) / 5); return;   // G_VTX
+        case 0xBF: triangle(g, ((w1 >> 16) & 0xFF) / 5, ((w1 >> 8) & 0xFF) / 5, (w1 & 0xFF) / 5); return;   // G_TRI1
+        case 0xB1:   // G_TRI2
+            triangle(g, ((w0 >> 16) & 0xFF) / 5, ((w0 >> 8) & 0xFF) / 5, (w0 & 0xFF) / 5);
+            triangle(g, ((w1 >> 16) & 0xFF) / 5, ((w1 >> 8) & 0xFF) / 5, (w1 & 0xFF) / 5);
+            return;
+        case 0xB5:   // G_QUAD
+        {
+            u32 a = ((w1 >> 24) & 0xFF) / 5, b = ((w1 >> 16) & 0xFF) / 5, c = ((w1 >> 8) & 0xFF) / 5, d = (w1 & 0xFF) / 5;
+            triangle(g, a, b, c);
+            triangle(g, a, c, d);
+            return;
+        }
+        case 0xB4: return;                  // G_PERSPNORM (no use with floats)
+        case 0xB3: g->half1 = w1; return;   // G_RDPHALF_1
+        case 0xB2: return;                  // G_RDPHALF_2 (read with TEXRECT)
+        default: break;
+        }
+    }
     if (g->uc->line)   // L3DEX: G_TRI1, G_TRI2 as edges, 0xB5 G_LINE3D
     {
         if (cmd == 0xBF) { line_tri(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F, 0); return; }
