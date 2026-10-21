@@ -1404,6 +1404,16 @@ static u32 display_quad(Xenos *x, const ViGeom *g, float ox, float oy, float uPe
         q->px0 = (q->bw - w) / 2 + x->offsetX + g->dx0 * w; q->pw = (g->dx1 - g->dx0) * w;
         q->py0 = (q->bh - h) / 2 + x->offsetY + g->dy0 * h; q->ph = (g->dy1 - g->dy0) * h;
         lines = (u32)g->lines;
+        // A VI line longer than the image (Resident Evil 2: 335 pixels of a
+        // 328-pixel image) ends in black, as the software VI shows it: past
+        // the image's width the texture holds whatever was there (a column of
+        // garbage at the right edge).
+        if (g->sx1 + ox > (float)width && g->sx1 > g->sx0 && (float)width > g->sx0 + ox)
+        {
+            float keep = ((float)width - (g->sx0 + ox)) / (g->sx1 - g->sx0);
+            q->u1 = (float)width * uPer;
+            q->pw *= keep;
+        }
     }
     else
     {
