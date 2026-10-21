@@ -41,6 +41,11 @@ void ConfigDefaults(Config *c)
     memset(&c->input, 0, sizeof(c->input));
     c->trace = c->traceStep = 0;
     c->xenia = 0;
+    c->lang[0] = 0;
+    c->uiLang[0] = 0;
+    c->langPick = 0;
+    c->rumble = 1;
+    c->langAuto = 0;
     c->fpuFlags = 1;
     c->jitFpu = 1;
     c->regCache = 1;
@@ -107,7 +112,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);
         else if (!strcmp(line, "browsersel")) { strncpy(c->browserSel, eq + 1, sizeof(c->browserSel) - 1); c->browserSel[sizeof(c->browserSel) - 1] = 0; }
         else if (!strcmp(line, "artall")) c->artAll = atoi(eq + 1);
-        else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtol(eq + 1, NULL, 16);
+        else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtoul(eq + 1, NULL, 16);   // strtoul: bit 31 is a flag
         else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "aboutat")) c->aboutAt = (u32)atoi(eq + 1);
@@ -123,6 +128,11 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");
         else if (!strcmp(line, "trace")) c->trace = (u32)atoi(eq + 1);
         else if (!strcmp(line, "xenia")) c->xenia = atoi(eq + 1);
+        else if (!strcmp(line, "lang")) { strncpy(c->lang, eq + 1, sizeof(c->lang) - 1); c->lang[sizeof(c->lang) - 1] = 0; }
+        else if (!strcmp(line, "uilang")) { strncpy(c->uiLang, eq + 1, sizeof(c->uiLang) - 1); c->uiLang[sizeof(c->uiLang) - 1] = 0; }
+        else if (!strcmp(line, "langpick")) c->langPick = atoi(eq + 1);
+        else if (!strcmp(line, "rumble")) c->rumble = atoi(eq + 1);
+        else if (!strcmp(line, "langauto")) c->langAuto = atoi(eq + 1);
         else if (!strcmp(line, "fpuflags")) c->fpuFlags = atoi(eq + 1);
         else if (!strcmp(line, "jitfpu")) c->jitFpu = atoi(eq + 1);
         else if (!strcmp(line, "regcache")) c->regCache = atoi(eq + 1);
@@ -186,7 +196,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
-    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\n", c->zoom, c->offsetX, c->offsetY);
+    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\nrumble=%d\n", c->zoom, c->offsetX, c->offsetY, c->rumble);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.
@@ -211,6 +221,46 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
         fprintf(f, "%smap_invert=%s\n", pre, m->invert == 3 ? "xy" : m->invert == 2 ? "y" : m->invert == 1 ? "x" : "none");
     }
     if (withLastRom && c->lastRom[0]) fprintf(f, "lastrom=%s\n", c->lastRom);
+    if (withLastRom && c->lang[0]) fprintf(f, "lang=%s\n", c->lang);
+    fclose(f);
+    return 1;
+}
+
+int ConfigWriteLang(const char *path, const char *code)
+{
+    static char in[16384], out[16384 + 64];
+    size_t len = 0, used = 0, pos = 0;
+    int found = 0;
+    FILE *f = fopen(path, "rb");
+    if (f)
+    {
+        len = fread(in, 1, sizeof(in), f);
+        fclose(f);
+        if (len == sizeof(in)) return 0;   // not a settings file the menu wrote
+    }
+    while (pos < len)
+    {
+        // One line (with its end of line, if any): copied, or replaced when it is lang=.
+        size_t end = pos;
+        while (end < len && in[end] != '\n') end++;
+        if (end < len) end++;
+        if (end - pos >= 5 && !memcmp(in + pos, "lang=", 5))
+        {
+            if (!found) used += sprintf(out + used, "lang=%s\n", code);
+            found = 1;
+        }
+        else
+        {
+            memcpy(out + used, in + pos, end - pos);
+            used += end - pos;
+            if (end == len && out[used - 1] != '\n') out[used++] = '\n';
+        }
+        pos = end;
+    }
+    if (!found) used += sprintf(out + used, "lang=%s\n", code);
+    f = fopen(path, "wb");
+    if (!f) return 0;
+    if (fwrite(out, 1, used, f) != used) { fclose(f); return 0; }
     fclose(f);
     return 1;
 }

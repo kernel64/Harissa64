@@ -58,6 +58,7 @@ struct H64XenosStats
     u32 loadResolves; // copy backs put off, then needed (resolve_loads)
     u32 resolveCopyBacks;   // copy backs those made
     u32 cpuWrittenLoads;    // loads from GPU frames the CPU wrote over since (no copy back)
+    u32 cpuSprites;         // presents with pixels the CPU drew over the frame (profile gfxCpuSprites)
     // The largest texture decoded: its size, tile (fmt, size, stride, masks, flags) and source
     // (0 triangle, 1 rectangle).
     u32 bigW, bigH, bigFmt, bigSize, bigStride, bigMaskS, bigMaskT, bigFlags, bigRect, bigCount;
@@ -94,5 +95,7 @@ struct H64XenosOptions
 };
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);
+// The internal resolution the games are drawn at (rtW x rtH).
+void h64_xenos_internal_size(H64Renderer *r, u32 *w, u32 *h);
 
 #endif

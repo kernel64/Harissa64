@@ -79,9 +79,10 @@ void UiImageRelease(IDirect3DDevice9 *dev, IDirect3DTexture9 *tex);
 void UiImage(IDirect3DTexture9 *tex, float x, float y, float w, float h, float r, D3DCOLOR color);
 
 // ---- Text ----
-// Draws `text` with the vertical middle of its capitals at `cy` (later lines
-// of a "\n"-separated text 1.35 sizes lower), aligned on x by `align`.
-// Codes 0x80.. are extra glyphs: UI_CH_* below. Returns the widest line's width.
+// Draws `text` (UTF-8) with the vertical middle of its capitals at `cy` (later
+// lines of a "\n"-separated text 1.35 sizes lower), aligned on x by `align`.
+// A line holding Arabic letters (already in their joined forms, see
+// xb_lang.h) is shown right to left. Returns the widest line's width.
 float UiText(int font, float size, float x, float cy, D3DCOLOR color, const char *text, int align);
 // The same with a soft drop shadow under it.
 float UiTextShadowed(int font, float size, float x, float cy, D3DCOLOR color, const char *text, int align);
@@ -91,11 +92,11 @@ void UiTextFit(int font, float size, float maxW, const char *text, char *out, in
 // Word-wraps `text` into `out` ("\n" between lines) to fit `maxW`; at most
 // `maxLines` lines, the last one cut with an ellipsis. Returns the line count.
 int UiTextWrap(int font, float size, float maxW, int maxLines, const char *text, char *out, int outSize);
-#define UI_CH_LCHEVRON "\x80"
-#define UI_CH_RCHEVRON "\x81"
-#define UI_CH_ELLIPSIS "\x82"
-#define UI_CH_BULLET   "\x83"
-#define UI_CH_MIDDOT   "\x84"
+#define UI_CH_LCHEVRON "\xE2\x80\xB9"   // U+2039
+#define UI_CH_RCHEVRON "\xE2\x80\xBA"   // U+203A
+#define UI_CH_ELLIPSIS "\xE2\x80\xA6"   // U+2026
+#define UI_CH_BULLET   "\xE2\x80\xA2"   // U+2022
+#define UI_CH_MIDDOT   "\xC2\xB7"       // U+00B7
 
 // The Harissa pepper, `size` pixels square, top-left at (x, y). Returns `size`.
 float UiLogo(float x, float y, float size);
@@ -117,6 +118,8 @@ void UiScreenFooter(const char *hints);
 void UiToast(const char *text, float age, float life);
 // The frames-per-second badge in the top-right corner.
 void UiFpsBadge(const char *text);
+// The same corner with several lines ("\n"-separated): FPS, CPU, RAM, resolution.
+void UiPerfPanel(const char *text);
 
 // Controller 1 for menus: buttons pressed since the last call, with
 // auto-repeat for the D-pad and the left stick (as D-pad directions).

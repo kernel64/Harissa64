@@ -37,6 +37,13 @@ int h64_system_init(H64System *sys, const u8 *romFile, u32 romSize, const H64Opt
 
 void h64_system_free(H64System *sys)
 {
+    int i;
+    for (i = 0; i < 4; i++)
+    {
+        free(sys->cpuSprite[i].data);
+        sys->cpuSprite[i].data = 0;
+        sys->cpuSprite[i].bytes = 0;
+    }
     h64_rom_free(&sys->rom);
     h64_rdp_free(sys);
     h64_jit_free(sys);

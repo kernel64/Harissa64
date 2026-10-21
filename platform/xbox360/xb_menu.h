@@ -11,11 +11,11 @@
 
 struct UiMenu
 {
-    char title[64];
-    char label[UI_MENU_MAX][48];
-    char value[UI_MENU_MAX][32];   // shown right-aligned ("< 250 ms >"), empty for actions
+    char title[128];
+    char label[UI_MENU_MAX][96];   // UTF-8 (xb_lang.h)
+    char value[UI_MENU_MAX][64];   // shown right-aligned ("< 250 ms >"), empty for actions
     int count, sel;
-    char footer[96];
+    char footer[192];
     int page;                      // UI_PAGE_*: how UiMenuDraw shows it
 };
 enum { UI_PAGE_LIST = 0, UI_PAGE_CONTROLS };
@@ -28,11 +28,24 @@ void UiMenuDraw(const UiMenu *m);   // between UiBegin and UiEnd
 void UiMenuNavigate(UiMenu *m, WORD down);
 
 // ---- Settings (cpu, hle, audio margin, FPS display, the Graphics and Controls pages) ----
-enum { SET_NONE = 0, SET_CHANGED, SET_BACK, SET_SAVE_ALL, SET_SAVE_GAME, SET_ART_ALL };
+enum { SET_NONE = 0, SET_CHANGED, SET_BACK, SET_SAVE_ALL, SET_SAVE_GAME, SET_ART_ALL, SET_LANGUAGE };
 // Fills the menu from *c; `perGame` adds "Save for this game".
 void SettingsBuild(UiMenu *m, const Config *c, int perGame);
-// Applies one input to *c and the menu; returns SET_*.
+// Applies one input to *c and the menu; returns SET_*. The Language row
+// changes the language at once (and keeps it in the file given to
+// SettingsSetLangFile); from the ROM list, A on it returns SET_LANGUAGE (the
+// list with the flags).
 int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down);
+// The menu settings file where a language change is kept (lang=); "" for none.
+void SettingsSetLangFile(const char *path);
+
+// ---- Language ----
+// The list of languages with their flags, full screen: returns the language
+// chosen with A (LANG_*), or -1 when B leaves it (never on the first start,
+// `firstStart`, where a language must be chosen). Starts on `initial`.
+int LanguageScreen(IDirect3DDevice9 *dev, int initial, int firstStart);
+// Checks (ini langauto=): the list confirms its selection by itself after `ms` ms (0: never).
+void LanguageScreenAuto(int ms);
 
 // Reads a ROM file, or the first N64 ROM inside a .zip. Returns a malloc'd
 // buffer, or NULL.

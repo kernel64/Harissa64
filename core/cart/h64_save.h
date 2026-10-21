@@ -53,6 +53,9 @@ struct H64SaveMem
 // 0x3C); *pak: whether the game uses a Controller Pak.
 int h64_save_type_for_rom(const H64Rom *rom, int *pak);
 const char *h64_save_type_name(int type);
+// 1 when the cartridge supports the Rumble Pak (mupen64plus's catalogue,
+// h64_rumbledb.inc; ROM hacks by their game's code).
+int h64_rom_rumble(const H64Rom *rom);
 
 // Blank media (EEPROM, SRAM, FlashRAM erased to 0xFF; a formatted pak) for `type`.
 void h64_save_init(H64SaveMem *s, int type, int pak);

@@ -438,6 +438,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     const char *wavPath = 0;
     const char *saveDir = 0;
     const char *loadState = 0, *saveStatePath = 0;
+    u32 pokeAddr[16], pokeVal[16], pokeCount = 0;
     u32 probeX = 0, probeY = 0, probeFrame = 0, probeCount = 2;
     int probe = 0;
     u32 saveStateFrame = 0;
@@ -478,6 +479,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--strict")) strictCpu = 1;
         else if (!strcmp(argv[i], "--gameflags") && i + 1 < argc) { gameFlags = (u32)strtoul(argv[++i], 0, 16); noProfile = 2; }
         else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--jit-inval") && i + 1 < argc) h64_jit_log_invalidations((u32)atoi(argv[++i]));   // log writes that drop blocks
         else if (!strcmp(argv[i], "--peek") && i + 1 < argc) peekVa = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
@@ -511,6 +513,12 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wavPath = argv[++i];
         else if (!strcmp(argv[i], "--save-dir") && i + 1 < argc) saveDir = argv[++i];
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) loadState = argv[++i];
+        else if (!strcmp(argv[i], "--poke") && i + 1 < argc && pokeCount < 16)   // ADDR:VALUE (hex): an RDRAM word, after --load-state
+        {
+            char *colon;
+            pokeAddr[pokeCount] = (u32)strtoul(argv[++i], &colon, 16) & 0x7FFFFC;
+            pokeVal[pokeCount++] = *colon == ':' ? (u32)strtoul(colon + 1, 0, 16) : 0;
+        }
         else if (!strcmp(argv[i], "--probe") && i + 1 < argc)
         {
             // --probe X,Y,FRAME[,COUNT]: log every RDP pixel write at (X, Y) during COUNT VI frames from FRAME (default 2; software RDP).
@@ -606,6 +614,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         char folder[64];
         h64_save_folder_name(&sys->rom, folder, sizeof(folder));
         printf("[info] save folder name: %s\n", folder);
+        printf("[info] rumble pak: %s\n", h64_rom_rumble(&sys->rom) ? "yes" : "no");
+        printf("[info] header CRCs: %08X %08X\n", sys->rom.crc1, sys->rom.crc2);
         if (gameDb) print_game_info(gameDb, &sys->rom, path);
         h64_system_free(sys);
         free(sys);
@@ -683,6 +693,14 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         free(st);
         // A state keeps the cpi it was saved with; an explicit --cpi wins.
         if (cpiGiven) { sys->cpu.cpi = (u32)(cpi > 0 ? cpi : 1); if (ref) ref->cpu.cpi = sys->cpu.cpi; }
+    }
+    {
+        u32 k;
+        for (k = 0; k < pokeCount; k++)
+        {
+            h64_store_be32(sys->rdram + pokeAddr[k], pokeVal[k]);
+            if (ref) h64_store_be32(ref->rdram + pokeAddr[k], pokeVal[k]);
+        }
     }
     if (traceFrames && traceStep >= 1000000000u)
     {

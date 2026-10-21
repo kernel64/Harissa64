@@ -16,7 +16,10 @@
 #include "../../core/common/h64_log.h"
 #include "../../core/common/h64_version.h"
 #include "../../core/common/h64_fenv.h"
+#include "../../core/common/h64_png.h"
 #include "xb_art.h"
+#include "xb_flags.h"
+#include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_update.h"
 
@@ -47,13 +50,16 @@ static float anim_step(UiAnim *a, float target, int restart)
     return a->value;
 }
 
-// The selection highlight of a list row: an accent-tinted pill with a bar on its left.
-static void selection_bar(float x, float y, float w, float h)
+// The selection highlight of a list row: an accent-tinted pill with a bar on
+// its left (on its right in a right-to-left menu).
+static void selection_bar_side(float x, float y, float w, float h, int right)
 {
     UiRoundRect(x, y, w, h, 12, D3DCOLOR_ARGB(78, 234, 76, 58), D3DCOLOR_ARGB(54, 234, 76, 58));
     UiRoundRing(x, y, w, h, 12, 1.0f, D3DCOLOR_ARGB(60, 255, 120, 96));
-    UiRoundRect(x + 7, y + h * 0.25f, 4, h * 0.5f, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    UiRoundRect(right ? x + w - 11 : x + 7, y + h * 0.25f, 4, h * 0.5f, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
 }
+
+static void selection_bar(float x, float y, float w, float h) { selection_bar_side(x, y, w, h, 0); }
 
 // A paragraph wrapped to `w` (top at y); returns its height.
 static float paragraph(int font, float size, float x, float y, float w, int maxLines, D3DCOLOR color, const char *text)
@@ -95,7 +101,7 @@ static float draw_value(float right, float cy, const char *value, int selected)
     D3DCOLOR text = selected ? UI_COL_TEXT : UI_COL_TEXT2;
     if (n >= 4 && value[0] == '<' && value[1] == ' ' && value[n - 1] == '>' && value[n - 2] == ' ')
     {
-        char inner[32];
+        char inner[64];
         float cw = UiTextWidth(UI_BOLD, 30, UI_CH_RCHEVRON), x = right;
         D3DCOLOR chev = selected ? UI_COL_ACCENT_HI : UI_COL_TEXT3;
         size_t k = n - 4 < sizeof(inner) - 1 ? n - 4 : sizeof(inner) - 1;
@@ -111,37 +117,59 @@ static float draw_value(float right, float cy, const char *value, int selected)
     return right - UiText(UI_REGULAR, 21, right, cy, text, value, UI_RIGHT);
 }
 
+// The width draw_value takes.
+static float value_width(const char *value, int selected)
+{
+    size_t n = strlen(value);
+    if (n >= 4 && value[0] == '<' && value[1] == ' ' && value[n - 1] == '>' && value[n - 2] == ' ')
+    {
+        char inner[64];
+        size_t k = n - 4 < sizeof(inner) - 1 ? n - 4 : sizeof(inner) - 1;
+        memcpy(inner, value + 2, k);
+        inner[k] = 0;
+        return 2 * (UiTextWidth(UI_BOLD, 30, UI_CH_RCHEVRON) + 10) + UiTextWidth(selected ? UI_BOLD : UI_REGULAR, 21, inner);
+    }
+    return UiTextWidth(UI_REGULAR, 21, value);
+}
+
 static void controls_draw(const UiMenu *m);
 
 void UiMenuDraw(const UiMenu *m)
 {
     static UiAnim sel;
-    static char lastTitle[64];
+    static char lastTitle[128];
     static int lastCount;
     const float w = 660, head = 100, foot = 78;
     // Rows shrink a little when a page has many (the Graphics page: 11), so
     // the panel stays on screen with a margin.
     float rowH = m->count > 0 && (UI_HEIGHT - 40 - head - 18 - foot) / m->count < 48 ? (UI_HEIGHT - 40 - head - 18 - foot) / m->count : 48;
     float h = head + m->count * rowH + 18 + foot, x = (UI_WIDTH - w) * 0.5f, y = (UI_HEIGHT - h) * 0.5f, sy;
-    int i, restart = strcmp(lastTitle, m->title) != 0 || lastCount != m->count;
+    int i, restart = strcmp(lastTitle, m->title) != 0 || lastCount != m->count, rtl = LangRtl();
     if (m->page == UI_PAGE_CONTROLS) { controls_draw(m); lastTitle[0] = 0; return; }
     strncpy(lastTitle, m->title, sizeof(lastTitle) - 1);
     lastCount = m->count;
     UiDim();
     UiPanel(x, y, w, h, 22);
-    UiText(UI_BOLD, 30, x + 40, y + 50, UI_COL_TEXT, m->title, UI_LEFT);
-    UiRoundRect(x + 40, y + 74, 30, 4, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    // Right to left (Arabic): title and labels on the right, values on the left.
+    UiText(UI_BOLD, 30, rtl ? x + w - 40 : x + 40, y + 50, UI_COL_TEXT, m->title, rtl ? UI_RIGHT : UI_LEFT);
+    UiRoundRect(rtl ? x + w - 70 : x + 40, y + 74, 30, 4, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
     sy = anim_step(&sel, y + head + m->sel * rowH, restart);
-    if (m->count) selection_bar(x + 18, sy + 3, w - 36, rowH - 6);
+    if (m->count) selection_bar_side(x + 18, sy + 3, w - 36, rowH - 6, rtl);
     for (i = 0; i < m->count; i++)
     {
         float cy = y + head + i * rowH + rowH * 0.5f;
         int s = i == m->sel;
+        if (rtl)
+        {
+            UiText(s ? UI_BOLD : UI_REGULAR, 22, x + w - 44, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_RIGHT);
+            if (m->value[i][0]) draw_value(x + 40 + value_width(m->value[i], s), cy, m->value[i], s);
+            continue;
+        }
         UiText(s ? UI_BOLD : UI_REGULAR, 22, x + 44, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_LEFT);
         if (m->value[i][0]) draw_value(x + w - 40, cy, m->value[i], s);
     }
     UiRect(x + 24, y + h - foot, w - 48, 1, UI_COL_LINE);
-    UiFooter(x + 40, y + h - foot * 0.5f, m->footer);
+    UiFooter(rtl ? x + w - 40 - UiFooterWidth(m->footer) : x + 40, y + h - foot * 0.5f, m->footer);
 }
 
 void UiMenuNavigate(UiMenu *m, WORD down)
@@ -155,18 +183,18 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // Main page: CPU, RSP, audio, FPS, the Graphics and Controls pages, save, back. The Graphics
 // page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
-enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS };
+enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS, S_LANGUAGE };
 enum { G_PRESET = 0, G_RES, G_STRETCH, G_ZOOM, G_POSX, G_POSY, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR,
        G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
-struct GfxPreset { const char *name; int texFilter, smooth, sharpen, blur, screen; };
+struct GfxPreset { int name; int texFilter, smooth, sharpen, blur, screen; };
 static const GfxPreset s_presets[4] = {
-    { "Original", 2, 0, 0, 0, 0 },        // nearest, nothing added
-    { "N64 Enhanced", 0, 1, 1, 0, 0 },    // 3-point, light sharpening
-    { "N64 Smooth", 0, 1, 1, 0, 5 },      // 3-point, light sharpening, light scanlines
-    { "N64 CRT", 0, 0, 0, 0, 2 },         // 3-point, CRT: scanlines and glow
+    { T_PRESET_ORIGINAL, 2, 0, 0, 0, 0 },   // nearest, nothing added
+    { T_PRESET_ENHANCED, 0, 1, 1, 0, 0 },   // 3-point, light sharpening
+    { T_PRESET_SMOOTH, 0, 1, 1, 0, 5 },     // 3-point, light sharpening, light scanlines
+    { T_PRESET_CRT, 0, 0, 0, 0, 2 },        // 3-point, CRT: scanlines and glow
 };
 
 // The preset the settings match (-1: custom).
@@ -185,23 +213,39 @@ static int current_preset(const Config *c)
 static int s_graphicsPage;
 static int s_perGame;
 static int s_browser;   // opened from the ROM list: the box art rows are shown
-#define S_ART (S_CONTROLS + 1)       // "Box art downloads" (ROM list only)
-#define S_ART_ALL (S_CONTROLS + 2)   // "Get box art for all games" (ROM list only)
-#define S_SAVE_ALL (s_browser ? S_CONTROLS + 3 : S_CONTROLS + 1)
+static char s_langPath[160];   // where a language change is kept (SettingsSetLangFile)
+#define S_ART (S_LANGUAGE + 1)       // "Box art downloads" (ROM list only)
+#define S_ART_ALL (S_LANGUAGE + 2)   // "Get box art for all games" (ROM list only)
+#define S_SAVE_ALL (s_browser ? S_LANGUAGE + 3 : S_LANGUAGE + 1)
 
-static const char *onoff(int v) { return v ? "On" : "Off"; }
+static const char *onoff(int v) { return Tr(v ? T_ON : T_OFF); }
+
+void SettingsSetLangFile(const char *path)
+{
+    strncpy(s_langPath, path ? path : "", sizeof(s_langPath) - 1);
+    s_langPath[sizeof(s_langPath) - 1] = 0;
+}
+
+// The menus in another language, kept in the settings file at once.
+static void lang_change(Config *c, int lang)
+{
+    LangSet(lang);
+    strcpy(c->lang, LangCode(lang));
+    if (s_langPath[0] && !ConfigWriteLang(s_langPath, c->lang)) H64_WARN("[lang] cannot write %s", s_langPath);
+    H64_INFO("[lang] menus in %s", c->lang);
+}
 
 static void settings_values(UiMenu *m, const Config *c)
 {
     if (s_graphicsPage)
     {
-        static const char *res[4] = { "Native 320x240", "x2 640x480", "x3 960x720", "HD 1280x720 (16:9)" };
-        static const char *filt[3] = { "N64 3-point", "Bilinear", "Nearest" };
-        static const char *lvl[3] = { "Off", "Low", "High" };
-        static const char *blr[3] = { "Off", "Soft", "Strong" };
-        static const char *scr[6] = { "None", "Scanlines", "CRT", "CRT curved", "LCD grid", "Light scanlines" };
+        const char *res[4] = { Tr(T_RES_NATIVE), "x2 640x480", "x3 960x720", "HD 1280x720 (16:9)" };
+        const char *filt[3] = { Tr(T_FILTER_3POINT), Tr(T_FILTER_BILINEAR), Tr(T_FILTER_NEAREST) };
+        const char *lvl[3] = { Tr(T_OFF), Tr(T_LOW), Tr(T_HIGH) };
+        const char *blr[3] = { Tr(T_OFF), Tr(T_SOFT), Tr(T_STRONG) };
+        const char *scr[6] = { Tr(T_SCREEN_NONE), Tr(T_SCANLINES), Tr(T_CRT), Tr(T_CRT_CURVED), Tr(T_LCD_GRID), Tr(T_LIGHT_SCANLINES) };
         int pr = current_preset(c);
-        sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? "Custom" : s_presets[pr].name);
+        sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? Tr(T_CUSTOM) : Tr(s_presets[pr].name));
         sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 4 ? 4 : c->resScale) - 1]);
         sprintf(m->value[G_FILTER], "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]);
         sprintf(m->value[G_SMOOTH], "< %s >", onoff(c->smooth));
@@ -209,7 +253,7 @@ static void settings_values(UiMenu *m, const Config *c)
         sprintf(m->value[G_BLUR], "< %s >", blr[c->blur < 0 || c->blur > 2 ? 0 : c->blur]);
         sprintf(m->value[G_SCREEN], "< %s >", scr[c->screen < 0 || c->screen > 5 ? 0 : c->screen]);
         {
-            static const char *br[3] = { "Normal", "Lighter", "Much lighter" };
+            const char *br[3] = { Tr(T_NORMAL), Tr(T_LIGHTER), Tr(T_MUCH_LIGHTER) };
             sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
             sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
             sprintf(m->value[G_VSYNC], "< %s >", onoff(c->vsync));
@@ -220,58 +264,63 @@ static void settings_values(UiMenu *m, const Config *c)
         }
         return;
     }
-    sprintf(m->value[S_CPU], "< %s >", strcmp(c->cpu, "interp") ? "Recompiler" : "Interpreter");
+    sprintf(m->value[S_CPU], "< %s >", strcmp(c->cpu, "interp") ? Tr(T_RECOMPILER) : Tr(T_INTERPRETER));
     sprintf(m->value[S_HLE], "< %s >", c->hle ? "HLE" : "LLE");
     sprintf(m->value[S_AUDIO], "< %d ms >", c->audioMs);
-    sprintf(m->value[S_FPS], "< %s >", onoff(c->showFps));
+    {
+        static const int fps[4] = { T_OFF, T_FPS_ONLY, T_FPS_CPU, T_FPS_ALL };
+        sprintf(m->value[S_FPS], "< %s >", Tr(fps[c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps]));
+    }
     {
         int i, custom = 0;
         for (i = 0; i < 4; i++) custom |= !h64_padmap_is_default(&c->padMap[i]);
-        strcpy(m->value[S_CONTROLS], custom ? "Custom" : "Default");
+        strcpy(m->value[S_CONTROLS], custom ? Tr(T_CUSTOM) : Tr(T_DEFAULT));
     }
-    if (s_browser) sprintf(m->value[S_ART], "< %s >", c->artDownload ? "On" : "Off");
+    sprintf(m->value[S_LANGUAGE], "< %s >", Tr(T_LANG_NAME));
+    if (s_browser) sprintf(m->value[S_ART], "< %s >", onoff(c->artDownload));
 }
 
 static void settings_main(UiMenu *m, const Config *c)
 {
     s_graphicsPage = 0;
-    UiMenuClear(m, s_perGame ? "Settings" : "Settings: all games", "A:Select|DPAD:Change|B:Back");
-    UiMenuAdd(m, "CPU (next start)", "");
-    UiMenuAdd(m, "RSP (next start)", "");
-    UiMenuAdd(m, "Audio margin", "");
-    UiMenuAdd(m, "Show FPS", "");
-    UiMenuAdd(m, "Graphics", "");
-    UiMenuAdd(m, "Controls", "");
+    UiMenuClear(m, Tr(s_perGame ? T_SETTINGS : T_SETTINGS_ALL), Tr(T_FOOT_SELECT));
+    UiMenuAdd(m, Tr(T_CPU_NEXT), "");
+    UiMenuAdd(m, Tr(T_RSP_NEXT), "");
+    UiMenuAdd(m, Tr(T_AUDIO_MARGIN), "");
+    UiMenuAdd(m, Tr(T_SHOW_FPS), "");
+    UiMenuAdd(m, Tr(T_GRAPHICS), "");
+    UiMenuAdd(m, Tr(T_CONTROLS), "");
+    UiMenuAdd(m, Tr(T_LANGUAGE), "");
     if (s_browser)
     {
-        UiMenuAdd(m, "Box art downloads", "");
-        UiMenuAdd(m, "Get box art for all games", "");
+        UiMenuAdd(m, Tr(T_ART_DOWNLOADS), "");
+        UiMenuAdd(m, Tr(T_ART_ALL), "");
     }
-    UiMenuAdd(m, "Save for all games", "");
-    if (s_perGame) UiMenuAdd(m, "Save for this game only", "");
-    UiMenuAdd(m, "Back", "");
+    UiMenuAdd(m, Tr(T_SAVE_ALL), "");
+    if (s_perGame) UiMenuAdd(m, Tr(T_SAVE_GAME), "");
+    UiMenuAdd(m, Tr(T_BACK), "");
     settings_values(m, c);
 }
 
 static void settings_graphics(UiMenu *m, const Config *c)
 {
     s_graphicsPage = 1;
-    UiMenuClear(m, "Graphics", "A:Select|DPAD:Change|B:Back");
-    UiMenuAdd(m, "Preset", "");
-    UiMenuAdd(m, "Resolution", "");
-    UiMenuAdd(m, "Stretch to 16:9", "");
-    UiMenuAdd(m, "Picture size", "");
-    UiMenuAdd(m, "Picture left/right", "");
-    UiMenuAdd(m, "Picture up/down", "");
-    UiMenuAdd(m, "Brightness", "");
-    UiMenuAdd(m, "V-Sync", "");
-    UiMenuAdd(m, "Anti-flicker", "");
-    UiMenuAdd(m, "Texture filter", "");
-    UiMenuAdd(m, "Edge smoothing (FXAA)", "");
-    UiMenuAdd(m, "Sharpen", "");
-    UiMenuAdd(m, "Blur", "");
-    UiMenuAdd(m, "Screen effect", "");
-    UiMenuAdd(m, "Back", "");
+    UiMenuClear(m, Tr(T_GRAPHICS), Tr(T_FOOT_SELECT));
+    UiMenuAdd(m, Tr(T_PRESET), "");
+    UiMenuAdd(m, Tr(T_RESOLUTION), "");
+    UiMenuAdd(m, Tr(T_STRETCH), "");
+    UiMenuAdd(m, Tr(T_PIC_SIZE), "");
+    UiMenuAdd(m, Tr(T_PIC_LR), "");
+    UiMenuAdd(m, Tr(T_PIC_UD), "");
+    UiMenuAdd(m, Tr(T_BRIGHTNESS), "");
+    UiMenuAdd(m, Tr(T_VSYNC), "");
+    UiMenuAdd(m, Tr(T_ANTIFLICKER), "");
+    UiMenuAdd(m, Tr(T_TEXFILTER), "");
+    UiMenuAdd(m, Tr(T_FXAA), "");
+    UiMenuAdd(m, Tr(T_SHARPEN), "");
+    UiMenuAdd(m, Tr(T_BLUR), "");
+    UiMenuAdd(m, Tr(T_SCREEN_EFFECT), "");
+    UiMenuAdd(m, Tr(T_BACK), "");
     settings_values(m, c);
 }
 
@@ -280,7 +329,7 @@ static void settings_graphics(UiMenu *m, const Config *c)
 // analog stick's source (a stick or the D-pad), inverted axes, dead zone and sensitivity. A on a button waits for
 // an input to set it (Y adds one more, X clears); BACK or 5 s cancel.
 // Inputs are read from controller 1, whichever player is being edited.
-enum { C_STICK = H64_N64_COUNT, C_INVERT, C_DEAD, C_RANGE, C_RESET, C_BACK, C_COUNT };
+enum { C_STICK = H64_N64_COUNT, C_INVERT, C_DEAD, C_RANGE, C_RUMBLE, C_RESET, C_BACK, C_COUNT };
 #define CAPTURE_MS 5000
 
 struct ControlsState
@@ -290,7 +339,7 @@ struct ControlsState
     int capturing;       // waiting for an input for item `capItem`
     int capItem, capAdd, capReleased;
     DWORD capStart;
-    char msg[64];        // a short note under the panel ("D-pad up set")
+    char msg[160];       // a short note under the panel ("D-pad up set")
     DWORD msgAt;
 };
 static ControlsState s_ctl;
@@ -299,7 +348,7 @@ static ControlsState s_ctl;
 static const int s_ctlOrder[C_COUNT] = {
     H64_N64_A, H64_N64_B, H64_N64_Z, H64_N64_START, H64_N64_L, H64_N64_R,
     H64_N64_DUP, H64_N64_DDOWN, H64_N64_DLEFT, H64_N64_DRIGHT, H64_N64_CUP, H64_N64_CDOWN, H64_N64_CLEFT, H64_N64_CRIGHT,
-    C_STICK, C_INVERT, C_DEAD, C_RANGE, C_RESET, C_BACK,
+    C_STICK, C_INVERT, C_DEAD, C_RANGE, C_RUMBLE, C_RESET, C_BACK,
 };
 
 #define CTL_X 70.0f
@@ -334,6 +383,7 @@ static void ctl_place(int item, int *col, float *row)
     case C_INVERT: *col = 2; *row = 1; return;
     case C_DEAD: *col = 2; *row = 2; return;
     case C_RANGE: *col = 2; *row = 3; return;
+    case C_RUMBLE: *col = 0; *row = 6; return;
     case C_RESET: *col = 0; *row = 7; return;
     default: *col = 0; *row = 8; return;
     }
@@ -344,7 +394,7 @@ static float ctl_row_y(float row) { return CTL_Y + CTL_TOP + row * CTL_ROW; }
 
 static void controls_open(UiMenu *m, Config *c)
 {
-    UiMenuClear(m, "Controls", "");
+    UiMenuClear(m, Tr(T_CONTROLS), "");
     m->page = UI_PAGE_CONTROLS;
     m->count = C_COUNT;
     m->sel = 0;
@@ -384,13 +434,13 @@ static int controls_capture(void)
     u32 src = 0;
     H64PadMap *map = &s_ctl.c->padMap[s_ctl.player];
     int i;
-    char note[64];
+    char note[160];
     if (ctl_read(&in))
     {
         if (in.buttons & XINPUT_GAMEPAD_BACK)
         {
             s_ctl.capturing = 0;
-            ctl_note("Cancelled");
+            ctl_note(Tr(T_CANCELLED));
             return SET_NONE;
         }
         src = h64_padmap_sources(&in);
@@ -403,7 +453,7 @@ static int controls_capture(void)
     if (GetTickCount() - s_ctl.capStart >= CAPTURE_MS)
     {
         s_ctl.capturing = 0;
-        ctl_note("No input: unchanged");
+        ctl_note(Tr(T_NO_INPUT));
         return SET_NONE;
     }
     if (!src) return SET_NONE;
@@ -412,8 +462,7 @@ static int controls_capture(void)
     if (s_ctl.capAdd) map->src[s_ctl.capItem] |= 1u << i;
     else map->src[s_ctl.capItem] = 1u << i;
     s_ctl.capturing = 0;
-    _snprintf(note, sizeof(note) - 1, "%s: %s %s", h64_padmap_n64_label(s_ctl.capItem), h64_padmap_source_label(i),
-              s_ctl.capAdd ? "added" : "set");
+    _snprintf(note, sizeof(note) - 1, Tr(s_ctl.capAdd ? T_INPUT_ADDED : T_INPUT_SET), TrN64(s_ctl.capItem), TrSource(i));
     note[sizeof(note) - 1] = 0;
     ctl_note(note);
     return SET_CHANGED;
@@ -461,7 +510,12 @@ static int controls_input(UiMenu *m, Config *c, WORD down)
     if (item == C_RESET && (down & XINPUT_GAMEPAD_A))
     {
         h64_padmap_default(map);
-        ctl_note("Default controls");
+        ctl_note(Tr(T_DEFAULT_CONTROLS));
+        return SET_CHANGED;
+    }
+    if (item == C_RUMBLE && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        c->rumble = !c->rumble;   // one setting for every player
         return SET_CHANGED;
     }
     if (item >= C_STICK && item <= C_RANGE && (dir || (down & XINPUT_GAMEPAD_A)))
@@ -483,7 +537,7 @@ static int controls_input(UiMenu *m, Config *c, WORD down)
         }
         return SET_CHANGED;
     }
-    if (dir && (item < C_STICK || item >= C_RESET))
+    if (dir && (item < C_STICK || item >= C_RUMBLE))
     {
         // Left/right on a button row: the next column, on the row nearest the same height.
         int best = m->sel;
@@ -506,9 +560,13 @@ static int controls_input(UiMenu *m, Config *c, WORD down)
 // The inputs of a mask as button prompts ("X/Y/LT/RT|DPAD:Up"), or "" when none.
 static void ctl_hints(u32 mask, char *out, size_t size)
 {
-    static const char *glyph[H64_SRC_COUNT] = {
-        "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "START", "DPAD:Up", "DPAD:Down", "DPAD:Left", "DPAD:Right",
-        "LS:Click", "RS:Click", "LS:Up", "LS:Down", "LS:Left", "LS:Right", "RS:Up", "RS:Down", "RS:Left", "RS:Right",
+    static const char *const glyph[H64_SRC_COUNT] = {
+        "A", "B", "X", "Y", "LB", "RB", "LT", "RT", "START", "DPAD", "DPAD", "DPAD", "DPAD",
+        "LS", "RS", "LS", "LS", "LS", "LS", "RS", "RS", "RS", "RS",
+    };
+    static const int label[H64_SRC_COUNT] = {
+        -1, -1, -1, -1, -1, -1, -1, -1, -1, T_DIR_UP, T_DIR_DOWN, T_DIR_LEFT, T_DIR_RIGHT,
+        T_CLICK, T_CLICK, T_DIR_UP, T_DIR_DOWN, T_DIR_LEFT, T_DIR_RIGHT, T_DIR_UP, T_DIR_DOWN, T_DIR_LEFT, T_DIR_RIGHT,
     };
     int pass, i;
     out[0] = 0;
@@ -516,19 +574,24 @@ static void ctl_hints(u32 mask, char *out, size_t size)
     for (pass = 0; pass < 2; pass++)
         for (i = 0; i < H64_SRC_COUNT; i++)
         {
+            char item[96];
             size_t len = strlen(out);
-            int labelled = strchr(glyph[i], ':') != NULL;
+            int labelled = label[i] >= 0;
             if (!(mask & (1u << i)) || labelled != pass) continue;
-            if (len + strlen(glyph[i]) + 2 > size) return;
+            if (labelled) _snprintf(item, sizeof(item) - 1, "%s:%s", glyph[i], Tr(label[i]));
+            else strcpy(item, glyph[i]);
+            item[sizeof(item) - 1] = 0;
+            if (len + strlen(item) + 2 > size) return;
             if (len) strcat(out, pass ? "|" : "/");
-            strcat(out, glyph[i]);
+            strcat(out, item);
         }
 }
 
 static void ctl_value_text(int item, const H64PadMap *map, char *out)
 {
-    static const char *sticks[H64_STICK_COUNT] = { "Left stick", "Right stick", "D-pad", "Off" };
-    static const char *inverts[4] = { "Off", "X", "Y", "X and Y" };
+    if (item == C_RUMBLE) { sprintf(out, "< %s >", onoff(s_ctl.c ? s_ctl.c->rumble : 1)); return; }
+    const char *sticks[H64_STICK_COUNT] = { Tr(T_STICK_LEFT), Tr(T_STICK_RIGHT), Tr(T_STICK_DPAD), Tr(T_OFF) };
+    const char *inverts[4] = { Tr(T_OFF), "X", "Y", Tr(T_X_AND_Y) };
     if (item == C_STICK) sprintf(out, "< %s >", sticks[map->stick >= 0 && map->stick < H64_STICK_COUNT ? map->stick : 0]);
     else if (item == C_INVERT) sprintf(out, "< %s >", inverts[map->invert & 3]);
     else if (item == C_DEAD) sprintf(out, "< %d%% >", (map->deadzone * 100 + 16383) / 32767);
@@ -634,12 +697,13 @@ static void controls_draw(const UiMenu *m)
 
     UiDim();
     UiPanel(x, y, CTL_W, CTL_H, 22);
-    UiText(UI_BOLD, 30, x + 40, y + 50, UI_COL_TEXT, "Controls", UI_LEFT);
+    UiText(UI_BOLD, 30, x + 40, y + 50, UI_COL_TEXT, Tr(T_CONTROLS), UI_LEFT);
     UiRoundRect(x + 40, y + 74, 30, 4, 2, UI_COL_ACCENT_HI, UI_COL_ACCENT);
     {
         // Player selector: "LB  Player 1  RB" at the top right.
         float r = x + CTL_W - 40, w;
-        sprintf(buf, "Player %d", s_ctl.player + 1);
+        _snprintf(buf, sizeof(buf) - 1, Tr(T_PLAYER), s_ctl.player + 1);
+        buf[sizeof(buf) - 1] = 0;
         r -= UiFooterWidth("RB");
         UiFooter(r, y + 50, "RB");
         w = UiTextWidth(UI_BOLD, 22, buf);
@@ -648,15 +712,16 @@ static void controls_draw(const UiMenu *m)
         UiFooter(r, y + 50, "LB");
         if (s_ctl.player)
         {
-            sprintf(buf, "Used when controller %d is connected", s_ctl.player + 1);
+            _snprintf(buf, sizeof(buf) - 1, Tr(T_USED_WHEN), s_ctl.player + 1);
+            buf[sizeof(buf) - 1] = 0;
             UiText(UI_REGULAR, 16, x + CTL_W - 40, y + 82, UI_COL_TEXT3, buf, UI_RIGHT);
         }
     }
 
-    heading(ctl_col_x(0) + 20, y + CTL_TOP - 22, "BUTTONS");
-    heading(ctl_col_x(1) + 20, y + CTL_TOP - 22, "D-PAD");
-    heading(ctl_col_x(1) + 20, ctl_row_y(5) - 16, "C BUTTONS");
-    heading(ctl_col_x(2) + 20, y + CTL_TOP - 22, "ANALOG STICK");
+    heading(ctl_col_x(0) + 20, y + CTL_TOP - 22, Tr(T_HEAD_BUTTONS));
+    heading(ctl_col_x(1) + 20, y + CTL_TOP - 22, Tr(T_HEAD_DPAD));
+    heading(ctl_col_x(1) + 20, ctl_row_y(5) - 16, Tr(T_HEAD_CBUTTONS));
+    heading(ctl_col_x(2) + 20, y + CTL_TOP - 22, Tr(T_HEAD_STICK));
 
     ctl_place(selItem, &col, &row);
     sx = anim_step(&selX, ctl_col_x(col), col != lastCol);
@@ -673,23 +738,24 @@ static void controls_draw(const UiMenu *m)
         cy = ctl_row_y(row) + CTL_ROW * 0.5f;
         if (item < H64_N64_COUNT)
         {
-            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, h64_padmap_n64_label(item), UI_LEFT);
+            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, TrN64(item), UI_LEFT);
             if (s_ctl.capturing && item == s_ctl.capItem)
-                UiText(UI_BOLD, 18, cx + CTL_COLW - 18, cy, UI_COL_ACCENT_HI, "Press an input...", UI_RIGHT);
+                UiText(UI_BOLD, 18, cx + CTL_COLW - 18, cy, UI_COL_ACCENT_HI, Tr(T_PRESS_INPUT), UI_RIGHT);
             else
             {
                 ctl_hints(map->src[item], buf, sizeof(buf));
-                if (!buf[0]) UiText(UI_REGULAR, 18, cx + CTL_COLW - 18, cy, UI_COL_TEXT3, "None", UI_RIGHT);
+                if (!buf[0]) UiText(UI_REGULAR, 18, cx + CTL_COLW - 18, cy, UI_COL_TEXT3, Tr(T_NO_INPUT_SET), UI_RIGHT);
                 else
                 {
                     float w = UiFooterWidth(buf), maxW = CTL_COLW - 130;
                     if (w <= maxW) UiFooter(cx + CTL_COLW - 18 - w, cy, buf);
                     else
                     {
-                        char n[24];
+                        char n[64];
                         int k, cnt = 0;
                         for (k = 0; k < H64_SRC_COUNT; k++) cnt += (map->src[item] >> k) & 1;
-                        sprintf(n, "%d inputs", cnt);
+                        _snprintf(n, sizeof(n) - 1, Tr(T_N_INPUTS), cnt);
+                        n[sizeof(n) - 1] = 0;
                         UiText(UI_REGULAR, 18, cx + CTL_COLW - 18, cy, UI_COL_TEXT2, n, UI_RIGHT);
                     }
                 }
@@ -697,8 +763,8 @@ static void controls_draw(const UiMenu *m)
         }
         else
         {
-            static const char *labels[] = { "Analog stick", "Invert", "Dead zone", "Sensitivity", "Reset to default", "Back" };
-            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, labels[item - C_STICK], UI_LEFT);
+            static const int labels[] = { T_ANALOG_STICK, T_INVERT, T_DEAD_ZONE, T_SENSITIVITY, T_RUMBLE, T_RESET_DEFAULT, T_BACK };
+            UiText(s ? UI_BOLD : UI_REGULAR, 20, cx + 24, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, Tr(labels[item - C_STICK]), UI_LEFT);
             ctl_value_text(item, map, buf);
             if (buf[0]) draw_value(cx + CTL_COLW - 18, cy, buf, s);
         }
@@ -716,11 +782,12 @@ static void controls_draw(const UiMenu *m)
     {
         DWORD age = s_ctl.capReleased ? GetTickCount() - s_ctl.capStart : 0;
         float left = age >= CAPTURE_MS ? 0.0f : (CAPTURE_MS - age) / (float)CAPTURE_MS, bw = 220;
-        sprintf(buf, "Press the input for %s", h64_padmap_n64_label(s_ctl.capItem));
+        _snprintf(buf, sizeof(buf) - 1, Tr(T_PRESS_FOR), TrN64(s_ctl.capItem));
+        buf[sizeof(buf) - 1] = 0;
         UiText(UI_BOLD, 20, x + 40, y + CTL_H - 39, UI_COL_TEXT, buf, UI_LEFT);
-        UiFooter(x + CTL_W - 40 - UiFooterWidth("BACK:Cancel"), y + CTL_H - 39, "BACK:Cancel");
+        UiFooter(x + CTL_W - 40 - UiFooterWidth(Tr(T_FOOT_CANCEL)), y + CTL_H - 39, Tr(T_FOOT_CANCEL));
         {
-            float bx = x + CTL_W - 80 - UiFooterWidth("BACK:Cancel") - bw;
+            float bx = x + CTL_W - 80 - UiFooterWidth(Tr(T_FOOT_CANCEL)) - bw;
             UiRoundRect(bx, y + CTL_H - 42, bw, 6, 3, D3DCOLOR_ARGB(30, 255, 255, 255), D3DCOLOR_ARGB(30, 255, 255, 255));
             if (left > 0) UiRoundRect(bx, y + CTL_H - 42, bw * left, 6, 3, UI_COL_ACCENT_HI, UI_COL_ACCENT);
         }
@@ -729,10 +796,10 @@ static void controls_draw(const UiMenu *m)
     {
         // The last change, or a word of help, on the right.
         DWORD age = GetTickCount() - s_ctl.msgAt;
-        if (selItem < H64_N64_COUNT) UiFooter(x + 40, y + CTL_H - 39, "A:Set|Y:Add|X:Clear|LB/RB:Player|B:Back");
-        else UiFooter(x + 40, y + CTL_H - 39, "A:Select|DPAD:Change|LB/RB:Player|B:Back");
+        if (selItem < H64_N64_COUNT) UiFooter(x + 40, y + CTL_H - 39, Tr(T_FOOT_CTL_BUTTON));
+        else UiFooter(x + 40, y + CTL_H - 39, Tr(T_FOOT_CTL_OTHER));
         if (s_ctl.msg[0] && age < 3000) UiText(UI_BOLD, 18, x + CTL_W - 40, y + CTL_H - 39, UI_COL_ACCENT_HI, s_ctl.msg, UI_RIGHT);
-        else UiText(UI_REGULAR, 16, x + CTL_W - 40, y + CTL_H - 39, UI_COL_TEXT3, "BACK stays reserved for the emulator's menu", UI_RIGHT);
+        else UiText(UI_REGULAR, 16, x + CTL_W - 40, y + CTL_H - 39, UI_COL_TEXT3, Tr(T_BACK_RESERVED), UI_RIGHT);
     }
 }
 
@@ -823,9 +890,18 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
             if (c->audioMs < 50) c->audioMs = 50;
             if (c->audioMs > 500) c->audioMs = 500;
             break;
-        case S_FPS: c->showFps = !c->showFps; break;
+        case S_FPS: c->showFps = ((c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps) + dir + 4) % 4; break;   // off, FPS, + CPU/RAM, + resolution
         }
         changed = 1;
+    }
+    if (m->sel == S_LANGUAGE && (dir || (down & XINPUT_GAMEPAD_A)))
+    {
+        // From the ROM list, A opens the list with the flags; left/right (and A in game) step through the languages.
+        if (s_browser && !dir) return SET_LANGUAGE;
+        lang_change(c, (LangGet() + (dir ? dir : 1) + LANG_COUNT) % LANG_COUNT);
+        settings_main(m, c);
+        m->sel = S_LANGUAGE;
+        return SET_NONE;
     }
     if (s_browser && m->sel == S_ART && (dir || (down & XINPUT_GAMEPAD_A)))
     {
@@ -861,8 +937,16 @@ static int confirm_quit(IDirect3DDevice9 *dev)
         UiBegin(dev);
         UiBackdrop();
         UiPanel(x, y, w, h, 22);
-        UiText(UI_BOLD, 30, x + 48, y + 70, UI_COL_TEXT, "Quit to the dashboard?", UI_LEFT);
-        UiFooter(x + 48, y + h - 50, "A:Quit|B:Stay");
+        if (LangRtl())
+        {
+            UiText(UI_BOLD, 30, x + w - 48, y + 70, UI_COL_TEXT, Tr(T_QUIT_ASK), UI_RIGHT);
+            UiFooter(x + w - 48 - UiFooterWidth(Tr(T_FOOT_QUIT)), y + h - 50, Tr(T_FOOT_QUIT));
+        }
+        else
+        {
+            UiText(UI_BOLD, 30, x + 48, y + 70, UI_COL_TEXT, Tr(T_QUIT_ASK), UI_LEFT);
+            UiFooter(x + 48, y + h - 50, Tr(T_FOOT_QUIT));
+        }
         UiEnd();
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
@@ -926,6 +1010,112 @@ void AboutScreen(IDirect3DDevice9 *dev)
         dev->Present(NULL, NULL, NULL, NULL);
         Sleep(16);
     }
+}
+
+// ---- Language list ----
+// Seven cards (four, then three), each with its flag and the language's own
+// name; the title and the button prompt follow the card under the cursor.
+#define LANG_CARD_W 220.0f
+#define LANG_CARD_H 196.0f
+#define LANG_GAP 24.0f
+
+static void lang_card_pos(int i, float *x, float *y)
+{
+    int row = i < 4 ? 0 : 1, n = row ? LANG_COUNT - 4 : 4, col = row ? i - 4 : i;
+    float total = n * LANG_CARD_W + (n - 1) * LANG_GAP;
+    *x = (UI_WIDTH - total) * 0.5f + col * (LANG_CARD_W + LANG_GAP);
+    *y = row ? 408.0f : 188.0f;
+}
+
+// The card in the other row nearest to card `i` (up/down).
+static int lang_other_row(int i)
+{
+    float x, y, bx, by, best = 1e9f;
+    int k, pick = i;
+    lang_card_pos(i, &x, &y);
+    for (k = 0; k < LANG_COUNT; k++)
+    {
+        float d;
+        if ((k < 4) == (i < 4)) continue;
+        lang_card_pos(k, &bx, &by);
+        d = fabsf(bx - x);
+        if (d < best) { best = d; pick = k; }
+    }
+    return pick;
+}
+
+static int s_langAutoMs;
+void LanguageScreenAuto(int ms) { s_langAutoMs = ms; }
+
+int LanguageScreen(IDirect3DDevice9 *dev, int initial, int firstStart)
+{
+    IDirect3DTexture9 *flags[LANG_COUNT];
+    UiInput in;
+    UiAnim ax, ay;
+    int sel = initial >= 0 && initial < LANG_COUNT ? initial : LANG_EN, i, result = -2;
+    DWORD openedAt = GetTickCount();
+    memset(&ax, 0, sizeof(ax));
+    memset(&ay, 0, sizeof(ay));
+    for (i = 0; i < LANG_COUNT; i++)
+    {
+        int w = 0, h = 0;
+        u8 *px = h64_png_decode(s_flagPng[i], s_flagPngSize[i], &w, &h, FLAG_W * FLAG_H);
+        flags[i] = px ? UiImageCreate(dev, px, w, h) : NULL;
+        free(px);
+    }
+    UiInputInit(&in);
+    H64_INFO("[lang] language list (%s)", firstStart ? "first start" : "settings");
+    while (result == -2)
+    {
+        WORD down = UiInputPoll(&in);
+        float cx, cy, now = UiTime();
+        if (down & XINPUT_GAMEPAD_DPAD_LEFT) sel = (sel + LANG_COUNT - 1) % LANG_COUNT;
+        if (down & XINPUT_GAMEPAD_DPAD_RIGHT) sel = (sel + 1) % LANG_COUNT;
+        if (down & (XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN)) sel = lang_other_row(sel);
+        if ((down & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START)) || (s_langAutoMs > 0 && GetTickCount() - openedAt >= (DWORD)s_langAutoMs)) result = sel;
+        else if (!firstStart && (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK))) result = -1;
+
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+        UiBegin(dev);
+        UiBackdrop();
+        UiBrand(UI_SAFE_X, 72, 34);
+        UiText(UI_BOLD, 34, UI_WIDTH * 0.5f, 134, UI_COL_TEXT, TrIn(sel, T_LANG_TITLE), UI_CENTER);
+        lang_card_pos(sel, &cx, &cy);
+        cx = anim_step(&ax, cx, 0);
+        cy = anim_step(&ay, cy, 0);
+        UiShadow(cx - 4, cy - 4, LANG_CARD_W + 8, LANG_CARD_H + 8, 24, 26, D3DCOLOR_ARGB(150, 234, 76, 58));
+        for (i = 0; i < LANG_COUNT; i++)
+        {
+            float x, y;
+            int s = i == sel;
+            lang_card_pos(i, &x, &y);
+            UiShadow(x, y + 8, LANG_CARD_W, LANG_CARD_H, 20, 24, UI_COL_SHADOW);
+            UiRoundRect(x, y, LANG_CARD_W, LANG_CARD_H, 20, s ? D3DCOLOR_ARGB(255, 52, 40, 46) : UI_COL_PANEL_TOP,
+                        s ? D3DCOLOR_ARGB(255, 40, 31, 36) : UI_COL_PANEL);
+            UiRoundRing(x, y, LANG_CARD_W, LANG_CARD_H, 20, 1.0f, UI_COL_LINE);
+            if (flags[i])
+            {
+                const float fw = 176, fh = 117, fx = x + (LANG_CARD_W - fw) * 0.5f, fy = y + 20;
+                UiShadow(fx, fy + 4, fw, fh, 8, 12, D3DCOLOR_ARGB(140, 0, 0, 0));
+                UiImage(flags[i], fx, fy, fw, fh, 8, s ? D3DCOLOR_ARGB(255, 255, 255, 255) : D3DCOLOR_ARGB(255, 200, 200, 200));
+                UiRoundRing(fx, fy, fw, fh, 8, 1.0f, D3DCOLOR_ARGB(50, 255, 255, 255));
+            }
+            UiText(s ? UI_BOLD : UI_REGULAR, 22, x + LANG_CARD_W * 0.5f, y + 166, s ? UI_COL_TEXT : UI_COL_TEXT2, TrIn(i, T_LANG_NAME), UI_CENTER);
+        }
+        {
+            // The selected card's outline, pulsing gently.
+            float on = 0.75f + 0.25f * sinf(now * 4.0f);
+            UiRoundRing(cx - 3, cy - 3, LANG_CARD_W + 6, LANG_CARD_H + 6, 23, 3.0f, D3DCOLOR_ARGB((int)(255 * on), 255, 112, 84));
+        }
+        UiScreenFooter(TrIn(sel, firstStart ? T_FOOT_LANG_FIRST : T_FOOT_LANG));
+        UiEnd();
+        dev->Present(NULL, NULL, NULL, NULL);
+        Sleep(16);
+    }
+    for (i = 0; i < LANG_COUNT; i++)
+        if (flags[i]) UiImageRelease(dev, flags[i]);
+    H64_INFO("[lang] language list: %s", result >= 0 ? LangCode(result) : "left");
+    return result;
 }
 
 // ---- ROM browser ----
@@ -1036,7 +1226,7 @@ int RomFolderName(const char *path, char *out, size_t size)
 struct RomInfo
 {
     int ok;
-    char name[24], code[8], size[16], save[48], folder[64], region[32];
+    char name[24], code[8], size[16], save[128], folder[64], region[32];
 };
 
 static void rom_details(const char *path, RomInfo *info)
@@ -1052,7 +1242,9 @@ static void rom_details(const char *path, RomInfo *info)
     strncpy(info->code, rom.gameCode, sizeof(info->code) - 1);
     if (len >= (1u << 20)) _snprintf(info->size, sizeof(info->size), "%u MB", len >> 20);
     else _snprintf(info->size, sizeof(info->size), "%u KB", len >> 10);
-    _snprintf(info->save, sizeof(info->save), "%s%s", h64_save_type_name(type), pak ? " + Controller Pak" : "");
+    _snprintf(info->save, sizeof(info->save), "%s%s",
+              type == H64_SAVE_NONE ? Tr(T_SAVE_NONE) : type == H64_SAVE_AUTO ? Tr(T_SAVE_UNKNOWN) : h64_save_type_name(type),
+              pak ? " + Controller Pak" : "");
     h64_save_folder_name(&rom, info->folder, (int)sizeof(info->folder));
     strncpy(info->region, h64_gameinfo_region_name(rom.gameCode[3]), sizeof(info->region) - 1);
     info->size[sizeof(info->size) - 1] = 0;
@@ -1112,6 +1304,15 @@ static int settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsP
             s_ctl.capStart = GetTickCount();
         }
         r = SettingsInput(&m, c, 0, UiInputPoll(&in));
+        if (r == SET_LANGUAGE)
+        {
+            int lang = LanguageScreen(dev, LangGet(), 0);
+            if (lang >= 0) lang_change(c, lang);
+            settings_main(&m, c);
+            m.sel = S_LANGUAGE;
+            UiInputInit(&in);
+            continue;
+        }
         if (r == SET_BACK) { s_browser = 0; return 0; }
         if (r == SET_ART_ALL) { s_browser = 0; return 1; }
         if (r == SET_SAVE_ALL)
@@ -1327,10 +1528,10 @@ static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, in
     if (busy && ca <= 0)
     {
         // Downloading: a pill with three pulsing dots at the bottom right of the picture.
-        float pw = UiTextWidth(UI_REGULAR, 15, "Downloading") + 64, ph = 30, px = sx + sw - pw - 12, py = sy + sh - ph - 12;
+        float pw = UiTextWidth(UI_REGULAR, 15, Tr(T_DOWNLOADING)) + 64, ph = 30, px = sx + sw - pw - 12, py = sy + sh - ph - 12;
         int d;
         UiRoundRect(px, py, pw, ph, ph * 0.5f, D3DCOLOR_ARGB(200, 16, 17, 23), D3DCOLOR_ARGB(200, 16, 17, 23));
-        UiText(UI_REGULAR, 15, px + 14, py + ph * 0.5f, UI_COL_TEXT2, "Downloading", UI_LEFT);
+        UiText(UI_REGULAR, 15, px + 14, py + ph * 0.5f, UI_COL_TEXT2, Tr(T_DOWNLOADING), UI_LEFT);
         for (d = 0; d < 3; d++)
         {
             float on = 0.5f + 0.5f * sinf(now * 6.0f - d * 0.9f);
@@ -1372,13 +1573,14 @@ static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, in
     // ---- Genre, players, region.
     {
         float cxp = ix;
-        const char *region = gi && gi->region[0] ? gi->region : ri->region;
-        char players[24];
+        const char *region = TrRegion(gi && gi->region[0] ? gi->region : ri->region);
+        char players[64];
         int any = 0;
         if (gi && gi->genre[0]) { cxp += chip(cxp, ty, gi->genre, a) + 8; any = 1; }
         if (gi && gi->players[0])
         {
-            _snprintf(players, sizeof(players) - 1, "%s player%s", gi->players, strcmp(gi->players, "1") ? "s" : "");
+            if (!strcmp(gi->players, "1")) strcpy(players, Tr(T_ONE_PLAYER));
+            else _snprintf(players, sizeof(players) - 1, Tr(T_N_PLAYERS), gi->players);
             players[sizeof(players) - 1] = 0;
             cxp += chip(cxp, ty, players, a) + 8;
             any = 1;
@@ -1396,19 +1598,19 @@ static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, in
         {
             int lines = UiTextWrap(UI_REGULAR, 17, iw, maxLines, gi->description, buf, sizeof(buf));
             UiText(UI_REGULAR, 17, ix, ty + 4 + lineH * 0.5f, UiAlpha(UI_COL_TEXT2, a), buf, UI_LEFT);
-            UiText(UI_REGULAR, 13, ix, ty + 4 + lines * lineH + 9, UiAlpha(UI_COL_TEXT3, a), "Text: Wikipedia (CC BY-SA)", UI_LEFT);
+            UiText(UI_REGULAR, 13, ix, ty + 4 + lines * lineH + 9, UiAlpha(UI_COL_TEXT3, a), Tr(T_WIKI_TEXT), UI_LEFT);
         }
     }
 
     // ---- What the emulator knows from the file.
     UiRect(ix, divY, iw, 1, UI_COL_LINE);
     if (!ri->ok)
-        UiText(UI_REGULAR, 19, ix, divY + 36, UI_COL_ACCENT_HI, "Not an N64 ROM", UI_LEFT);
+        UiText(UI_REGULAR, 19, ix, divY + 36, UI_COL_ACCENT_HI, Tr(T_NOT_N64), UI_LEFT);
     else
     {
-        detail(ix, divY + 22, 110, "GAME CODE", ri->code, 1.0f);
-        detail(ix + 128, divY + 22, 90, "SIZE", ri->size, 1.0f);
-        detail(ix + 236, divY + 22, iw - 236, "SAVE", ri->save, 1.0f);
+        detail(ix, divY + 22, 110, Tr(T_GAME_CODE), ri->code, 1.0f);
+        detail(ix + 128, divY + 22, 90, Tr(T_SIZE), ri->size, 1.0f);
+        detail(ix + 236, divY + 22, iw - 236, Tr(T_SAVE), ri->save, 1.0f);
     }
 }
 
@@ -1436,9 +1638,9 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     if (!n)
     {
         float cy = listY + listH * 0.5f;
-        UiText(UI_BOLD, 30, listX + listW * 0.5f, cy - 50, UI_COL_TEXT, "No ROM found", UI_CENTER);
-        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy, UI_COL_TEXT2, "Copy .z64, .n64, .v64 or .zip files", UI_CENTER);
-        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy + 32, UI_COL_TEXT2, "into game:\\roms\\", UI_CENTER);
+        UiText(UI_BOLD, 30, listX + listW * 0.5f, cy - 50, UI_COL_TEXT, Tr(T_NO_ROM), UI_CENTER);
+        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy, UI_COL_TEXT2, Tr(T_COPY_ROMS), UI_CENTER);
+        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy + 32, UI_COL_TEXT2, Tr(T_INTO_ROMS), UI_CENTER);
     }
     else
     {
@@ -1463,14 +1665,15 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
         }
         card_draw(roms[sel].shown.c_str(), info, view, busy, selAt);
     }
-    UiScreenFooter(n ? "A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard" : "Y:Settings|X:About|BACK:Dashboard");
+    UiScreenFooter(Tr(n ? T_FOOT_BROWSER : T_FOOT_BROWSER_EMPTY));
     if (st->bulk)
     {
         // "Download all" progress at the right end of the footer.
         const float bw = 150, right = UI_WIDTH - UI_SAFE_X, cy = 664;
         float frac = st->total ? (float)st->done / st->total : 0;
-        if (st->done) sprintf(buf, "Box art %d / %d", st->done, st->total);
-        else strcpy(buf, "Box art: connecting" UI_CH_ELLIPSIS);
+        if (st->done) _snprintf(buf, sizeof(buf) - 1, Tr(T_ART_PROGRESS), st->done, st->total);
+        else strncpy(buf, Tr(T_ART_CONNECTING), sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
         UiText(UI_REGULAR, 17, right - bw - 16, cy, UI_COL_TEXT2, buf, UI_RIGHT);
         UiRoundRect(right - bw, cy - 3, bw, 6, 3, D3DCOLOR_ARGB(30, 255, 255, 255), D3DCOLOR_ARGB(30, 255, 255, 255));
         if (frac > 0) UiRoundRect(right - bw, cy - 3, bw * frac, 6, 3, UI_COL_ACCENT_HI, UI_COL_ACCENT);
@@ -1491,7 +1694,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     int sel = 0, top = 0, detailsFor = -1, i, lastSel = -1;
     RomInfo details;
     const int rows = 13;
-    char newVersion[32], msg[128], drive[16];
+    char newVersion[32], msg[256], drive[16];
     DWORD msgAt = 0, demoAt = GetTickCount();
     float selAt = 0;
     msg[0] = 0;
@@ -1521,6 +1724,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         return 1;
     }
     // Box art: in the folder of the settings' drive ("game:\config\settings.ini" -> game).
+    SettingsSetLangFile(settingsPath);
     for (i = 0; settingsPath[i] && settingsPath[i] != ':' && i < (int)sizeof(drive) - 1; i++) drive[i] = settingsPath[i];
     drive[i] = 0;
     if (!settingsPath[i] || !i) strcpy(drive, "game");
@@ -1543,7 +1747,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         int n = (int)roms.size();
         if (UpdateCheckTake(newVersion, sizeof(newVersion)))
         {
-            _snprintf(msg, sizeof(msg) - 1, "Harissa64 %s is available on GitHub", newVersion);
+            _snprintf(msg, sizeof(msg) - 1, Tr(T_UPDATE_AVAILABLE), newVersion);
             msg[sizeof(msg) - 1] = 0;
             msgAt = GetTickCount();
             H64_INFO("[update] %s", msg);
@@ -1596,14 +1800,15 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
         if (down & XINPUT_GAMEPAD_Y)
         {
             int all = settings_loop(dev, c, settingsPath, -1);
+            detailsFor = -1;   // the card's texts again (the language may have changed)
             ArtSetNetwork(c->artDownload && art_net_possible(c));
             if (all && n)
             {
-                if (!art_net_possible(c)) strcpy(msg, "Downloads are not available here");
+                if (!art_net_possible(c)) strncpy(msg, Tr(T_NO_DOWNLOADS), sizeof(msg) - 1);
                 else
                 {
                     ArtBulkStart(&paths[0], n);
-                    strcpy(msg, "Getting box art for all games" UI_CH_ELLIPSIS);
+                    strncpy(msg, Tr(T_GETTING_ART), sizeof(msg) - 1);
                 }
                 msgAt = GetTickCount();
             }

@@ -90,12 +90,42 @@ void store_u32(unsigned char *buffer, unsigned mask, unsigned address, const uin
 
 void hle_dram_dirty(struct hle_t *hle, u32 address, size_t count)
 {
-    u32 end = address + (u32)count;
+    u32 end = address + (u32)count, i, best = 0, bestGap = 0xFFFFFFFFu;
     if (end > H64_RDRAM_SIZE) { address = 0; end = H64_RDRAM_SIZE; }   // wrapped: be safe
     if (hle->checkMask && hle->dram == hle->checkRam) memset(hle->checkMask + address, 1, end - address);
-    if (hle->dirtyLo >= hle->dirtyHi) { hle->dirtyLo = address; hle->dirtyHi = end; return; }
-    if (address < hle->dirtyLo) hle->dirtyLo = address;
-    if (end > hle->dirtyHi) hle->dirtyHi = end;
+    if (hle->dirtyLo >= hle->dirtyHi) { hle->dirtyLo = address; hle->dirtyHi = end; }
+    else
+    {
+        if (address < hle->dirtyLo) hle->dirtyLo = address;
+        if (end > hle->dirtyHi) hle->dirtyHi = end;
+    }
+    // The separate ranges: joined to one it touches (or lies within 4 KB of),
+    // else a new one; with all eight in use, joined to the nearest.
+    for (i = 0; i < hle->dirtyCount; i++)
+    {
+        u32 *r = hle->dirtyRange[i];
+        u32 gap = end < r[0] ? r[0] - end : address > r[1] ? address - r[1] : 0;
+        if (gap < bestGap) { bestGap = gap; best = i; }
+    }
+    if (bestGap > 4096 && hle->dirtyCount < 8)
+    {
+        hle->dirtyRange[hle->dirtyCount][0] = address;
+        hle->dirtyRange[hle->dirtyCount][1] = end;
+        hle->dirtyCount++;
+        return;
+    }
+    if (address < hle->dirtyRange[best][0]) hle->dirtyRange[best][0] = address;
+    if (end > hle->dirtyRange[best][1]) hle->dirtyRange[best][1] = end;
+}
+
+// Tells the recompiler about each RDRAM range the task wrote, then forgets them.
+static void hle_notify_dirty(H64System *sys, struct hle_t *hle)
+{
+    u32 i;
+    for (i = 0; i < hle->dirtyCount; i++)
+        if (hle->dirtyRange[i][1] > hle->dirtyRange[i][0])
+            h64_jit_notify_write(sys, hle->dirtyRange[i][0], hle->dirtyRange[i][1] - hle->dirtyRange[i][0]);
+    hle->dirtyCount = 0;
 }
 
 // HLE buffers are 0x1000 bytes in upstream's native-word layout: the guest
@@ -400,8 +430,8 @@ int h64_hle_async_finish(H64System *sys, int *ran, int *fullSync, u32 *statusBit
         *statusBits = hle->sp_status;
         *ran = !hle->forwarded;
         // RDRAM written by the task: the recompiler hears of it here, on the CPU thread.
-        if (*ran && hle->dirtyHi > hle->dirtyLo)
-            h64_jit_notify_write(sys, hle->dirtyLo, hle->dirtyHi - hle->dirtyLo);
+        if (*ran) hle_notify_dirty(sys, hle);
+        hle->dirtyCount = 0;
         return 2;
     }
     if (!hle->gfxAsyncPending) return 0;
@@ -545,10 +575,10 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
         // Resident Evil 2's picture and movie tasks (graphics type, no
         // display list): run here, as mupen64plus-rsp-hle does.
         hle->dirtyLo = hle->dirtyHi = 0;
+        hle->dirtyCount = 0;
         if (h64_hle_re2_task(hle, *dmem_u32(hle, TASK_UCODE), *dmem_u32(hle, TASK_UCODE_DATA)))
         {
-            if (hle->dirtyHi > hle->dirtyLo)
-                h64_jit_notify_write(sys, hle->dirtyLo, hle->dirtyHi - hle->dirtyLo);
+            hle_notify_dirty(sys, hle);
             *statusBits = SP_STATUS_TASKDONE | SP_STATUS_BROKE | SP_STATUS_HALT;
             *busyCycles = H64_HLE_GFX_CYCLES;
             return 1;
@@ -688,6 +718,7 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
     hle->forwarded = 0;
     hle->sp_status = 0;
     hle->dirtyLo = hle->dirtyHi = 0;
+    hle->dirtyCount = 0;
     if (sys->asyncAudioStart && !sys->options.hleAudioCheck && info->uc_pfunc != &forward_task)
     {
         // On the audio worker; the end (status bits, RDRAM output) is taken at
@@ -727,8 +758,7 @@ int h64_hle_try_task(H64System *sys, u32 *statusBits, u32 *busyCycles, int *dpIn
     if (hle->forwarded)
         return 0;
 
-    if (hle->dirtyHi > hle->dirtyLo)
-        h64_jit_notify_write(sys, hle->dirtyLo, hle->dirtyHi - hle->dirtyLo);
+    hle_notify_dirty(sys, hle);
     *statusBits = hle->sp_status;
     *busyCycles = H64_HLE_AUDIO_CYCLES;
     return 1;
