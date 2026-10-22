@@ -51,7 +51,9 @@ static const GameProfile s_profiles[] = {
     { "NBO", "Bottom of the 9th", H64_GP_COPY_BACK_WHOLE },
     // Loads its textures from memory where the intro's 640x480 frames were:
     // copying those old frames back over them drew the snow canyons black.
-    { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH },
+    // In flight its frames are 512 x ~442 (the 4:3 guess, 384 lines,
+    // stretched the last line over the bottom of the screen; issue #16).
+    { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH | H64_GP_TALL_FRAME },
     // Never sets the texture conversion (F3DEX2 2.08): its textures were
     // read as YUV, a grey picture.
     { "NXO", "Cruis'n Exotica", H64_GP_OTHERMODE_INIT },
