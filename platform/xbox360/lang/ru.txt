@@ -23,6 +23,7 @@ SAVE_GAME = Сохранить только для этой игры
 BACK = Назад
 ON = Вкл.
 OFF = Выкл.
+VSYNC_STRICT = Строгий
 CUSTOM = Свои
 DEFAULT = Стандарт
 RECOMPILER = Рекомпилятор

@@ -28,6 +28,7 @@ enum
     T_BACK,   // Back
     T_ON,   // On
     T_OFF,   // Off
+    T_VSYNC_STRICT,   // Strict
     T_CUSTOM,   // Custom
     T_DEFAULT,   // Default
     T_RECOMPILER,   // Recompiler
@@ -221,6 +222,7 @@ static const char *const s_langText[LANG_COUNT][T_COUNT] = {
     "Back",
     "On",
     "Off",
+    "Strict",
     "Custom",
     "Default",
     "Recompiler",
@@ -408,6 +410,7 @@ static const char *const s_langText[LANG_COUNT][T_COUNT] = {
     "Volver",
     "S\xC3\xAD",
     "No",
+    "Estricto",
     "Personal",
     "Predeterminado",
     "Recompilador",
@@ -595,6 +598,7 @@ static const char *const s_langText[LANG_COUNT][T_COUNT] = {
     "Zur\xC3\xBC" "ck",
     "An",
     "Aus",
+    "Strikt",
     "Eigene",
     "Standard",
     "Recompiler",
@@ -782,6 +786,7 @@ static const char *const s_langText[LANG_COUNT][T_COUNT] = {
     "Retour",
     "Oui",
     "Non",
+    "Strict",
     "Perso",
     "Par d\xC3\xA9" "faut",
     "Recompilateur",
@@ -969,6 +974,7 @@ static const char *const s_langText[LANG_COUNT][T_COUNT] = {
     "\xEF\xBA\xAD\xEF\xBA\x9F\xEF\xBB\xAE\xEF\xBB\x89",
     "\xEF\xBA\x97\xEF\xBA\xB8\xEF\xBB\x90\xEF\xBB\xB4\xEF\xBB\x9E",
     "\xEF\xBA\x87\xEF\xBB\xB3\xEF\xBB\x98\xEF\xBA\x8E\xEF\xBB\x91",
+    "\xEF\xBA\xBB\xEF\xBA\x8E\xEF\xBA\xAD\xEF\xBB\xA1",
     "\xEF\xBB\xA3\xEF\xBA\xA8\xEF\xBA\xBC\xEF\xBA\xBA",
     "\xEF\xBA\x8D\xEF\xBB\x93\xEF\xBA\x98\xEF\xBA\xAE\xEF\xBA\x8D\xEF\xBA\xBF\xEF\xBB\xB2",
     "\xEF\xBA\x8D\xEF\xBB\x9F\xEF\xBB\xA4\xEF\xBA\x98\xEF\xBA\xAE\xEF\xBA\x9F\xEF\xBB\xA2 \xEF\xBA\x8D\xEF\xBB\x9F\xEF\xBA\xAA\xEF\xBB\xB3\xEF\xBB\xA8\xEF\xBA\x8E\xEF\xBB\xA3\xEF\xBB\xB4\xEF\xBB\x9C\xEF\xBB\xB2",
@@ -1156,6 +1162,7 @@ static const char *const s_langText[LANG_COUNT][T_COUNT] = {
     "Voltar",
     "Sim",
     "N\xC3\xA3o",
+    "Estrito",
     "Pessoal",
     "Padr\xC3\xA3o",
     "Recompilador",
@@ -1343,6 +1350,7 @@ static const char *const s_langText[LANG_COUNT][T_COUNT] = {
     "\xD0\x9D\xD0\xB0\xD0\xB7\xD0\xB0\xD0\xB4",
     "\xD0\x92\xD0\xBA\xD0\xBB.",
     "\xD0\x92\xD1\x8B\xD0\xBA\xD0\xBB.",
+    "\xD0\xA1\xD1\x82\xD1\x80\xD0\xBE\xD0\xB3\xD0\xB8\xD0\xB9",
     "\xD0\xA1\xD0\xB2\xD0\xBE\xD0\xB8",
     "\xD0\xA1\xD1\x82\xD0\xB0\xD0\xBD\xD0\xB4\xD0\xB0\xD1\x80\xD1\x82",
     "\xD0\xA0\xD0\xB5\xD0\xBA\xD0\xBE\xD0\xBC\xD0\xBF\xD0\xB8\xD0\xBB\xD1\x8F\xD1\x82\xD0\xBE\xD1\x80",

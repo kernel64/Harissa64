@@ -33,6 +33,7 @@ SAVE_GAME = Save for this game only
 BACK = Back
 ON = On
 OFF = Off
+VSYNC_STRICT = Strict
 CUSTOM = Custom
 DEFAULT = Default
 RECOMPILER = Recompiler

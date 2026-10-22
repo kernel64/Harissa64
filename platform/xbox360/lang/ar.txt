@@ -24,6 +24,7 @@ SAVE_GAME = حفظ لهذه اللعبة فقط
 BACK = رجوع
 ON = تشغيل
 OFF = إيقاف
+VSYNC_STRICT = صارم
 CUSTOM = مخصص
 DEFAULT = افتراضي
 RECOMPILER = المترجم الديناميكي

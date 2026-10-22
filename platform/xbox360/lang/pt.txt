@@ -23,6 +23,7 @@ SAVE_GAME = Salvar só para este jogo
 BACK = Voltar
 ON = Sim
 OFF = Não
+VSYNC_STRICT = Estrito
 CUSTOM = Pessoal
 DEFAULT = Padrão
 RECOMPILER = Recompilador

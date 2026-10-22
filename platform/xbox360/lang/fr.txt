@@ -23,6 +23,7 @@ SAVE_GAME = Enregistrer pour ce jeu
 BACK = Retour
 ON = Oui
 OFF = Non
+VSYNC_STRICT = Strict
 CUSTOM = Perso
 DEFAULT = Par défaut
 RECOMPILER = Recompilateur

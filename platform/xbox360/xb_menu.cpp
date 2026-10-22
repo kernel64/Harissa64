@@ -256,7 +256,7 @@ static void settings_values(UiMenu *m, const Config *c)
             const char *br[3] = { Tr(T_NORMAL), Tr(T_LIGHTER), Tr(T_MUCH_LIGHTER) };
             sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
             sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
-            sprintf(m->value[G_VSYNC], "< %s >", onoff(c->vsync));
+            sprintf(m->value[G_VSYNC], "< %s >", c->vsync == 2 ? Tr(T_VSYNC_STRICT) : onoff(c->vsync));
             sprintf(m->value[G_DEFLICKER], "< %s >", onoff(c->deflicker));
             sprintf(m->value[G_ZOOM], "< %d%% >", c->zoom);
             sprintf(m->value[G_POSX], "< %+d >", c->offsetX);
@@ -847,7 +847,7 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
         case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
         case G_STRETCH: c->stretch = !c->stretch; break;
-        case G_VSYNC: c->vsync = !c->vsync; break;
+        case G_VSYNC: c->vsync = ((c->vsync < 0 || c->vsync > 2 ? 0 : c->vsync) + dir + 3) % 3; break;   // off, on (adaptive), strict
         case G_DEFLICKER: c->deflicker = !c->deflicker; break;
         case G_ZOOM: c->zoom += dir * 2; if (c->zoom < 80) c->zoom = 80; if (c->zoom > 140) c->zoom = 140; break;
         case G_POSX: c->offsetX += dir * 4; if (c->offsetX < -160) c->offsetX = -160; if (c->offsetX > 160) c->offsetX = 160; break;
