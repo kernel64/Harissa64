@@ -124,7 +124,10 @@ struct H64Options
     int gfxSoft8bit;        // GPU renderer (game profile): drawing into 8-bit colour images done by the software RDP
     int gfxSoftTiny;        // GPU renderer (game profile): drawing into colour images at most 16 pixels wide done by the
                             // software RDP
+    int gfxModStHalf;       // graphics HLE (game profile): s, t set by G_MODIFYVTX are halved without texture perspective
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
+    int gfxCopyBackAlpha;   // GPU renderer (game profile): 16-bit fills write their alpha bit and copy-backs keep the
+                            // GPU's alpha (else always 1): images drawn to be used as cut-out textures
     u32 idleYieldPc;        // recompiler (game profile): head of an idle thread's osYieldThread loop (0: none)
     u32 idleRunQueue;       // and the physical address of libultra's __osRunQueue (see h64_jit.cpp)
     u32 countWaitPc;        // recompiler (game profile): head of a loop that only polls Count or an empty

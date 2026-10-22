@@ -238,7 +238,9 @@ static const GameProfile s_profiles[] = {
 };
 
 // Options with no bit left in the flags above, set by h64_apply_game_profile.
-enum { H64_GX_SOFT_TINY = 1 };   // options.gfxSoftTiny
+enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
+       H64_GX_COPYBACK_ALPHA = 2,     // options.gfxCopyBackAlpha
+       H64_GX_MODIFY_ST_HALF = 4 };   // options.gfxModStHalf
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -246,6 +248,15 @@ static const GameExtra s_extras[] = {
     // it back (~10 a frame; Peach's castle in the prologue ran at ~20 VI/s).
     // The software RDP draws them in memory instead: nothing to copy back.
     { "NMQ", H64_GX_SOFT_TINY },
+    // Racers near the camera are drawn into 64x64 images first (filled with
+    // a transparent colour, alpha bit 0), then shown as cut-out textures:
+    // fills wrote alpha 1 and copy-backs forced it, black squares around them.
+    { "NLG", H64_GX_COPYBACK_ALPHA },
+    // Builds its 2D pictures (title, menus, backgrounds) from quads whose
+    // vertices only G_MODIFYVTX sets, without texture perspective: the
+    // microcode halves their s, t as any vertex's (GitHub issue #22: textures
+    // twice too big, pictures distorted beyond recognition; same as LLE now).
+    { "NCY", H64_GX_MODIFY_ST_HALF },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -273,6 +284,8 @@ void h64_apply_game_profile(H64System *sys)
     for (i = 0; i < sizeof(s_extras) / sizeof(s_extras[0]); i++)
         if (!memcmp(sys->rom.gameCode, s_extras[i].code, 3)) extra = s_extras[i].extra;
     sys->options.gfxSoftTiny = (extra & H64_GX_SOFT_TINY) != 0;
+    sys->options.gfxCopyBackAlpha = (extra & H64_GX_COPYBACK_ALPHA) != 0;
+    sys->options.gfxModStHalf = (extra & H64_GX_MODIFY_ST_HALF) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

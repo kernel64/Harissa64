@@ -1641,11 +1641,14 @@ static void flush_batch(Xenos *x);
 
 // One copied-back pixel (c = 0x00RRGGBB) in the colour image's format. 8-bit
 // images took two bytes a pixel before, writing past them (Conker froze).
-static void store_pixel(u8 *p, int fmt, u32 c)
+// keepAlpha (profile gfxCopyBackAlpha): a 16-bit pixel's alpha bit from the
+// GPU's alpha, else 1.
+static void store_pixel(u8 *p, int fmt, u32 c, int keepAlpha)
 {
     u32 i = (((c >> 16) & 0xFF) + ((c >> 8) & 0xFF) + (c & 0xFF)) / 3;
     if (fmt == FB_RGBA8888) h64_store_be32(p, (c << 8) | 0xFF);
-    else if (fmt == FB_RGBA5551) h64_store_be16(p, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
+    else if (fmt == FB_RGBA5551)
+        h64_store_be16(p, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | (keepAlpha ? c >> 31 : 1)));
     else if (fmt == FB_IA88) h64_store_be16(p, (u16)((i << 8) | 0xFF));
     else *p = (u8)i;   // I8
 }
@@ -1715,7 +1718,7 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
             {
                 u32 a = s->addr + (y * w + xx) * s->bytes;
                 if (a + s->bytes > H64_RDRAM_SIZE) break;
-                store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx]);
+                store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx], x->sys->options.gfxCopyBackAlpha);
             }
         }
     }
@@ -1733,7 +1736,7 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
         {
             u32 a = s->addr + (y * w + xx) * s->bytes;
             if (a + s->bytes > H64_RDRAM_SIZE) break;
-            store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx * x->rtW / w]);
+            store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx * x->rtW / w], x->sys->options.gfxCopyBackAlpha);
         }
     }
     }
@@ -2467,6 +2470,8 @@ static void fill_rect(Xenos *x, const u32 *w)
         {
             u32 p = c >> 16, R = (p >> 11) & 31, G = (p >> 6) & 31, B = (p >> 1) & 31;
             argb = 0xFF000000u | ((R << 3 | R >> 2) << 16) | ((G << 3 | G >> 2) << 8) | (B << 3 | B >> 2);
+            // Profile gfxCopyBackAlpha: the fill's alpha bit, as the RDP writes it.
+            if (x->sys->options.gfxCopyBackAlpha && !(p & 1)) argb &= 0x00FFFFFFu;
         }
         x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
         x->dev->Clear(1, &r, D3DCLEAR_TARGET, x->debug == 1 ? 0xFF00FF00 : argb, 1.0f, 0);

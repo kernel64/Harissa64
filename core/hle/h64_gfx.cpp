@@ -1270,7 +1270,11 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
 // sampled twice too far showed other letters' pieces.
 static H64_INLINE float st_scale(const H64Gfx *g, const GfxVtx *v)
 {
-    return (g->omH & 0x80000) || v->stOverride ? 1.0f : 0.5f;
+    // Profile gfxModStHalf: halved too when G_MODIFYVTX set them. The microcode
+    // scales them by the W the vertex buffer still holds, half the range for a
+    // vertex loaded at w = 1 (South Park: Chef's Luv Shack builds its 2D quads
+    // with G_MODIFYVTX alone: whole, their textures came out twice too big).
+    return (g->omH & 0x80000) || (v->stOverride && !g->sys->options.gfxModStHalf) ? 1.0f : 0.5f;
 }
 
 static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2);
