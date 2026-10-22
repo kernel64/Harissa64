@@ -142,6 +142,7 @@ struct Xenos
     // drawn by a later job (another snapshot); the range not yet used.
     u8 *ramShadow;
     u32 ramCopyLo, ramCopyHi, ramCopyGen;
+    u32 freshGen, freshUsed;   // profile gfxCimgFromRdram: the job (loadRamGen) and its st->cimgFresh entries done
     int cpuFbNext;
 
     std::map<u64, IDirect3DPixelShader9 *> shaders;
@@ -1541,7 +1542,7 @@ static void frame_to_rdram(Xenos *x, int slot)
 static void select_framebuffer(Xenos *x)
 {
     u32 addr = x->st->colorAddr & 0xFFFFFF, i;
-    int best = -1, ramFresh;
+    int best = -1, ramFresh, fresh = -1;
     FbSlot *s;
     x->wsMain = ws_on(x);
     // Resident Evil 2 (profile gfxRdramCopy) copies its background into the
@@ -1551,7 +1552,16 @@ static void select_framebuffer(Xenos *x)
         u32 bytes = x->st->colorWidth * fb_height(x, x->st->colorWidth) * 2;
         ramFresh = x->ramShadow && x->ramCopyHi > x->ramCopyLo && addr < x->ramCopyHi && addr + bytes > x->ramCopyLo;
     }
-    if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound &&
+    // Profile gfxCimgFromRdram: the CPU wrote this frame's memory since the
+    // GPU drew it (h64_gfx.cpp, cimg_fresh): the frame starts from the snapshot,
+    // once per job.
+    if (x->st->loadRam && x->st->cimgFreshCount)
+    {
+        if (x->freshGen != x->st->loadRamGen) { x->freshGen = x->st->loadRamGen; x->freshUsed = 0; }
+        for (i = 0; i < x->st->cimgFreshCount && i < 32 && fresh < 0; i++)
+            if (x->st->cimgFresh[i] == addr && !(x->freshUsed & (1u << i))) fresh = (int)i;
+    }
+    if (!ramFresh && fresh < 0 && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound &&
         (!x->sys->options.gfxSlotByWidth || x->fb[x->curSlot].width == x->st->colorWidth))
         return;
     if (x->curSlot >= 0 && (x->fb[x->curSlot].addr != addr || x->fb[x->curSlot].width != x->st->colorWidth))
@@ -1621,6 +1631,18 @@ static void select_framebuffer(Xenos *x)
         if (t)
             draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(x, wdt) / RT_HEIGHT);
         x->ramCopyLo = x->ramCopyHi = 0;
+        x->stateDirty = 1;
+    }
+    else if (fresh >= 0)
+    {
+        u32 wdt = x->st->colorWidth;
+        IDirect3DTexture9 *t = upload_mem(x, x->st->loadRam, addr, wdt, x->st->colorFmt == FB_RGBA8888);
+        x->freshUsed |= 1u << fresh;
+        if (t)
+        {
+            draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(x, wdt) / RT_HEIGHT);
+            x->stats.cimgUploads++;
+        }
         x->stateDirty = 1;
     }
     s->gpuDirty = 1;
@@ -3353,6 +3375,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     memset(x->staleTmem, 0, sizeof(x->staleTmem));
     x->staleCount = 0;
     x->ramCopyLo = x->ramCopyHi = x->ramCopyGen = 0;
+    x->freshGen = x->freshUsed = 0;
     x->ramShadow = NULL;
     memset(&x->fbLoad, 0, sizeof(x->fbLoad));
     x->fbTex = NULL;

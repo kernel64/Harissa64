@@ -222,6 +222,14 @@ struct H64Gfx
     int texFromCimg;
     CimgSig cimgSig[8];            // small colour images drawn, with their lines' signatures
     u32 cimgUse;
+    // Profile gfxCimgFromRdram: frames drawn, with a signature of their memory
+    // when the drawing started; those that changed since go to the renderer.
+    struct { u32 start, width, sig, use; } fbSig[8];
+    u32 fbSigUse;
+    // The frame being drawn: its memory changed, what the task drew in it.
+    u32 fbCandStart, fbCandBytes, fbCandRects, fbCandOther;
+    int fbCand;
+    std::vector<u32> cimgFresh;
 
     // S2DEX 1.x: the 2D matrix (uObjMtx), object render mode, the status
     // words G_OBJ_LOADTXTR and G_SELECT_DL test, a pending G_SELECT_DL.
@@ -279,6 +287,7 @@ struct H64GfxOut
     PodVec<GfxOp> ops;
     u8 *snapshot;                  // RDRAM-sized; only the task's load ranges are valid
     std::vector<u32> cpuRanges;    // start, end pairs: loaded colour image lines the CPU wrote since they were drawn
+    std::vector<u32> cimgFresh;    // profile gfxCimgFromRdram: frames whose memory the CPU wrote (in the snapshot)
 };
 
 // ---------------------------------------------------------------- memory
@@ -350,6 +359,12 @@ static void mat_identity(float m[4][4])
 static void out_rdp(H64Gfx *g, const u64 *w, u32 n)
 {
     u32 index = g->words.size(), i;
+    if (g->fbCand)
+    {
+        u32 op = (u32)(w[0] >> 56) & 0x3F;
+        if (op == 0x24 || op == 0x25) g->fbCandRects++;
+        else if (op == 0x36 || (op >= 0x08 && op <= 0x0F)) g->fbCandOther++;
+    }
     u64 *d = g->words.add(n);
     GfxOp *op = g->ops.add(1);
     if (!d || !op) { g->abort = 1; return; }
@@ -416,6 +431,50 @@ static void cimg_check(H64Gfx *g, u32 lo, u32 hi, std::vector<u32> &out)
     }
 }
 
+// Profile gfxCimgFromRdram: a frame (16 or 32-bit, at least 256 wide) whose
+// memory changed since the GPU last started drawing it, or that it never drew,
+// and in which the task then draws only rectangles (2D over a picture already
+// in memory): the CPU wrote that picture (the GPU never writes RDRAM), so its
+// memory goes into the snapshot and the renderer starts the frame from it.
+// LEGO Racers writes its Grand Prix map into both frames with the CPU and only
+// draws the title over it: the GPU's frame was black with the title. Frames
+// with triangles or fills are left alone: during the cutscene before, the CPU
+// writes other data where the 3D frames lie, and loading them gave bands of
+// noise.
+static void cimg_close(H64Gfx *g)
+{
+    if (g->fbCand && g->fbCandRects && !g->fbCandOther)
+    {
+        g->loadRanges.push_back(g->fbCandStart);
+        g->loadRanges.push_back(g->fbCandStart + g->fbCandBytes);
+        g->cimgFresh.push_back(g->fbCandStart);
+    }
+    g->fbCand = 0;
+}
+
+static void cimg_fresh(H64Gfx *g, u32 start, u32 width, u32 size)
+{
+    u32 rows = width <= 320 ? 240 : width * 3 / 4, rowBytes = width << (size - 1), sig = 0x811C9DC5u, r, k;
+    int e = -1;
+    cimg_close(g);
+    if (size < 2 || width < 256 || start + rowBytes * rows > H64_RDRAM_SIZE) return;
+    for (r = 0; r < rows; r++) sig = (sig ^ row_sig(g->sys->rdram, start + r * rowBytes, rowBytes)) * 16777619u;
+    for (k = 0; k < 8 && e < 0; k++)
+        if (g->fbSig[k].use && g->fbSig[k].start == start && g->fbSig[k].width == width) e = (int)k;
+    if (e >= 0 && g->fbSig[e].sig == sig) { g->fbSig[e].use = ++g->fbSigUse; return; }
+    if (e < 0)
+        for (e = 0, k = 1; k < 8; k++)
+            if (g->fbSig[k].use < g->fbSig[e].use) e = (int)k;
+    g->fbSig[e].start = start;
+    g->fbSig[e].width = width;
+    g->fbSig[e].sig = sig;
+    g->fbSig[e].use = ++g->fbSigUse;
+    g->fbCand = 1;
+    g->fbCandStart = start;
+    g->fbCandBytes = rowBytes * rows;
+    g->fbCandRects = g->fbCandOther = 0;
+}
+
 // Texture images and loads (h64_rdp_load's arithmetic): the RDRAM a load reads.
 static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
 {
@@ -437,6 +496,7 @@ static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
         g->cimg[g->cimgNext & 7][1] = start + bytes;
         g->cimgNext++;
         cimg_track(g, start, width << (size ? size - 1 : 0), width <= 320 ? 240 : width * 3 / 4);
+        if (g->sys->options.gfxCimgFromRdram) cimg_fresh(g, start, width, size);
     }
     else if (op == 0x30 || op == 0x33 || op == 0x34)   // LOAD_TLUT, LOAD_BLOCK, LOAD_TILE
     {
@@ -495,6 +555,7 @@ static GfxTri *new_tri(H64Gfx *g, u32 flags)
     GfxTri *t = g->tris.add(1);
     GfxOp *op = g->ops.add(1);
     if (!t || !op) { g->abort = 1; return &s_dummy; }
+    g->fbCandOther++;
     t->flags = flags;
     t->tile = g->texTile;
     t->levels = g->texLevel + 1;
@@ -3795,6 +3856,10 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->texFromCimg = 0;
     for (i = 0; i < 8; i++) g->cimgSig[i].rows = g->cimgSig[i].use = 0;
     g->cimgUse = 0;
+    memset(g->fbSig, 0, sizeof(g->fbSig));
+    g->fbSigUse = 0;
+    g->fbCand = 0;
+    g->cimgFresh.clear();
     memset(g->zdmem, 0, sizeof(g->zdmem));
     g->zsScale[0] = g->zsScale[1] = g->zsTrans[0] = g->zsTrans[1] = 0;
     g->zsFogM = g->zsFogO = 0;
@@ -3964,6 +4029,9 @@ int h64_gfx_package(H64System *sys, H64Gfx *g, H64GfxOut *out)
     // full sync; the task ends only once that is done.
     mustSync = sys->options.gfxFrameToRdram != 0;
     out->cpuRanges.clear();
+    cimg_close(g);
+    out->cimgFresh.swap(g->cimgFresh);
+    g->cimgFresh.clear();
     if (!out->snapshot) out->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
     if (!out->snapshot) { g->loadRanges.clear(); return 1; }
     {
@@ -4003,10 +4071,14 @@ void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
     st->loadRamGen++;
     st->cpuRanges = out->cpuRanges.empty() ? 0 : &out->cpuRanges[0];
     st->cpuRangeCount = (u32)out->cpuRanges.size() / 2;
+    st->cimgFresh = out->cimgFresh.empty() ? 0 : &out->cimgFresh[0];
+    st->cimgFreshCount = (u32)out->cimgFresh.size();
     flush_lists(sys, out->words, out->tris, out->ops);
     st->loadRam = 0;
     st->cpuRanges = 0;
     st->cpuRangeCount = 0;
+    st->cimgFresh = 0;
+    st->cimgFreshCount = 0;
 }
 
 #include "h64_gfx_f5.inc"

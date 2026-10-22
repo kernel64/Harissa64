@@ -125,6 +125,7 @@ struct H64Options
     int gfxSoftTiny;        // GPU renderer (game profile): drawing into colour images at most 16 pixels wide done by the
                             // software RDP
     int gfxModStHalf;       // graphics HLE (game profile): s, t set by G_MODIFYVTX are halved without texture perspective
+    int gfxCimgFromRdram;   // GPU renderer (game profile): a frame the CPU wrote since the GPU drew it starts from its memory
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
     int gfxCopyBackAlpha;   // GPU renderer (game profile): 16-bit fills write their alpha bit and copy-backs keep the
                             // GPU's alpha (else always 1): images drawn to be used as cut-out textures

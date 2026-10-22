@@ -240,7 +240,8 @@ static const GameProfile s_profiles[] = {
 // Options with no bit left in the flags above, set by h64_apply_game_profile.
 enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_COPYBACK_ALPHA = 2,     // options.gfxCopyBackAlpha
-       H64_GX_MODIFY_ST_HALF = 4 };   // options.gfxModStHalf
+       H64_GX_MODIFY_ST_HALF = 4,     // options.gfxModStHalf
+       H64_GX_CIMG_FROM_RDRAM = 8 };  // options.gfxCimgFromRdram
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -251,7 +252,10 @@ static const GameExtra s_extras[] = {
     // Racers near the camera are drawn into 64x64 images first (filled with
     // a transparent colour, alpha bit 0), then shown as cut-out textures:
     // fills wrote alpha 1 and copy-backs forced it, black squares around them.
-    { "NLG", H64_GX_COPYBACK_ALPHA },
+    // Before a race, the CPU writes the Grand Prix map into both frames and
+    // the RDP only draws the title over it: the GPU's frame was black with
+    // the title (the frame's memory goes to the GPU first now).
+    { "NLG", H64_GX_COPYBACK_ALPHA | H64_GX_CIMG_FROM_RDRAM },
     // Builds its 2D pictures (title, menus, backgrounds) from quads whose
     // vertices only G_MODIFYVTX sets, without texture perspective: the
     // microcode halves their s, t as any vertex's (GitHub issue #22: textures
@@ -286,6 +290,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxSoftTiny = (extra & H64_GX_SOFT_TINY) != 0;
     sys->options.gfxCopyBackAlpha = (extra & H64_GX_COPYBACK_ALPHA) != 0;
     sys->options.gfxModStHalf = (extra & H64_GX_MODIFY_ST_HALF) != 0;
+    sys->options.gfxCimgFromRdram = (extra & H64_GX_CIMG_FROM_RDRAM) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 
