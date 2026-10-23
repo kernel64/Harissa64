@@ -87,7 +87,7 @@ def main():
         return 0
     failed = []
     for c in plan:
-        print('\n== %s' % CHECKS[c][0])
+        print('\n== %s' % CHECKS[c][0], flush=True)   # before the check's own output
         r = subprocess.run(CHECKS[c][1], cwd=ROOT)
         if r.returncode:
             failed.append(CHECKS[c][0])
