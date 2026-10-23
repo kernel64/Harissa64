@@ -2435,6 +2435,7 @@ static void fill_rect(Xenos *x, const u32 *w)
     float sx = x->rtW / fbw, sy = x->rtH / fbh;
     u32 xh = (w[0] >> 12) & 0xFFF, yh = w[0] & 0xFFF, xl = (w[1] >> 12) & 0xFFF, yl = w[1] & 0xFFF;
     D3DRECT r;
+    u32 zRow = 0;   // a depth fill through an image that starts zRow lines into the depth image
     float fx1 = (float)(xl >> 2), fx2 = (float)((xh >> 2) + 1);
     // Full width, or (profile gfxWsBorder) touching an edge: in place.
     if (!ws_wide(fx2 - fx1, fbw) && !(x->sys->options.gfxWsBorder && ((xl >> 2) == 0 || fx2 >= fbw)))
@@ -2450,7 +2451,25 @@ static void fill_rect(Xenos *x, const u32 *w)
     if (r.y2 > (LONG)x->rtH) r.y2 = (LONG)x->rtH;
     if (r.x1 >= r.x2 || r.y1 >= r.y2) return;
     x->stats.fills++;
-    if ((st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF))
+    {
+        // A fill of the depth image, or of a 16-bit image as wide that starts
+        // on one of its lines: GoldenEye clears player 2's half of the depth
+        // image through an image 120 lines into it (missed, the bottom view
+        // kept the previous frame's depth: walls vanished, black flashes).
+        u32 ca = st->colorAddr & 0xFFFFFF, za = st->depthAddr & 0xFFFFFF, rowB = (u32)fbw * 2;
+        // Only with the usual clear value (the farthest depth, 0xFFFC): a game
+        // drawing a small colour image in that memory keeps its fill.
+        if (ca != za && ca > za && st->colorFmt == FB_RGBA5551 && (ca - za) % rowB == 0 && (ca - za) / rowB < (u32)fbh &&
+            (st->fillColor & 0xFFFCFFFCu) == 0xFFFCFFFCu)
+        {
+            zRow = (ca - za) / rowB;
+            r.y1 += (LONG)(zRow * sy);
+            r.y2 += (LONG)(zRow * sy);
+            if (r.y2 > (LONG)x->rtH) r.y2 = (LONG)x->rtH;
+            if (r.y1 >= r.y2) return;
+        }
+    }
+    if ((st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF) || zRow)
     {
         // Filling the depth image: a depth clear of the frame being drawn.
         // Whatever colour image the EDRAM target holds (the depth is separate
@@ -2466,7 +2485,7 @@ static void fill_rect(Xenos *x, const u32 *w)
         x->stateDirty = 1;
         x->dev->Clear(1, &r, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
-        if (x->sys->options.gfxDepthFillToRdram) depth_fill_rdram(x, xl >> 2, xh >> 2, yl >> 2, yh >> 2);
+        if (x->sys->options.gfxDepthFillToRdram) depth_fill_rdram(x, xl >> 2, xh >> 2, (yl >> 2) + zRow, (yh >> 2) + zRow);
         return;
     }
     if (st->scissorXhi || st->scissorYhi)
