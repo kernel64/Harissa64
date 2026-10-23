@@ -2963,7 +2963,16 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         st->drawRam = (u8 *)st->loadRam;
         st->drawRam2 = st->loadRam ? x->sys->rdram : NULL;
         if (!h64_rdp_fill8_fast(x->sys, words, count))   // a whole-image fill: bytes, not the pixel pipeline
+        {
+            // No depth test or update: the depth image is the GPU's (EDRAM),
+            // memory holds an old one. Banjo-Tooie draws Banjo's shadow with
+            // a decal depth test: tested against that, it came out as
+            // scattered dots instead of his silhouette.
+            u32 db = st->depthBlendFlags;
+            if (!tiny) st->depthBlendFlags &= ~(u32)(DB_DEPTH_TEST | DB_DEPTH_UPDATE);
             h64_rdp_command(x->sys, words, count);
+            st->depthBlendFlags = db;
+        }
         st->softDraw = 0;
         st->drawRam = st->drawRam2 = NULL;
         if (hi > H64_RDRAM_SIZE) hi = H64_RDRAM_SIZE;
