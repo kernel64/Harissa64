@@ -37,6 +37,54 @@
 #include "png_write.h"
 #include "../../tests/unit/unit_tests.h"
 
+#ifdef _WIN32
+// A crash prints where it happened (function, file, line, then the callers;
+// names need the PDB: build-msvc is RelWithDebInfo-like enough for functions).
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *e)
+{
+    HANDLE proc = GetCurrentProcess(), thread = GetCurrentThread();
+    CONTEXT ctx = *e->ContextRecord;
+    STACKFRAME64 sf;
+    int n;
+    fflush(stdout);
+    fprintf(stderr, "[crash] exception %08lX at %p\n", e->ExceptionRecord->ExceptionCode, e->ExceptionRecord->ExceptionAddress);
+    SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+    SymInitialize(proc, NULL, TRUE);
+    memset(&sf, 0, sizeof(sf));
+    sf.AddrPC.Offset = ctx.Rip; sf.AddrPC.Mode = AddrModeFlat;
+    sf.AddrFrame.Offset = ctx.Rbp; sf.AddrFrame.Mode = AddrModeFlat;
+    sf.AddrStack.Offset = ctx.Rsp; sf.AddrStack.Mode = AddrModeFlat;
+    for (n = 0; n < 24 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, thread, &sf, &ctx, NULL, SymFunctionTableAccess64,
+                                      SymGetModuleBase64, NULL) && sf.AddrPC.Offset; n++)
+    {
+        char buf[sizeof(SYMBOL_INFO) + 256];
+        SYMBOL_INFO *sym = (SYMBOL_INFO *)buf;
+        IMAGEHLP_LINE64 line;
+        DWORD64 d64 = 0;
+        DWORD d = 0;
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 255;
+        line.SizeOfStruct = sizeof(line);
+        if (SymFromAddr(proc, sf.AddrPC.Offset, &d64, sym))
+        {
+            if (SymGetLineFromAddr64(proc, sf.AddrPC.Offset, &d, &line))
+                fprintf(stderr, "[crash]   %s (%s:%lu)\n", sym->Name, line.FileName, line.LineNumber);
+            else
+                fprintf(stderr, "[crash]   %s+0x%llX\n", sym->Name, (unsigned long long)d64);
+        }
+        else
+            fprintf(stderr, "[crash]   %016llX\n", (unsigned long long)sf.AddrPC.Offset);
+    }
+    fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
 static void stdout_sink(int level, const char *line)
 {
     FILE *f = level <= H64_LOG_WARN ? stderr : stdout;
@@ -378,12 +426,35 @@ static int parse_input(const char *script) { return h64_input_script_parse(&s_sc
 
 // --null-renderer: the configuration of a GPU renderer without a GPU (the
 // software RDP keeps state only; primitives are counted, not drawn).
-static u32 s_nullTris;
-static void null_rdp(void *user, const u64 *w, u32 n) { h64_rdp_command((H64System *)user, w, n); }
+// --render-hash: a hash of everything a GPU renderer receives (RDP commands
+// and HLE triangles, vertex fields bit for bit): when it does not change, the
+// Xbox renderer draws the same thing (tests/scripts/run_states.py).
+static u32 s_nullTris, s_nullCmds, s_renderHash = 0x811C9DC5u;
+static void hash_word(u32 v)
+{
+    u32 k;
+    for (k = 0; k < 4; k++) s_renderHash = (s_renderHash ^ ((v >> (k * 8)) & 0xFF)) * 16777619u;
+}
+static void hash_vertex(const H64RenderVertex *v)
+{
+    u32 w[10];
+    u32 k;
+    memcpy(w, v, sizeof(w));
+    for (k = 0; k < 10; k++) hash_word(w[k]);
+}
+static void null_rdp(void *user, const u64 *w, u32 n)
+{
+    u32 k;
+    for (k = 0; k < n; k++) { hash_word((u32)(w[k] >> 32)); hash_word((u32)w[k]); }
+    s_nullCmds++;
+    h64_rdp_command((H64System *)user, w, n);
+}
 static void null_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
                           u32 flags, u32 tile, u32 levels)
 {
-    (void)user; (void)a; (void)b; (void)c; (void)flags; (void)tile; (void)levels;
+    (void)user;
+    hash_vertex(a); hash_vertex(b); hash_vertex(c);
+    hash_word(flags); hash_word(tile); hash_word(levels);
     s_nullTris++;
 }
 static H64Renderer s_nullRenderer;
@@ -449,6 +520,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
     int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1, strictCpu = 0; u32 gameFlags = 0;
+    int profileInfo = 0, renderHash = 0, inputAfterLoad = 0; u32 moreFrames = 0;
     u32 rdpLogFrame = 0, peekVa = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
@@ -476,6 +548,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--gfx-cost-log")) gfxCostLog = 1;
         else if (!strcmp(argv[i], "--keep-offscreen")) keepOffscreen = 1;
         else if (!strcmp(argv[i], "--no-profile")) noProfile = 1;
+        else if (!strcmp(argv[i], "--profile-info")) profileInfo = 1;
+        else if (!strcmp(argv[i], "--more-frames") && i + 1 < argc) moreFrames = (u32)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--input-after-load")) inputAfterLoad = 1;
         else if (!strcmp(argv[i], "--strict")) strictCpu = 1;
         else if (!strcmp(argv[i], "--gameflags") && i + 1 < argc) { gameFlags = (u32)strtoul(argv[++i], 0, 16); noProfile = 2; }
         else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
@@ -552,6 +627,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--hle-audio-check")) hleAudio = 2;
         else if (!strcmp(argv[i], "--hle-gfx")) hleGfx = 1;
         else if (!strcmp(argv[i], "--null-renderer")) nullRenderer = 1;
+        else if (!strcmp(argv[i], "--render-hash")) nullRenderer = renderHash = 1;
         else if (!strcmp(argv[i], "--no-fpu-flags")) h64_fenv_disable_host_flags();
         else if (!strcmp(argv[i], "--jit-ops")) jitOps = 1;
         else if (!strcmp(argv[i], "--no-jit-fpu")) noJitFpu = 1;
@@ -658,6 +734,20 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.strictCpu = strictCpu;   // --strict: no ROM hack tolerance (test ROMs)
     if (!noProfile) h64_apply_game_profile(sys);   // --no-profile: none of the per-game settings
     else if (noProfile == 2) h64_apply_profile_flags(sys, gameFlags);   // --gameflags HEX: these instead (as the ini's gameflags=)
+    if (profileInfo)
+    {
+        // --profile-info: the options the per-game profile leaves, as 32-bit
+        // words (tests/scripts/check_profiles.py compares them with
+        // tests/expected/profiles.txt: the games a change affects).
+        u32 w[sizeof(sys->options) / 4], k;
+        memcpy(w, &sys->options, sizeof(w));
+        printf("[profile-info] %.4s", sys->rom.gameCode);
+        for (k = 0; k < sizeof(w) / 4; k++) printf(" %X", w[k]);
+        printf("\n");
+        h64_system_free(sys);
+        free(sys);
+        return 0;
+    }
     sys->options.gfxKeepOffscreen = keepOffscreen;
     sys->options.rdpLogFrame = rdpLogFrame;
     sys->padMask = padCount >= 1 && padCount <= 4 ? (1u << padCount) - 1u : 1u;   // --pads N: ports 1..N plugged in
@@ -693,6 +783,17 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         free(st);
         // A state keeps the cpi it was saved with; an explicit --cpi wins.
         if (cpiGiven) { sys->cpu.cpi = (u32)(cpi > 0 ? cpi : 1); if (ref) ref->cpu.cpi = sys->cpu.cpi; }
+    }
+    if (moreFrames) limit = sys->cpu.cycles + (u64)moreFrames * sys->vi.frameCycles;   // --more-frames N: N frames after the state
+    if (inputAfterLoad && loadState)
+    {
+        // --input-after-load: the --input frames count from the state's frame.
+        int k;
+        for (k = 0; k < s_script.count; k++)
+        {
+            s_script.events[k].first += sys->vi.frames;
+            s_script.events[k].last += sys->vi.frames;
+        }
     }
     {
         u32 k;
@@ -876,6 +977,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         }
     }
     if (nullRenderer) printf("[run] null renderer: %u triangles\n", s_nullTris);
+    if (renderHash) printf("[run] render hash %08X (%u commands, %u triangles)\n", s_renderHash, s_nullCmds, s_nullTris);
     printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
            sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
     printf("[run] VI control %08X, width %u, x scale %08X, y scale %08X, h video %08X, v video %08X\n", sys->vi.regs[0],
@@ -929,6 +1031,9 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     int i;
+#ifdef _WIN32
+    SetUnhandledExceptionFilter(crash_filter);
+#endif
     h64_log_set_sink(stdout_sink);
     for (i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
