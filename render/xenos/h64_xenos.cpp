@@ -613,7 +613,7 @@ static u32 tile_extent(u32 lo, u32 hi)
 }
 
 // Decoded texture size and addressing for one tile.
-static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskToTile)
+static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskToTile, int tlut)
 {
     u32 tw = tile_extent(t->slo, t->shi), th = tile_extent(t->tlo, t->thi);
     u32 ms = t->maskS ? 1u << (t->maskS > 10 ? 10 : t->maskS) : 0, mt = t->maskT ? 1u << (t->maskT > 10 ? 10 : t->maskT) : 0;
@@ -646,7 +646,11 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskTo
         // pictures repeated their middle column).
         int yuv = t->fmt == 1 && t->size == 2;
         u32 rowTexels = yuv ? stride : t->size == 0 ? stride * 2 : t->size == 1 ? stride : stride / 2;
-        u32 rows = (yuv || t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 / stride : 4096 / stride;
+        // CI textures: the lower half only when the TLUT (upper half) is on;
+        // without it the RDP reads all of TMEM (Banjo-Tooie's shadow strips,
+        // CI8 112 x 36: their lower half repeated the upper, vertical lines).
+        int half = yuv || t->size == 3 || (t->fmt == 2 && t->size <= 1 && tlut);
+        u32 rows = half ? 2048 / stride : 4096 / stride;
         if (rowTexels < 1) rowTexels = 1;
         if (rows < 1) rows = 1;
         // Not with a mask: the decode then wraps or mirrors inside it, and a
@@ -666,7 +670,7 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskTo
         // the whole texture (a power of two dividing the mask; at least 2 for
         // the odd-line word swap).
         {
-            u32 bytes = (t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 : 4096;
+            u32 bytes = (t->size == 3 || (t->fmt == 2 && t->size <= 1 && tlut)) ? 2048 : 4096;
             if (b->wrapT && stride && bytes % stride == 0)
             {
                 u32 p = bytes / stride;
@@ -758,7 +762,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     std::map<u64, TexEntry>::iterator it;
     TexEntry e;
     D3DLOCKED_RECT lr;
-    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0, x->sys->options.gfxMaskToTile);
+    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0, x->sys->options.gfxMaskToTile, (st->rasterFlags & RS_TLUT) != 0);
     if (x->win.active && x->win.tile == (tileIndex & 7))
     {
         // Per axis, decode only the texels sampled, when that is at most half
