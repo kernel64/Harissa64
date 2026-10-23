@@ -3856,6 +3856,7 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->texFromCimg = 0;
     for (i = 0; i < 8; i++) g->cimgSig[i].rows = g->cimgSig[i].use = 0;
     g->cimgUse = 0;
+    g->f5Mtx = 0;
     memset(g->fbSig, 0, sizeof(g->fbSig));
     g->fbSigUse = 0;
     g->fbCand = 0;
@@ -4186,6 +4187,7 @@ static int parse_task_lists(H64System *sys, H64Gfx *g, int *fullSync)
     {
         g->f5ColorBase = g->f5VpAddr = g->f5PerspAddr = 0;
         g->f5TexScale[0] = g->f5TexScale[1] = 0;
+        g->f5Mtx = 0;   // Indiana Jones' generator matrix only (was never set here: a random pointer, a random crash)
         f5_enter(g);   // the task's list starts with its link word too
     }
     if (u->type == UC_F5INDI)
