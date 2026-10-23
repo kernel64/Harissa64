@@ -17,6 +17,7 @@ void test_rdp_tmem_yuv(H64TestContext *ctx);
 void test_ppc_emit(H64TestContext *ctx);
 void test_fenv(H64TestContext *ctx);
 void test_rdp_tri(H64TestContext *ctx);
+void test_rdp_fill8(H64TestContext *ctx);
 void test_save(H64TestContext *ctx);
 void test_state(H64TestContext *ctx);
 void test_zip(H64TestContext *ctx);
@@ -41,6 +42,7 @@ static const H64TestCase s_tests[] = {
     { "ppc_emit", test_ppc_emit },
     { "fenv", test_fenv },
     { "rdp_tri", test_rdp_tri },
+    { "rdp_fill8", test_rdp_fill8 },
     { "save", test_save },
     { "state", test_state },
     { "zip", test_zip },

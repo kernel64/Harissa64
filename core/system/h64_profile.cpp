@@ -56,8 +56,10 @@ static const GameProfile s_profiles[] = {
     { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH | H64_GP_TALL_FRAME },
     // The European version's frames are 304 x 268 (the 4:3 guess, 240 lines,
     // left a blurred band over the bottom of the screen; issue #23). The US
-    // version's scissor stays within 240 lines: unchanged.
-    { "NB7", "Banjo-Tooie", H64_GP_TALL_FRAME },
+    // version's scissor stays within 240 lines: unchanged. Banjo's shadow is
+    // drawn into an 8-bit image (a fill, then triangles) then pasted over the
+    // ground: drawn by the GPU it was a dark square, the software RDP draws it.
+    { "NB7", "Banjo-Tooie", H64_GP_TALL_FRAME | H64_GP_SOFT_8BIT },
     // Never sets the texture conversion (F3DEX2 2.08): its textures were
     // read as YUV, a grey picture.
     { "NXO", "Cruis'n Exotica", H64_GP_OTHERMODE_INIT },

@@ -913,8 +913,9 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
             }
         }
         x->stats.tFill += h64_prof_now(x->sys) - f0;
-        if (x->debug == 17 && x->debugLines < 60)
+        if ((x->debug == 17 || (x->debug == 19 && t->fmt == 2 && t->size == 1)) && x->debugLines < 60)
         {
+            // xenosdebug=19: the same for 8-bit CI textures only.
             // xenosdebug=17: the first texels of each texture decoded (diagnosis).
             x->debugLines++;
             H64_INFO("[xtex] decoded tile %u fmt %u size %u tlut %d %ux%u at %d,%d: %08X %08X %08X %08X | mid %08X", tileIndex & 7, t->fmt,
@@ -2221,7 +2222,8 @@ static void log_mode(Xenos *x, int hasDepth, u32 tile)
 
 static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *tb1, u32 tile, int zOut)
 {
-    if (x->debug == 4) log_mode(x, hasDepth, tile);
+    // xenosdebug=20: the same for drawing into 8-bit colour images only.
+    if (x->debug == 4 || (x->debug == 20 && x->st->colorFmt == FB_I8)) log_mode(x, hasDepth, tile);
     const H64RdpState *st = x->st;
     int two = (st->rasterFlags & RS_MULTI_CYCLE) != 0;
     u32 flags = two ? KEY_TWO_CYCLE : 0;
@@ -2286,6 +2288,8 @@ static void flush_batch(Xenos *x)
     x->batchN = 0;
 }
 
+static void xenos_rdp(void *user, const u64 *words, u32 count);
+
 static void xenos_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
                            u32 flags, u32 tile, u32 levels)
 {
@@ -2295,6 +2299,17 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[(tile + 1) & 7];
     XVtx *q;
     int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0, wsFull;
+    if (x->sys->options.gfxSoft8bit && st->colorFmt == FB_I8)
+    {
+        // Profile gfxSoft8bit: an HLE triangle into an 8-bit colour image goes
+        // to the software RDP like the rectangles and fills (xenos_rdp), so the
+        // image stays whole in memory. Banjo-Tooie draws Banjo's shadow so
+        // (a fill, then triangles): drawn by the GPU, it was a dark square.
+        u64 w[22];
+        u32 n = h64_rdp_build_triangle(a, b, c, flags, tile, levels, w);
+        xenos_rdp(user, w, n);
+        return;
+    }
     (void)levels;
     if (st->rasterFlags & (RS_FILL | RS_COPY)) return;
     if (!st->usePrimDepth)
@@ -2943,7 +2958,8 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         st->softDraw = 1;
         st->drawRam = (u8 *)st->loadRam;
         st->drawRam2 = st->loadRam ? x->sys->rdram : NULL;
-        h64_rdp_command(x->sys, words, count);
+        if (!h64_rdp_fill8_fast(x->sys, words, count))   // a whole-image fill: bytes, not the pixel pipeline
+            h64_rdp_command(x->sys, words, count);
         st->softDraw = 0;
         st->drawRam = st->drawRam2 = NULL;
         if (hi > H64_RDRAM_SIZE) hi = H64_RDRAM_SIZE;

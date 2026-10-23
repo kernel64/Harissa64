@@ -1282,6 +1282,44 @@ static void set_other_modes(H64RdpState *st, const u32 *w)
     st->usePrimDepth = (w[1] & (1 << 2)) != 0;
 }
 
+// A fill rectangle into an 8-bit image, as fill_pixel/store_pixel_to write
+// it (byte by RDRAM address, the hidden bit pair of odd bytes), without the
+// span and pixel pipeline: Banjo-Tooie fills a 304x270 8-bit image a frame
+// for its shadows (~14 ms a frame through the pipeline on the console).
+// Integer coordinates and scissor only, no interlaced scissor.
+int h64_rdp_fill8_fast(H64System *sys, const u64 *words, u32 count)
+{
+    H64RdpState *st = state(sys);
+    u32 w0, w1, lrx, lry, ulx, uly, x0, x1, y0, y1, x, y, k;
+    u8 *mem[2], *hid = sys->rdramHidden;
+    if (count != 1 || ((words[0] >> 56) & 0x3F) != 0x36 || !(st->rasterFlags & RS_FILL) || st->colorFmt != FB_I8 ||
+        (st->rasterFlags & RS_INTERLACE_FIELD) || !st->colorWidth)
+        return 0;
+    w0 = (u32)(words[0] >> 32);
+    w1 = (u32)words[0];
+    lrx = (w0 >> 12) & 0xFFF; lry = w0 & 0xFFF; ulx = (w1 >> 12) & 0xFFF; uly = w1 & 0xFFF;
+    if ((lrx | lry | ulx | uly | st->scissorXlo | st->scissorXhi | st->scissorYlo | st->scissorYhi) & 3) return 0;
+    x0 = ulx >> 2; x1 = (lrx >> 2) + 1; y0 = uly >> 2; y1 = (lry >> 2) + 1;   // fill mode: lower right included
+    if (x0 < (st->scissorXlo >> 2)) x0 = st->scissorXlo >> 2;
+    if (x1 > (st->scissorXhi >> 2) + 1) x1 = (st->scissorXhi >> 2) + 1;   // fill mode: the scissor's right edge too
+    if (y0 < (st->scissorYlo >> 2)) y0 = st->scissorYlo >> 2;
+    if (y1 > (st->scissorYhi >> 2)) y1 = st->scissorYhi >> 2;
+    mem[0] = st->drawRam ? st->drawRam : sys->rdram;
+    mem[1] = st->drawRam2;
+    for (y = y0; y < y1; y++)
+        for (x = x0; x < x1; x++)
+        {
+            u32 idx = (st->colorAddr + st->colorWidth * y + x) & (H64_RDRAM_SIZE - 1);
+            u8 col = (u8)(st->fillColor >> (((idx & 3) ^ 3) * 8));
+            for (k = 0; k < 2; k++)
+                if (mem[k]) mem[k][idx] = col;
+            if (idx & 1) hid[idx >> 1] = (u8)((col & 1) * 3);
+        }
+    if (sys->jit && !st->softDraw && y1 > y0 && x1 > x0)
+        h64_jit_notify_write(sys, st->colorAddr + st->colorWidth * y0, st->colorWidth * (y1 - y0));
+    return 1;
+}
+
 void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
 {
     H64RdpState *st = state(sys);
