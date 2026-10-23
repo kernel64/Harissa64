@@ -54,6 +54,10 @@ static const GameProfile s_profiles[] = {
     // In flight its frames are 512 x ~442 (the 4:3 guess, 384 lines,
     // stretched the last line over the bottom of the screen; issue #16).
     { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH | H64_GP_TALL_FRAME },
+    // The European version's frames are 304 x 268 (the 4:3 guess, 240 lines,
+    // left a blurred band over the bottom of the screen; issue #23). The US
+    // version's scissor stays within 240 lines: unchanged.
+    { "NB7", "Banjo-Tooie", H64_GP_TALL_FRAME },
     // Never sets the texture conversion (F3DEX2 2.08): its textures were
     // read as YUV, a grey picture.
     { "NXO", "Cruis'n Exotica", H64_GP_OTHERMODE_INIT },

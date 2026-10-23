@@ -2045,10 +2045,12 @@ static void set_scissor(Xenos *x, float sx, float sy)
     RECT r;
     float xlo = (float)(x->st->scissorXlo >> 2), xhi = (float)(x->st->scissorXhi >> 2);
     float fbw = (float)(x->st->colorWidth ? x->st->colorWidth : 320);
-    if (x->sys->options.gfxTallFrame && x->st->colorWidth > 320)
+    if (x->sys->options.gfxTallFrame && x->st->colorWidth >= 256)
     {
         // A scissor taller than the 4:3 guess (up to 1.25 times the width):
-        // the image's real height, kept for that width.
+        // the image's real height, kept for that width. Images up to 320
+        // wide too (240 lines guessed): Banjo-Tooie's European frames are
+        // 304 x 268.
         u32 w = x->st->colorWidth, h = (x->st->scissorYhi + 3) >> 2;
         if (h > fb_height(x, w) && h <= w * 5 / 4)
         {
