@@ -67,6 +67,11 @@ static const GameProfile s_profiles[] = {
     // 320 x 480 interlaced frames (VI Y scale 2.0): drawn as 240 lines tall,
     // the bottom half was broken.
     { "NDZ", "Duke Nukem: Zero Hour", H64_GP_TALL_FRAME },
+    // As Rogue Squadron: the intro draws 640x480 frames at 0x2D4000 and
+    // 0x36A000, the fights load their text box and fighters' textures there
+    // later. The old frames copied back over them drew both black (and cost
+    // ~117 ms a frame on the console).
+    { "NFD", "Flying Dragon", H64_GP_COPY_BACK_SAME_WIDTH },
     // Never sets the texture conversion (F3DEX2 2.08): its textures were
     // read as YUV, a grey picture.
     { "NXO", "Cruis'n Exotica", H64_GP_OTHERMODE_INIT },
