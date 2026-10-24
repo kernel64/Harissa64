@@ -69,6 +69,8 @@ struct H64XenosStats
     u64 tHash, tDecode;   // inside tTexture: cache keys (TMEM hashing), decoding and upload
     u64 tCreate, tLock, tFill, tUnlock;   // inside tDecode: creation (or arena header), locking, decoding
     u32 arenaTextures, arenaEvictions;    // textures placed in the arena; arena chunks reused
+    u64 tArenaWait, maxArenaWait;         // waiting for the GPU before reusing an arena chunk: total, longest
+    u32 arenaSkips;                       // arena chunks skipped because the GPU still used them
     u32 retires;          // texture cache emptied (full)
 };
 // Presents with these VI registers (a copy taken at the VI, for the graphics worker).

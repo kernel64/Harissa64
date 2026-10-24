@@ -721,6 +721,18 @@ static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     return x->memo[t].tex;
 }
 
+// Whether the GPU is done with every frame that used chunk c (no wait needed).
+static int chunk_idle(Xenos *x, u32 c)
+{
+    u32 last = x->chunkUse[c];
+    if (x->arenaKeys[c].empty() || last == 0xFFFFFFFFu) return 1;
+    if (last == x->presentCount) return 0;   // the frame being drawn
+    if (x->presentCount - last <= 7)
+        return (x->presentFenceSet & (1u << (last & 7))) && !x->dev->IsFencePending(x->presentFence[last & 7]);
+    return (x->presentFenceSet & (1u << ((x->presentCount + 1) & 7))) &&
+           !x->dev->IsFencePending(x->presentFence[(x->presentCount + 1) & 7]);
+}
+
 // Makes room for `size` bytes at arenaHead (moving to the next chunk when it
 // does not fit), evicting what an earlier lap left in a chunk entered.
 static int arena_alloc(Xenos *x, u32 size, u32 *offset)
@@ -731,8 +743,19 @@ static int arena_alloc(Xenos *x, u32 size, u32 *offset)
     {
         u32 next = x->arenaHead % ARENA_CHUNK == 0 ? x->arenaHead : (x->arenaHead / ARENA_CHUNK + 1) * ARENA_CHUNK;
         if (next >= ARENA_BYTES) next = 0;
-        x->arenaHead = next;
         c = next / ARENA_CHUNK;
+        // A chunk the GPU may still read (textures of the frame being drawn or
+        // of frames still queued) is skipped for the next one it is done with:
+        // waiting for it drained the queued frames, up to ~45 ms (Mario
+        // Tennis at the start of each point). Its textures stay cached.
+        if (!chunk_idle(x, c))
+        {
+            u32 i;
+            for (i = 1; i < ARENA_CHUNKS; i++)
+                if (chunk_idle(x, (c + i) % ARENA_CHUNKS)) { c = (c + i) % ARENA_CHUNKS; x->stats.arenaSkips += i; break; }
+        }
+        next = c * ARENA_CHUNK;
+        x->arenaHead = next;
         if (!x->arenaKeys[c].empty())
         {
             // The GPU may still read this chunk's textures: unbind, wait for
@@ -744,6 +767,7 @@ static int arena_alloc(Xenos *x, u32 size, u32 *offset)
             // almost always several presents old and its fence passed already.
             // Waiting for everything issued drained the GPU at each re-entry
             // (Mario Tennis's replays: ~18 a second, ~8 ms a frame).
+            u64 w0 = h64_prof_now(x->sys), dw;
             if (last == 0xFFFFFFFFu)
                 ;
             else if (last == x->presentCount || !(x->presentFenceSet & (1u << (last & 7))))
@@ -754,6 +778,9 @@ static int arena_alloc(Xenos *x, u32 size, u32 *offset)
                 x->dev->BlockOnFence(x->presentFence[(x->presentCount + 1) & 7]);   // the oldest fence kept, after that frame
             else
                 x->dev->BlockOnFence(x->dev->InsertFence());
+            dw = h64_prof_now(x->sys) - w0;
+            x->stats.tArenaWait += dw;
+            if (dw > x->stats.maxArenaWait) x->stats.maxArenaWait = dw;
             x->chunkUse[c] = 0xFFFFFFFFu;
             for (k = 0; k < x->arenaKeys[c].size(); k++)
             {
@@ -3047,7 +3074,7 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         x->stats.tState += h64_prof_now(x->sys) - t0;
         // A small 16-bit fill also clears the GPU's image as before (the
         // game may draw there with the GPU too).
-        if (!smallFill)
+        if (!smallFill || x->debug == 21)   // xenosdebug=21: software only (measure)
         {
             x->stats.tRdp += h64_prof_now(x->sys) - tStart;
             return;
