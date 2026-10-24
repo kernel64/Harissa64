@@ -99,6 +99,10 @@ def main():
             f.write('# Hashes of tests/states.txt cases (tests/scripts/run_states.py --update)\n')
             for n in sorted(expected):
                 f.write('%s|%s\n' % (n, expected[n]))
+    if failed and len(failed) == len(results) - skipped and len(failed) > 2:
+        # Every case crashing at once is usually stale objects after a header
+        # change (CLAUDE.md, "Stale host objects"), not 31 regressions.
+        print('every case failed: rebuild with cmake --build build-msvc --clean-first and run again')
     print('RESULT: %s (%d cases, %d skipped, %.0f s)' % (
         'ALL OK' if not failed else 'CHANGED: ' + ', '.join(failed), len(results), skipped, time.time() - t0))
     return 1 if failed else 0
