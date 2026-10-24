@@ -707,7 +707,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         h64_save_load(sys->save, saveDirSep);
     }
     if (useJit && enable_jit(sys)) return 2;
-    if (jitOps && sys->jit) sys->jit->opHist = (u32 *)calloc(232, sizeof(u32));
+    if (jitOps && sys->jit) sys->jit->opHist = (u32 *)calloc(232 + 8192, sizeof(u32));
     if (noJitFpu && sys->jit) sys->jit->noFpu = 1;
     if (noLink && sys->jit) sys->jit->noLink = 1;
     if (noRegCache && sys->jit) sys->jit->noRegCache = 1;
@@ -974,6 +974,17 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             else if (bi >= 200) printf("[jit-ops] %-7s %02X: %u\n", cls[3], bi - 200, best);
             else printf("[jit-ops] %-7s %02X: %u\n", cls[bi / 64], bi % 64, best);
             sys->jit->opHist[bi] = 0;
+        }
+        for (n = 0; n < 20; n++)
+        {
+            // The pcs the helper ran most, with their instruction.
+            u32 best = 0, bi = 0, w = 0;
+            for (k = 0; k < 4096; k++)
+                if (sys->jit->opHist[233 + 2 * k] > best) { best = sys->jit->opHist[233 + 2 * k]; bi = k; }
+            if (!best) break;
+            w = h64_load_be32(sys->rdram + (sys->jit->opHist[232 + 2 * bi] & 0x7FFFFC));
+            printf("[jit-ops] pc %08X (%08X): %u\n", sys->jit->opHist[232 + 2 * bi], w, best);
+            sys->jit->opHist[233 + 2 * bi] = 0;
         }
     }
     if (nullRenderer) printf("[run] null renderer: %u triangles\n", s_nullTris);

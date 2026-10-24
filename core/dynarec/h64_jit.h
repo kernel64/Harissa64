@@ -118,7 +118,7 @@ struct H64Jit
     int noSuper;                    // debugging: blocks end at every branch (no side exits)
 
     H64JitStats stats;
-    u32 *opHist;          // optional (debug, 232 entries): instructions run through the interpreter helper,
+    u32 *opHist;          // optional (debug, 232 + 8192 entries; see helper_interp): instructions run through the interpreter helper,
                           // by opcode: [op], [64 + SPECIAL funct], [128 + COP1 S/D funct], [200 + COP1 rs]
                           // for the moves and branches, [216 + 0/1] CVT.S/CVT.D from W/L
     int noNative;                   // debugging: every instruction through the interpreter
