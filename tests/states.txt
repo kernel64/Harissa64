@@ -35,3 +35,11 @@ v8_logo|Vigilante 8 (U).zip|v8_logo.h64s|120|
 v8_quest|Vigilante 8 (U).zip|v8_quest.h64s|120|
 v8_race|Vigilante 8 (U).zip|v8_race.h64s|120|
 yoshi_level|Yoshi's Story (U) (M2).zip|yoshi_level.h64s|120|
+ge_2p|GoldenEye 007 (U).zip|ge_2p.h64s|120|X=60@0-120,Y=50@0-120
+tennis_match|Mario Tennis (U).zip|tennis_match.h64s|120|
+tennis_power|Mario Tennis (U).zip|tennis_power.h64s|120|
+tennis_replay|Mario Tennis (U).zip|tennis_replay.h64s|240|
+mp3_stacked|Mario Party 3 (U).zip|mp3_stacked.h64s|120|
+mp3_frigid|Mario Party 3 (U).zip|mp3_frigid.h64s|120|
+mp3_awful|Mario Party 3 (U).zip|mp3_awful.h64s|120|
+mp3_aces|Mario Party 3 (U).zip|mp3_aces.h64s|120|
