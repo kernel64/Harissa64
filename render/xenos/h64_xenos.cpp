@@ -1091,7 +1091,13 @@ static u32 fb_height(const Xenos *x, u32 width)
     // gfxTallFrame: a VI line twice the image's width steps two image lines
     // (an interlaced 480-line frame; Star Wars Racer's intro, 320 x 480,
     // showed its top half stretched over the screen).
-    if (x->sys->options.gfxTallFrame && width <= 320 && (x->sys->vi.regs[2] & 0xFFF) == width * 2) return 480;
+    // Or an interlaced picture whose VI steps two image lines per line (Y
+    // scale 2.0): Duke Nukem: Zero Hour's 320 x 480 frames (guessed 240
+    // lines, drawn at that scale: the bottom half fell outside the target).
+    if (x->sys->options.gfxTallFrame && width <= 320 &&
+        ((x->sys->vi.regs[2] & 0xFFF) == width * 2 || ((x->sys->vi.regs[0] & 0x40) && (x->sys->vi.regs[13] & 0xFFF) >= 0x800 &&
+                                                         (x->sys->vi.regs[2] & 0xFFF) == width)))
+        return 480;
     if (x->tallH && width == x->tallW) return x->tallH;
     return width <= 320 ? 240 : width * 3 / 4;
 }
