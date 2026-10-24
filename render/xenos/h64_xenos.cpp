@@ -3045,8 +3045,13 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         else
             h64_jit_notify_write(x->sys, lo, hi - lo);
         x->stats.tState += h64_prof_now(x->sys) - t0;
-        x->stats.tRdp += h64_prof_now(x->sys) - tStart;
-        return;
+        // A small 16-bit fill also clears the GPU's image as before (the
+        // game may draw there with the GPU too).
+        if (!smallFill)
+        {
+            x->stats.tRdp += h64_prof_now(x->sys) - tStart;
+            return;
+        }
     }
     // State and TMEM: the software RDP (state only).
     t0 = h64_prof_now(x->sys);
