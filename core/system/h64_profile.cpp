@@ -162,6 +162,11 @@ static const GameProfile s_profiles[] = {
     // Its 400-wide frames are 448 lines tall: the GPU renderer takes the
     // height from the scissor (only the top part showed, zoomed in).
     { "NIJ", "Indiana Jones and the Infernal Machine", H64_GP_BOOT_TIME | H64_GP_TALL_FRAME },
+    // Its init sets the refresh rate (50/60, for the audio frame size) only
+    // if its VI counter is still 0 after osContInit; with Count near 0
+    // osContInit waits 0.5 s, retraces count, the rate stays 0: frame size
+    // 0x80000010, no sound task ever, and a match never started.
+    { "N7I", "FIFA Soccer 64", H64_GP_BOOT_TIME },
     // 6106: with the HLE boot only its sound ran, never a graphics task.
     { "NCW", "Cruis'n World", H64_GP_IPL3_BOOT },
     // With the HLE boot, whole parts of rooms were missing depending on the
