@@ -40,7 +40,11 @@ static const GameProfile s_profiles[] = {
     // and no copy back at all left the course black once the camera stops.
     { "NMF", "Mario Golf", H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_FULL },
     // Missing players and net with copy backs; right without.
-    { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK },
+    // Players' shadows: drawn each frame into a 64x64 8-bit image (cleared
+    // as a 64x32 16-bit one), then pasted: the software RDP draws it (they
+    // were missing; issue #23). The ball's energy trail reads the frame and
+    // needs copy backs (still missing: Mario vanished with them).
+    { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK | H64_GP_SOFT_8BIT },
     // Never sets the texture conversion either (F3DLX 1.23): its legal
     // screens' 32-bit letters were read as YUV, almost invisible.
     { "N22", "Ready 2 Rumble Boxing: Round 2", H64_GP_OTHERMODE_INIT },
@@ -247,7 +251,8 @@ static const GameProfile s_profiles[] = {
 enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_COPYBACK_ALPHA = 2,     // options.gfxCopyBackAlpha
        H64_GX_MODIFY_ST_HALF = 4,     // options.gfxModStHalf
-       H64_GX_CIMG_FROM_RDRAM = 8 };  // options.gfxCimgFromRdram
+       H64_GX_CIMG_FROM_RDRAM = 8,    // options.gfxCimgFromRdram
+       H64_GX_XLU_NO_BIAS = 16 };     // options.gfxXluNoBias
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -267,6 +272,10 @@ static const GameExtra s_extras[] = {
     // microcode halves their s, t as any vertex's (GitHub issue #22: textures
     // twice too big, pictures distorted beyond recognition; same as LLE now).
     { "NCY", H64_GX_MODIFY_ST_HALF },
+    // Stacked Deck: each card's shadow lies just under the card in Z mode
+    // XLU; the depth bias that keeps OoT's paths on the ground brought the
+    // shadows over the cards (dark cards; issue #23).
+    { "NMV", H64_GX_XLU_NO_BIAS },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -297,6 +306,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxCopyBackAlpha = (extra & H64_GX_COPYBACK_ALPHA) != 0;
     sys->options.gfxModStHalf = (extra & H64_GX_MODIFY_ST_HALF) != 0;
     sys->options.gfxCimgFromRdram = (extra & H64_GX_CIMG_FROM_RDRAM) != 0;
+    sys->options.gfxXluNoBias = (extra & H64_GX_XLU_NO_BIAS) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

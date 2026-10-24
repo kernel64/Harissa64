@@ -2151,7 +2151,7 @@ static void set_depth(Xenos *x, int hasDepth)
     x->dev->SetRenderState(D3DRS_ZENABLE, test || update ? TRUE : FALSE);
     x->dev->SetRenderState(D3DRS_ZFUNC, test ? D3DCMP_LESSEQUAL : D3DCMP_ALWAYS);
     x->dev->SetRenderState(D3DRS_ZWRITEENABLE, update && st->zMode != 3 ? TRUE : FALSE);
-    if (st->zMode == 3 || st->zMode == 2)
+    if (st->zMode == 3 || (st->zMode == 2 && !x->sys->options.gfxXluNoBias))
     {
         // Decal: the N64 passes a pixel whose depth is within the surface's
         // own slope (dz) of the stored one. Translucent surfaces (Z mode XLU)
@@ -2963,7 +2963,12 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     }
     int tiny = x->sys->options.gfxSoftTiny && x->st->scissorXhi > x->st->scissorXlo && x->st->scissorXhi - x->st->scissorXlo <= 16 * 4 &&
                x->st->scissorYhi > x->st->scissorYlo && x->st->scissorYhi - x->st->scissorYlo <= 16 * 4;
-    if (((x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8) || tiny) &&
+    // Profile gfxSoft8bit also takes fills of 16-bit images at most 64 wide:
+    // Mario Tennis clears its 64x64 8-bit shadow image as a 64x32 16-bit
+    // image, then draws the shadows into it as 8-bit.
+    int smallFill = x->sys->options.gfxSoft8bit && op == 0x36 && (x->st->rasterFlags & RS_FILL) &&
+                    x->st->colorFmt == FB_RGBA5551 && x->st->colorWidth && x->st->colorWidth <= 64;
+    if (((x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8) || tiny || smallFill) &&
         (op == 0x24 || op == 0x25 || op == 0x36 || (op >= 0x08 && op <= 0x0F)))
     {
         // (Profile gfxSoftTiny: the same for drawing within a scissor of at
