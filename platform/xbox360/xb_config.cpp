@@ -19,11 +19,13 @@ void ConfigDefaults(Config *c)
     strcpy(c->cpu, "dynarec");
     c->rom[0] = 0;
     c->lastRom[0] = 0;
+    strcpy(c->romDir, "game:\\roms\\");
     c->showFps = 0;
     c->updateCheck = 1;
     c->artDownload = 1;
     c->browserDemo = 0;
     c->browserSel[0] = 0;
+    c->filesOpen = 0;
     c->artAll = 0;
     c->gameFlags = -1;
     c->logCpu = 5;
@@ -106,10 +108,20 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "cpu")) { strncpy(c->cpu, eq + 1, sizeof(c->cpu) - 1); c->cpu[sizeof(c->cpu) - 1] = 0; }
         else if (!strcmp(line, "rom")) { strncpy(c->rom, eq + 1, sizeof(c->rom) - 1); c->rom[sizeof(c->rom) - 1] = 0; }
         else if (!strcmp(line, "lastrom")) { strncpy(c->lastRom, eq + 1, sizeof(c->lastRom) - 1); c->lastRom[sizeof(c->lastRom) - 1] = 0; }
+        else if (!strcmp(line, "romdir") && eq[1])
+        {
+            // Kept with a backslash at the end ("Usb0:\N64\", "Usb0:\").
+            size_t n;
+            strncpy(c->romDir, eq + 1, sizeof(c->romDir) - 2);
+            c->romDir[sizeof(c->romDir) - 2] = 0;
+            n = strlen(c->romDir);
+            if (c->romDir[n - 1] != '\\') { c->romDir[n] = '\\'; c->romDir[n + 1] = 0; }
+        }
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
         else if (!strcmp(line, "updatecheck")) c->updateCheck = atoi(eq + 1);
         else if (!strcmp(line, "artdownload")) c->artDownload = atoi(eq + 1);
         else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);
+        else if (!strcmp(line, "filesopen")) c->filesOpen = atoi(eq + 1);
         else if (!strcmp(line, "browsersel")) { strncpy(c->browserSel, eq + 1, sizeof(c->browserSel) - 1); c->browserSel[sizeof(c->browserSel) - 1] = 0; }
         else if (!strcmp(line, "artall")) c->artAll = atoi(eq + 1);
         else if (!strcmp(line, "gameflags")) c->gameFlags = (int)strtoul(eq + 1, NULL, 16);   // strtoul: bit 31 is a flag
@@ -221,6 +233,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
         fprintf(f, "%smap_invert=%s\n", pre, m->invert == 3 ? "xy" : m->invert == 2 ? "y" : m->invert == 1 ? "x" : "none");
     }
     if (withLastRom && c->lastRom[0]) fprintf(f, "lastrom=%s\n", c->lastRom);
+    if (withLastRom && _stricmp(c->romDir, "game:\\roms\\")) fprintf(f, "romdir=%s\n", c->romDir);
     if (withLastRom && c->lang[0]) fprintf(f, "lang=%s\n", c->lang);
     fclose(f);
     return 1;

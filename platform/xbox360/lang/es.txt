@@ -144,9 +144,16 @@ SAVE_NONE = ninguno
 SAVE_UNKNOWN = desconocido (EEPROM 4 Kbit, SRAM o FlashRAM)
 NO_ROM = No se encontró ninguna ROM
 COPY_ROMS = Copia archivos .z64, .n64, .v64 o .zip
-INTO_ROMS = en game:\roms\
-FOOT_BROWSER = A:Jugar|LB/RB:Página|Y:Ajustes|X:Acerca de|BACK:Salir
-FOOT_BROWSER_EMPTY = Y:Ajustes|X:Acerca de|BACK:Salir
+INTO_ROMS = en %s
+FOOT_BROWSER = A:Jugar|Y:Ajustes|X:Acerca de|START:Archivos|BACK:Salir
+FOOT_BROWSER_EMPTY = Y:Ajustes|X:Acerca de|START:Archivos|BACK:Salir
+
+# ---- File browser (START in the ROM list) ----
+FILES = Archivos
+FILES_DRIVES = Unidades
+FOOT_FILES = A:Abrir|B:Atrás|Y:Carpeta de ROM
+FILES_EMPTY = No hay carpetas ni ROM aquí
+ROM_FOLDER_SET = Carpeta de ROM: %s
 ART_PROGRESS = Carátulas %d / %d
 ART_CONNECTING = Carátulas: conectando…
 UPDATE_AVAILABLE = Harissa64 %s está disponible en GitHub

@@ -34,6 +34,7 @@
 #include "../../render/xenos/h64_xenos.h"
 #include "../../tests/unit/unit_tests.h"
 #include "xb_config.h"
+#include "xb_drives.h"
 #include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_menu.h"
@@ -1670,6 +1671,7 @@ int __cdecl main()
         dev = NULL;
     }
 
+    DrivesMount();   // Hdd1:, Usb0:..Usb2:, Dvd: for the ROM list's file browser and romdir=
     if (failures)
         MessageScreen(dev, "Unit tests failed", status, D3DCOLOR_XRGB(240, 60, 60));
     else if (!strcmp(cfg.mode, "jittest"))
@@ -1696,7 +1698,7 @@ int __cdecl main()
         int scripted = cfg.input.count || cfg.exitAfter || cfg.trace || cfg.shotCount || cfg.loadState || cfg.saveStateAt;
         // Checks driven by harissa64v2.ini: no language list.
         int checks = cfg.autoStart || cfg.controlsTest >= 0 || cfg.browserDemo || cfg.artAll || cfg.browserSel[0] || cfg.browserAt ||
-                     cfg.menuAt || cfg.aboutAt;
+                     cfg.menuAt || cfg.aboutAt || cfg.filesOpen;
         char dir[64], menuFile[160];
         _snprintf(dir, sizeof(dir), "%s:\\config", s_logDrive);
         dir[sizeof(dir) - 1] = 0;
