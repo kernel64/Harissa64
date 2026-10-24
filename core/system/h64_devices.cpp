@@ -72,6 +72,7 @@ static void vi_schedule(H64System *sys)
     u32 vintr = sys->vi.regs[VI_V_INTR] & 0x3FF;
     u64 at;
     vi_advance(sys);
+    if (sys->options.viIntrLine0 && vintr < vi_halflines(sys)) vintr = 0;   // game profile (FIFA Soccer 64)
     at = sys->vi.frameStart + (u64)vintr * sys->vi.frameCycles / vi_halflines(sys);
     if (vintr >= vi_halflines(sys) || at <= now(sys))
     {

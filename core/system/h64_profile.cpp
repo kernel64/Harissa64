@@ -252,7 +252,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_COPYBACK_ALPHA = 2,     // options.gfxCopyBackAlpha
        H64_GX_MODIFY_ST_HALF = 4,     // options.gfxModStHalf
        H64_GX_CIMG_FROM_RDRAM = 8,    // options.gfxCimgFromRdram
-       H64_GX_XLU_NO_BIAS = 16 };     // options.gfxXluNoBias
+       H64_GX_XLU_NO_BIAS = 16,       // options.gfxXluNoBias
+       H64_GX_VI_LINE0 = 32 };        // options.viIntrLine0
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -276,6 +277,18 @@ static const GameExtra s_extras[] = {
     // XLU; the depth bias that keeps OoT's paths on the ground brought the
     // shadows over the cards (dark cards; issue #23).
     { "NMV", H64_GX_XLU_NO_BIAS },
+    // A boot race the console wins by being slow on code it runs for the
+    // first time. osCreateViManager waits for the VI to start a field; the
+    // game then makes its controller thread a client of its scheduler and only
+    // later creates the queue osContInit uses. The VI interrupt at VI_V_INTR's
+    // line 2 came ~6000 cycles after that wait, before the queue existed (this
+    // core runs that code at 1-2 cycles an instruction, the VR4300 misses its
+    // instruction cache there): the retrace woke the controller thread, which
+    // read the controllers through the null queue (lw at 800D89E8), and the
+    // game stopped on noise after two graphics tasks. With the interrupt at
+    // the start of the field, as in mupen64plus, it is taken during the wait
+    // and the next one comes a frame later. (h64test --cpi 4 boots it too.)
+    { "N7I", H64_GX_VI_LINE0 },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -307,6 +320,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxModStHalf = (extra & H64_GX_MODIFY_ST_HALF) != 0;
     sys->options.gfxCimgFromRdram = (extra & H64_GX_CIMG_FROM_RDRAM) != 0;
     sys->options.gfxXluNoBias = (extra & H64_GX_XLU_NO_BIAS) != 0;
+    sys->options.viIntrLine0 = (extra & H64_GX_VI_LINE0) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

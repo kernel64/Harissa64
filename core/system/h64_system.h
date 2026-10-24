@@ -130,6 +130,8 @@ struct H64Options
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
     int gfxCopyBackAlpha;   // GPU renderer (game profile): 16-bit fills write their alpha bit and copy-backs keep the
                             // GPU's alpha (else always 1): images drawn to be used as cut-out textures
+    int viIntrLine0;        // game profile: the VI interrupt fires when a field starts (half-line 0), whatever
+                            // VI_V_INTR's line, as mupen64plus does (FIFA Soccer 64's boot race, h64_profile.cpp)
     u32 idleYieldPc;        // recompiler (game profile): head of an idle thread's osYieldThread loop (0: none)
     u32 idleRunQueue;       // and the physical address of libultra's __osRunQueue (see h64_jit.cpp)
     u32 countWaitPc;        // recompiler (game profile): head of a loop that only polls Count or an empty
