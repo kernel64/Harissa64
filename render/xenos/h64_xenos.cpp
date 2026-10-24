@@ -155,6 +155,12 @@ struct Xenos
     std::map<u32, std::vector<IDirect3DTexture9 *> > pool;
     u8 *arena;                              // ARENA_BYTES of physical memory (NULL: CreateTexture only)
     u32 arenaHead;                          // next free byte
+    // The present (presentCount) whose frame last bound a texture of each
+    // chunk (0xFFFFFFFF: none), and a fence after each of the last 8
+    // presents: re-entering a chunk waits for that frame only.
+    u32 chunkUse[ARENA_CHUNKS];
+    DWORD presentFence[8];
+    u32 presentFenceSet;                    // bit n: presentFence[n] holds a fence
     std::vector<u64> arenaKeys[ARENA_CHUNKS];          // cache keys of the textures in each chunk
     std::vector<IDirect3DTexture9 *> arenaHeaders[ARENA_CHUNKS];
     u32 poolBytes;
@@ -198,7 +204,8 @@ struct Xenos
     u32 staleCount;     // words set in staleTmem
     IDirect3DTexture9 *fbTex;   // set: bind_texture puts this image on unit 0 instead of decoding the tile
     float fbTexels[2];          // its N64 texels across [0, 1] (3-point filter sizes)
-    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; } memo[8];
+    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; int chunk; } memo[8];
+    int lookupChunk;    // arena chunk of the texture lookup_texture returned last (-1: none)
 
     FbSlot fb[FB_SLOTS];
     int curSlot;        // slot whose image is in the N64 render target (-1: none)
@@ -565,6 +572,7 @@ static void retire_all_textures(Xenos *x)
             for (k = 0; k < x->arenaHeaders[c].size(); k++) delete x->arenaHeaders[c][k];
             x->arenaHeaders[c].clear();
             x->arenaKeys[c].clear();
+            x->chunkUse[c] = 0xFFFFFFFFu;   // (after the wait for the GPU above)
         }
         x->arenaHead = 0;
     }
@@ -698,13 +706,15 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
     u32 t = tileIndex & 7, rf = x->st->rasterFlags & (RS_TLUT | RS_TLUT_TYPE);
-    if (x->win.active && x->win.tile == t) return lookup_texture(x, t, b);
+    if (x->win.active && x->win.tile == t) return lookup_texture(x, t, b);   // (lookup_texture marks the chunk)
     if (x->memo[t].gen == x->tmemGen && x->memo[t].rasterFlags == rf && x->memo[t].tex)
     {
         *b = x->memo[t].b;
+        if (x->memo[t].chunk >= 0) x->chunkUse[x->memo[t].chunk] = x->presentCount;
         return x->memo[t].tex;
     }
     x->memo[t].tex = lookup_texture(x, t, b);
+    x->memo[t].chunk = x->lookupChunk;
     x->memo[t].b = *b;
     x->memo[t].gen = x->tmemGen;
     x->memo[t].rasterFlags = rf;
@@ -727,10 +737,24 @@ static int arena_alloc(Xenos *x, u32 size, u32 *offset)
         {
             // The GPU may still read this chunk's textures: unbind, wait for
             // everything issued so far, then drop them.
-            u32 k;
+            u32 k, last = x->chunkUse[c];
             x->dev->SetTexture(0, x->dummy);
             x->dev->SetTexture(1, x->dummy);
-            x->dev->BlockOnFence(x->dev->InsertFence());
+            // Only the frame that used the chunk last must be done: it is
+            // almost always several presents old and its fence passed already.
+            // Waiting for everything issued drained the GPU at each re-entry
+            // (Mario Tennis's replays: ~18 a second, ~8 ms a frame).
+            if (last == 0xFFFFFFFFu)
+                ;
+            else if (last == x->presentCount || !(x->presentFenceSet & (1u << (last & 7))))
+                x->dev->BlockOnFence(x->dev->InsertFence());   // the frame being drawn
+            else if (x->presentCount - last <= 7)
+                x->dev->BlockOnFence(x->presentFence[last & 7]);
+            else if (x->presentFenceSet & (1u << ((x->presentCount + 1) & 7)))
+                x->dev->BlockOnFence(x->presentFence[(x->presentCount + 1) & 7]);   // the oldest fence kept, after that frame
+            else
+                x->dev->BlockOnFence(x->dev->InsertFence());
+            x->chunkUse[c] = 0xFFFFFFFFu;
             for (k = 0; k < x->arenaKeys[c].size(); k++)
             {
                 std::map<u64, TexEntry>::iterator it = x->textures.find(x->arenaKeys[c][k]);
@@ -855,8 +879,13 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         else key = mem_hash(key, st->tmem + 0x800, 0x800);
     }
     it = x->textures.find(key);
+    x->lookupChunk = -1;
     if (it != x->textures.end() && x->debug != 12)   // xenosdebug=12: every texture decoded again (diagnosis)
+    {
+        x->lookupChunk = it->second.chunk;
+        if (it->second.chunk >= 0) x->chunkUse[it->second.chunk] = x->presentCount;
         return it->second.tex;
+    }
     if (it != x->textures.end()) x->textures.erase(it);
     if (x->debug == 8 && x->presentCount >= x->debugFrom && x->presentCount < x->debugFrom + 2)
     {
@@ -977,6 +1006,8 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         x->textureBytes += e.w * e.h * 4;
     }
     x->textures[key] = e;
+    x->lookupChunk = e.chunk;
+    if (e.chunk >= 0) x->chunkUse[e.chunk] = x->presentCount;
     x->stats.tDecode += h64_prof_now(x->sys) - d0;
     x->stats.textureUploads++;
     x->stats.texelsDecoded += b->w * b->h;
@@ -3367,6 +3398,8 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->vsyncSet = x->vsync;
     }
     x->dev->Present(NULL, NULL, NULL, NULL);
+    x->presentFence[x->presentCount & 7] = x->dev->InsertFence();   // the end of frame presentCount
+    x->presentFenceSet |= 1u << (x->presentCount & 7);
     x->stats.presents++;
     x->presentCount++;
     // The next draw rebinds the N64 target and restores its content.
@@ -3421,6 +3454,12 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->presentCount = 0;
     x->tallW = x->tallH = 0;
     x->arenaHead = 0;
+    {
+        u32 c;
+        for (c = 0; c < ARENA_CHUNKS; c++) x->chunkUse[c] = 0xFFFFFFFFu;
+        x->presentFenceSet = 0;
+        x->lookupChunk = -1;
+    }
     x->arena = (u8 *)XPhysicalAlloc(ARENA_BYTES, MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
     if (!x->arena) H64_WARN("[xenos] no texture arena (%u MB): CreateTexture for every texture", ARENA_BYTES >> 20);
     x->stateDirty = 1;
