@@ -92,6 +92,11 @@ class Console:
 
     def put(self, data, rel):
         f = self.ftp()
+        if '/' in rel:   # a game never started on the console has no save folder yet
+            try:
+                f.mkd(self.cfg['dir'] + '/' + rel.rsplit('/', 1)[0])
+            except ftplib.all_errors:
+                pass
         f.storbinary('STOR ' + self.cfg['dir'] + '/' + rel, io.BytesIO(data))
         f.quit()
 

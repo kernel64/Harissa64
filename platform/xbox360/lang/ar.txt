@@ -24,6 +24,7 @@ SAVE_GAME = حفظ لهذه اللعبة فقط
 BACK = رجوع
 ON = تشغيل
 OFF = إيقاف
+VSYNC_STRICT = صارم
 CUSTOM = مخصص
 DEFAULT = افتراضي
 RECOMPILER = المترجم الديناميكي
@@ -144,9 +145,16 @@ SAVE_NONE = لا يوجد
 SAVE_UNKNOWN = غير معروف (EEPROM 4 Kbit أو SRAM أو FlashRAM)
 NO_ROM = لم يتم العثور على أي ROM
 COPY_ROMS = انسخ ملفات .z64 أو .n64 أو .v64 أو .zip
-INTO_ROMS = إلى game:\roms\
-FOOT_BROWSER = A:لعب|LB/RB:صفحة|Y:الإعدادات|X:حول|BACK:خروج
-FOOT_BROWSER_EMPTY = Y:الإعدادات|X:حول|BACK:خروج
+INTO_ROMS = إلى %s
+FOOT_BROWSER = A:لعب|Y:الإعدادات|X:حول|START:الملفات|BACK:خروج
+FOOT_BROWSER_EMPTY = Y:الإعدادات|X:حول|START:الملفات|BACK:خروج
+
+# ---- File browser (START in the ROM list) ----
+FILES = الملفات
+FILES_DRIVES = الأقراص
+FOOT_FILES = A:فتح|B:رجوع|Y:مجلد الألعاب
+FILES_EMPTY = لا توجد مجلدات أو ألعاب هنا
+ROM_FOLDER_SET = مجلد الألعاب: %s
 ART_PROGRESS = الأغلفة %d / %d
 ART_CONNECTING = الأغلفة: جار الاتصال…
 UPDATE_AVAILABLE = الإصدار Harissa64 %s متوفر على GitHub

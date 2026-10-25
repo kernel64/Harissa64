@@ -16,6 +16,8 @@ struct Config
     char cpu[32];       // cpu=dynarec|interp
     char rom[256];      // rom=PATH: run this ROM directly (no ROM browser)
     char lastRom[256];  // lastrom=PATH: the ROM browser's selection (written by the menu)
+    char romDir[256];   // romdir=FOLDER: the folder the ROM browser lists, ending with a backslash
+                        // (settings.ini, chosen in the file browser; default game:\roms\)
     int hle;            // hle=0: RSP tasks on the LLE RSP
     int softRenderer;   // renderer=soft: the software RDP draws into RDRAM, Xenos only shows RDRAM (diagnosis)
     int xenosDebug;     // xenosdebug=1..4: renderer debug output (h64_xenos_set_debug)
@@ -24,6 +26,7 @@ struct Config
     u32 shots[64];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)
     int shotCount;
     u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
+    u32 stallMs;        // stallms=N: log the frames whose emulation took over N ms ([stall], default 100)
     u32 trace, traceStep;   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
     int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter
@@ -54,6 +57,7 @@ struct Config
                         // <drive>:\art\games\ (xb_art.cpp); 1 (default): it downloads what is missing; 2: also in Xenia
     int browserDemo;    // browserdemo=N: the ROM browser moves its selection down every N ms (captures in Xenia)
     char browserSel[128]; // browsersel=FILE: the ROM browser starts on that file name (console checks), over lastrom=
+    int filesOpen;      // filesopen=1: the ROM browser opens its file browser at once (console checks)
     int artAll;         // artall=1: the ROM browser starts "Get box art for all games" by itself (checks)
     int asyncGfx;       // asyncgfx=0: graphics tasks and presents on the CPU thread
     int parseWorker;    // parseworker=0: display lists parsed on the graphics worker too (no second worker)

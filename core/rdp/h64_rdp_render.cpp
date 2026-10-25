@@ -14,6 +14,10 @@
 
 #include <stdlib.h>
 #include <string.h>
+#ifdef H64_BENCH8
+#include <intrin.h>
+unsigned long long g_bench8, g_bench8n, g_b8span, g_b8px, g_b8lines;
+#endif
 
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
@@ -63,8 +67,6 @@ struct Pixel   // one pixel of the colour and depth images, as the RDP sees it
 };
 
 // ---- Small helpers ----
-static s32 min4(const u16 *v) { s32 m = v[0]; int i; for (i = 1; i < 4; i++) if (v[i] < m) m = v[i]; return m; }
-static s32 max4(const u16 *v) { s32 m = v[0]; int i; for (i = 1; i < 4; i++) if (v[i] > m) m = v[i]; return m; }
 static s32 clamp9(s32 c) { return h64_clamp(h64_sext(c - 0x80, 9) + 0x80, 0, 0xFF); }
 
 static s32 clamp_z(s32 z)
@@ -152,7 +154,7 @@ static int fb_size_of(int fmt)
 }
 
 // ---- Framebuffer access (memory_interfacing.h) ----
-static void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
+static H64_INLINE void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
 {
     u8 *r = st->drawRam ? st->drawRam : sys->rdram, *hid = sys->rdramHidden;
     u32 w = st->colorWidth, idx, word;
@@ -183,14 +185,16 @@ static void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
     }
     p->colorIndex = idx;
     idx = ((st->depthAddr >> 1) + w * y + x) & (H64_RDRAM_SIZE / 2 - 1);
+    p->depthIndex = idx;
+    // Only the depth test reads the memory's depth (an update overwrites it).
+    if (!(st->depthBlendFlags & DB_DEPTH_TEST)) { p->depth = 0; p->dz = 0; return; }
     word = (u32)r[idx * 2] << 8 | r[idx * 2 + 1];
     p->depth = (u16)(word >> 2);
     p->dz = (u8)(hid[idx] | ((word & 3) << 2));
-    p->depthIndex = idx;
 }
 
-static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r);
-static void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
+static H64_INLINE void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r);
+static H64_INLINE void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
 {
     // A GPU renderer's hand-over (softDraw) may run on its worker: the
     // recompiler is told by the renderer, not from here.
@@ -204,7 +208,7 @@ static void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
     if (st->drawRam2) store_pixel_to(sys, st, p, st->drawRam2);
 }
 
-static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r)
+static H64_INLINE void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r)
 {
     u8 *hid = sys->rdramHidden;
     u32 idx = p->colorIndex;
@@ -251,7 +255,7 @@ static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *
     }
 }
 
-static void write_color(H64RdpState *st, Pixel *p, u8 r, u8 g, u8 b, u8 a)
+static H64_INLINE void write_color(H64RdpState *st, Pixel *p, u8 r, u8 g, u8 b, u8 a)
 {
     p->c[0] = r; p->c[1] = g; p->c[2] = b;
     if (st->colorFmt != FB_I4) p->c[3] = a;
@@ -310,6 +314,7 @@ static void span_setup(const H64RdpState *st, const TriSetup *ts, const AttrSetu
     s32 yhi = ts->yl < (s32)st->scissorYhi ? ts->yl : (s32)st->scissorYhi;
     s32 xleft[4], xright[4], lo = (s32)(st->scissorXlo << 1), hi = (s32)(st->scissorXhi << 1);
     int invalid[4], allOver = 1, allUnder = 1, allInvalid = 1;
+    s32 minL = 0x7FFFFFFF, maxR = -1;
 
     if (ts->flags & TS_DO_OFFSET)
     {
@@ -357,9 +362,11 @@ static void span_setup(const H64RdpState *st, const TriSetup *ts, const AttrSetu
         else allInvalid = 0;
         sp->xleft[i] = (u16)xleft[i];
         sp->xright[i] = (u16)xright[i];
+        if ((s32)(u16)xleft[i] < minL) minL = (u16)xleft[i];
+        if ((s32)(u16)xright[i] > maxR) maxR = (u16)xright[i];
     }
-    sp->startX = min4(sp->xleft) >> 3;
-    sp->endX = max4(sp->xright) >> 3;
+    sp->startX = minL >> 3;
+    sp->endX = maxR >> 3;
     sp->valid = !allInvalid && !allOver && !allUnder;
     if ((ts->flags & TS_INTERLACE_FIELD) && ((y & 1) != ((ts->flags & TS_INTERLACE_KEEP_ODD) ? 1 : 0)))
         sp->valid = 0;
@@ -367,7 +374,7 @@ static void span_setup(const H64RdpState *st, const TriSetup *ts, const AttrSetu
 }
 
 // ---- Coverage (coverage.h) ----
-static u32 compute_coverage(const Span *sp, s32 x)
+static H64_INLINE u32 compute_coverage(const Span *sp, s32 x)
 {
     static const u16 off[4] = { 0, 4, 2, 6 };
     u32 cov = 0, i;
@@ -381,7 +388,7 @@ static u32 compute_coverage(const Span *sp, s32 x)
     return cov;
 }
 
-static s32 blend_coverage(s32 coverage, s32 memCoverage, int blendEn, int mode)
+static H64_INLINE s32 blend_coverage(s32 coverage, s32 memCoverage, int blendEn, int mode)
 {
     switch (mode)
     {
@@ -455,19 +462,20 @@ struct CombIn
     s32 lodFrac, noise;
 };
 
-static void unpack_rgba(u32 c, s32 *o) { o[0] = (s32)(c >> 24); o[1] = (s32)((c >> 16) & 0xFF); o[2] = (s32)((c >> 8) & 0xFF); o[3] = (s32)(c & 0xFF); }
+// Channel ch (0 red .. 3 alpha) of an RGBA8888 colour, without a byte array
+// (stored then read back: a load-hit-store stall on the Xbox 360).
+static H64_INLINE s32 chan8(u32 c, int ch) { return (s32)((c >> (24 - 8 * ch)) & 0xFF); }
 
 static s32 sel_rgb_muladd(const H64RdpState *st, const CombIn *in, u32 s, int ch)
 {
-    s32 c[4];
     switch (s)
     {
     case 0: return in->combined[ch];
     case 1: return in->texel0[ch];
     case 2: return in->texel1[ch];
-    case 3: unpack_rgba(st->primColor, c); return c[ch];
+    case 3: return chan8(st->primColor, ch);
     case 4: return in->shade[ch];
-    case 5: unpack_rgba(st->envColor, c); return c[ch];
+    case 5: return chan8(st->envColor, ch);
     case 6: return 0x100;
     case 7: return in->noise;
     default: return 0;
@@ -475,15 +483,14 @@ static s32 sel_rgb_muladd(const H64RdpState *st, const CombIn *in, u32 s, int ch
 }
 static s32 sel_rgb_mulsub(const H64RdpState *st, const CombIn *in, u32 s, int ch)
 {
-    s32 c[4];
     switch (s)
     {
     case 0: return in->combined[ch];
     case 1: return in->texel0[ch];
     case 2: return in->texel1[ch];
-    case 3: unpack_rgba(st->primColor, c); return c[ch];
+    case 3: return chan8(st->primColor, ch);
     case 4: return in->shade[ch];
-    case 5: unpack_rgba(st->envColor, c); return c[ch];
+    case 5: return chan8(st->envColor, ch);
     case 6: return (s32)st->keyCenter[ch];
     case 7: return st->convert[4];   // K4, 9 bits
     default: return 0;
@@ -491,15 +498,14 @@ static s32 sel_rgb_mulsub(const H64RdpState *st, const CombIn *in, u32 s, int ch
 }
 static s32 sel_rgb_mul(const H64RdpState *st, const CombIn *in, u32 s, int ch)
 {
-    s32 c[4];
     switch (s)
     {
     case 0: return in->combined[ch];
     case 1: return in->texel0[ch];
     case 2: return in->texel1[ch];
-    case 3: unpack_rgba(st->primColor, c); return c[ch];
+    case 3: return chan8(st->primColor, ch);
     case 4: return in->shade[ch];
-    case 5: unpack_rgba(st->envColor, c); return c[ch];
+    case 5: return chan8(st->envColor, ch);
     case 6: return (s32)st->keyScale[ch];
     case 7: return in->combined[3];
     case 8: return in->texel0[3];
@@ -613,7 +619,7 @@ static const u8 dither_matrices[2][16] = {
     { 0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0 },
     { 0, 4, 1, 5, 4, 0, 5, 1, 3, 7, 2, 6, 7, 3, 6, 2 } };
 
-static void dither_coefficients(const H64RdpState *st, s32 x, s32 y, int modeRgb, int modeAlpha, s32 *rgbDith, s32 *alphaDith)
+static H64_INLINE void dither_coefficients(const H64RdpState *st, s32 x, s32 y, int modeRgb, int modeAlpha, s32 *rgbDith, s32 *alphaDith)
 {
     const s32 SPLAT = (1 << 0) | (1 << 3) | (1 << 6);
     if (modeRgb < 2) *rgbDith = dither_matrices[modeRgb][(y & 3) * 4 + (x & 3)] * SPLAT;
@@ -628,22 +634,10 @@ static void dither_coefficients(const H64RdpState *st, s32 x, s32 y, int modeRgb
     }
 }
 
-static void rgb_dither(u8 *rgb, s32 dith)
-{
-    int i;
-    for (i = 0; i < 3; i++)
-    {
-        s32 d = (dith >> (3 * i)) & 7, o = rgb[i];
-        s32 r = o > 247 ? 255 : (o & 0xF8) + 8;
-        s32 replace = (d - (o & 7)) >> 31;
-        rgb[i] = (u8)((o + ((r - o) & replace)) & 0xFF);
-    }
-}
-
 // ---- Depth test (depth_test.h) ----
 static s32 combine_dz(s32 dz) { return dz ? 1 << h64_find_msb((u32)dz) : 0; }
 
-static int depth_test(const H64RdpState *st, s32 z, s32 dz, s32 dzCompressed, u32 curDepth, u32 curDz,
+static H64_INLINE int depth_test(const H64RdpState *st, s32 z, s32 dz, s32 dzCompressed, u32 curDepth, u32 curDz,
                       s32 *coverageCount, s32 curCoverage, int *blendEn, int *coverageWrap, s32 *shift)
 {
     int forceBlend = (st->depthBlendFlags & DB_FORCE_BLEND) != 0, aa = (st->depthBlendFlags & DB_AA) != 0;
@@ -701,63 +695,63 @@ static int depth_test(const H64RdpState *st, s32 z, s32 dz, s32 dzCompressed, u3
 }
 
 // ---- Blender (blender.h) ----
-static void blender(const H64RdpState *st, const u8 *pixel, const u8 *memory, u8 shadeAlpha, const u8 *modes,
-                    int blendEn, int coverageWrap, const s32 *shift, int finalCycle, u8 *out)
+// Scalar form (no byte arrays): on the in-order Xbox 360 core each byte
+// stored then read back stalled the pipeline (load-hit-store), per pixel.
+static H64_INLINE s32 blend_src(int mode, s32 pix, s32 mem, s32 blend, s32 fog)
 {
-    u8 fog[4], blend[4], rgb0[3], rgb1[3];
-    s32 a0, a1;
-    int forceBlend = (st->depthBlendFlags & DB_FORCE_BLEND) != 0, i;
-    fog[0] = (u8)(st->fogColor >> 24); fog[1] = (u8)(st->fogColor >> 16); fog[2] = (u8)(st->fogColor >> 8); fog[3] = (u8)st->fogColor;
-    blend[0] = (u8)(st->blendColor >> 24); blend[1] = (u8)(st->blendColor >> 16); blend[2] = (u8)(st->blendColor >> 8); blend[3] = (u8)st->blendColor;
-    for (i = 0; i < 3; i++)
-    {
-        const u8 *src2 = modes[2] == 0 ? pixel : modes[2] == 1 ? memory : modes[2] == 2 ? blend : fog;
-        const u8 *src1 = modes[0] == 0 ? pixel : modes[0] == 1 ? memory : modes[0] == 2 ? blend : fog;
-        rgb1[i] = src2[i];
-        rgb0[i] = src1[i];
-    }
+    return mode == 0 ? pix : mode == 1 ? mem : mode == 2 ? blend : fog;
+}
+
+static H64_INLINE s32 blend_channel(s32 c0, s32 c1, s32 a0, s32 a1, s32 sum, int direct)
+{
+    s16 blended = (s16)(c0 * a0 + c1 * (a1 + 1));
+    if (direct) return (blended >> 5) & 0xFF;
+    return h64_rdp_blender_lut[((sum << 11) | ((blended >> 2) & 0x7FF)) & 0x7FFF];
+}
+
+static H64_INLINE void blender(const H64RdpState *st, s32 pr, s32 pg, s32 pb, s32 pa, s32 mr, s32 mg, s32 mb, s32 ma,
+                               s32 shadeAlpha, const u8 *modes, int blendEn, int coverageWrap, const s32 *shift,
+                               int finalCycle, s32 *outR, s32 *outG, s32 *outB)
+{
+    u32 fogc = st->fogColor, bc = st->blendColor;
+    s32 fr = (s32)((fogc >> 24) & 0xFF), fg = (s32)((fogc >> 16) & 0xFF), fb = (s32)((fogc >> 8) & 0xFF), fa = (s32)(fogc & 0xFF);
+    s32 br = (s32)((bc >> 24) & 0xFF), bgc = (s32)((bc >> 16) & 0xFF), bb = (s32)((bc >> 8) & 0xFF);
+    int m0 = modes[0], m1 = modes[1], m2 = modes[2], m3 = modes[3];
+    int forceBlend = (st->depthBlendFlags & DB_FORCE_BLEND) != 0, direct;
+    s32 r0 = blend_src(m0, pr, mr, br, fr), g0 = blend_src(m0, pg, mg, bgc, fg), b0 = blend_src(m0, pb, mb, bb, fb);
+    s32 r1 = blend_src(m2, pr, mr, br, fr), g1 = blend_src(m2, pg, mg, bgc, fg), b1 = blend_src(m2, pb, mb, bb, fb);
+    s32 a0, a1, sum;
     if (finalCycle && (st->depthBlendFlags & DB_COLOR_ON_CVG) && !coverageWrap)
     {
-        memcpy(out, rgb1, 3);
+        *outR = r1; *outG = g1; *outB = b1;
         return;
     }
-    if (finalCycle && (!blendEn || (modes[1] == 0 && modes[3] == 0 && pixel[3] == 0xFF)))
+    if (finalCycle && (!blendEn || (m1 == 0 && m3 == 0 && pa == 0xFF)))
     {
-        memcpy(out, rgb0, 3);
+        *outR = r0; *outG = g0; *outB = b0;
         return;
     }
-    switch (modes[1])
-    {
-    case 0: a0 = pixel[3]; break;
-    case 1: a0 = fog[3]; break;
-    case 2: a0 = shadeAlpha; break;
-    default: a0 = 0; break;
-    }
-    switch (modes[3])
-    {
-    case 0: a1 = ~a0 & 0xFF; break;
-    case 1: a1 = memory[3]; break;
-    case 2: a1 = 0xFF; break;
-    default: a1 = 0; break;
-    }
+    a0 = m1 == 0 ? pa : m1 == 1 ? fa : m1 == 2 ? shadeAlpha : 0;
+    a1 = m3 == 0 ? (~a0 & 0xFF) : m3 == 1 ? ma : m3 == 2 ? 0xFF : 0;
     a0 >>= 3;
     a1 >>= 3;
-    if (modes[3] == 1)
+    if (m3 == 1)
     {
         a0 = (a0 >> shift[0]) & 0x3C;
         a1 = (a1 >> shift[1]) | 3;
     }
-    for (i = 0; i < 3; i++)
-    {
-        s16 blended = (s16)(rgb0[i] * a0 + rgb1[i] * (a1 + 1));
-        if (!finalCycle || forceBlend) out[i] = (u8)((blended >> 5) & 0xFF);
-        else
-        {
-            s32 sum = (a0 >> 2) + (a1 >> 2) + 1;
-            s32 b = (blended >> 2) & 0x7FF;
-            out[i] = h64_rdp_blender_lut[((sum << 11) | b) & 0x7FFF];
-        }
-    }
+    direct = !finalCycle || forceBlend;
+    sum = (a0 >> 2) + (a1 >> 2) + 1;
+    *outR = blend_channel(r0, r1, a0, a1, sum, direct);
+    *outG = blend_channel(g0, g1, a0, a1, sum, direct);
+    *outB = blend_channel(b0, b1, a0, a1, sum, direct);
+}
+
+static H64_INLINE s32 dither_channel(s32 o, s32 d)
+{
+    s32 r = o > 247 ? 255 : (o & 0xF8) + 8;
+    s32 replace = (d - (o & 7)) >> 31;
+    return (o + ((r - o) & replace)) & 0xFF;
 }
 
 // ---- Pixel pipeline ----
@@ -768,46 +762,50 @@ struct PrimContext
     Derived d;
 };
 
-static void depth_blend(H64RdpState *st, const Derived *d, Pixel *p, const s32 *combined, s32 z, s32 dith,
+static H64_INLINE void depth_blend(H64RdpState *st, const Derived *d, Pixel *p, const s32 *combined, s32 z, s32 dith,
                         s32 coverageCount, u8 shadeAlpha)
 {
     int imageRead = (st->depthBlendFlags & DB_IMAGE_READ) != 0, blendEn = 0, coverageWrap = 0;
-    u8 memory[4], pixel[4], rgb[3];
+    s32 mr, mg, mb, ma, pr, pg, pb, pa, r, g, b;
     s32 shift[2], memCov, newCov;
     switch (st->colorFmt)
     {
-    case FB_I4: memory[0] = memory[1] = memory[2] = 0; memory[3] = 0xE0; break;
-    case FB_I8: memory[0] = memory[1] = memory[2] = p->c[0]; memory[3] = 0xE0; break;
+    case FB_I4: mr = mg = mb = 0; ma = 0xE0; break;
+    case FB_I8: mr = mg = mb = p->c[0]; ma = 0xE0; break;
     case FB_RGBA5551:
-        memory[0] = (u8)(p->c[0] & 0xF8); memory[1] = (u8)(p->c[1] & 0xF8); memory[2] = (u8)(p->c[2] & 0xF8);
-        memory[3] = imageRead ? (u8)(p->c[3] & 0xE0) : 0xE0;
+        mr = p->c[0] & 0xF8; mg = p->c[1] & 0xF8; mb = p->c[2] & 0xF8;
+        ma = imageRead ? (p->c[3] & 0xE0) : 0xE0;
         break;
     case FB_IA88:
-        memory[0] = memory[1] = memory[2] = p->c[0];
-        memory[3] = imageRead ? (u8)(p->c[3] & 0xE0) : 0xE0;
+        mr = mg = mb = p->c[0];
+        ma = imageRead ? (p->c[3] & 0xE0) : 0xE0;
         break;
     default:
-        memory[0] = p->c[0]; memory[1] = p->c[1]; memory[2] = p->c[2];
-        memory[3] = imageRead ? (u8)(p->c[3] & 0xE0) : 0xE0;
+        mr = p->c[0]; mg = p->c[1]; mb = p->c[2];
+        ma = imageRead ? (p->c[3] & 0xE0) : 0xE0;
         break;
     }
-    memCov = memory[3] >> 5;
+    memCov = ma >> 5;
     if (!depth_test(st, z, d->dz, d->dzCompressed, p->depth, p->dz, &coverageCount, memCov, &blendEn, &coverageWrap, shift))
         return;
     if ((st->depthBlendFlags & DB_AA) && coverageCount == 0)
         return;
-    pixel[0] = (u8)combined[0]; pixel[1] = (u8)combined[1]; pixel[2] = (u8)combined[2]; pixel[3] = (u8)combined[3];
+    pr = combined[0] & 0xFF; pg = combined[1] & 0xFF; pb = combined[2] & 0xFF; pa = combined[3] & 0xFF;
     if (st->depthBlendFlags & DB_MULTI_CYCLE)
     {
-        blender(st, pixel, memory, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 0, rgb);
-        pixel[0] = rgb[0]; pixel[1] = rgb[1]; pixel[2] = rgb[2];
-        blender(st, pixel, memory, shadeAlpha, st->blend[1], blendEn, coverageWrap, shift, 1, rgb);
+        blender(st, pr, pg, pb, pa, mr, mg, mb, ma, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 0, &r, &g, &b);
+        blender(st, r, g, b, pa, mr, mg, mb, ma, shadeAlpha, st->blend[1], blendEn, coverageWrap, shift, 1, &r, &g, &b);
     }
     else
-        blender(st, pixel, memory, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 1, rgb);
-    if (st->depthBlendFlags & DB_DITHER) rgb_dither(rgb, dith);
+        blender(st, pr, pg, pb, pa, mr, mg, mb, ma, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 1, &r, &g, &b);
+    if (st->depthBlendFlags & DB_DITHER)
+    {
+        r = dither_channel(r, dith & 7);
+        g = dither_channel(g, (dith >> 3) & 7);
+        b = dither_channel(b, (dith >> 6) & 7);
+    }
     newCov = blend_coverage(coverageCount, memCov, blendEn, st->coverageMode);
-    write_color(st, p, rgb[0], rgb[1], rgb[2], (u8)(newCov << 5));
+    write_color(st, p, (u8)r, (u8)g, (u8)b, (u8)(newCov << 5));
     if (st->depthBlendFlags & DB_DEPTH_UPDATE)
     {
         p->depth = z_compress(z);
@@ -866,13 +864,15 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
 
     {
         u32 coverage = compute_coverage(sp, x), tile0, tile1, maxLevel;
-        s32 coverageCount, dx = x - sp->baseX, dir = flip ? 1 : -1, z, shade[4], fc, xoff, yoff, i;
+        s32 coverageCount, dx = x - sp->baseX, dir = flip ? 1 : -1, z, *shade, fc, xoff, yoff, i;
         s32 stw[3], stwDx[3], stwDy[3], stc[2], stDx[2], stDy[2], lodFrac = 0, rgbDith, alphaDith;
         s32 combined[4], alphaRef = 0;
         int ovf = 0, multi = (f & RS_MULTI_CYCLE) != 0, aa = (f & RS_AA) != 0;
+        int anyTex = d->usesTexel0 || d->usesTexel1 || d->usesPipelinedTexel1;
         H64RdpTexel t0, t1;
         CombIn in;
         u8 shadeAlpha;
+        shade = in.shade;   // written in place (a copy was stored then read back)
         if (!coverage) return;
         coverageCount = 0;
         for (i = 0; i < 8; i++) coverageCount += (coverage >> i) & 1;
@@ -896,7 +896,12 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         stw[0] = sp->stzw[0] + (a->dstzwDx[0] & ~0x1F) * dx;
         stw[1] = sp->stzw[1] + (a->dstzwDx[1] & ~0x1F) * dx;
         stw[2] = sp->stzw[3] + (a->dstzwDx[3] & ~0x1F) * dx;
-        st_from_stw(stw, perspective, stc, &ovf);
+        // s and t only feed texture sampling and the LOD: no divide without them
+        // (Mario Tennis's shadows, untextured silhouettes, on the in-order core).
+        if (d->usesTexel0 || d->usesTexel1 || d->usesPipelinedTexel1 || d->usesLod)
+            st_from_stw(stw, perspective, stc, &ovf);
+        else
+            stc[0] = stc[1] = 0;
         if (d->usesLod)
         {
             stwDx[0] = stw[0] + dir * (a->dstzwDx[0] & ~0x1F);
@@ -924,8 +929,11 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         if (d->usesLod)
             h64_rdp_compute_lod(&tile0, &tile1, &lodFrac, maxLevel, d->minLod, stc, stDx, stDy, ovf,
                                 (f & RS_TEX_LOD) != 0, (f & RS_SHARPEN_LOD) != 0, (f & RS_DETAIL_LOD) != 0);
-        memset(&t0, 0, sizeof(t0));
-        memset(&t1, 0, sizeof(t1));
+        if (anyTex)
+        {
+            memset(&t0, 0, sizeof(t0));
+            memset(&t1, 0, sizeof(t1));
+        }
         if (d->usesTexel0)
             sample_tile(st, tile0, stc, (f & RS_SAMPLE_QUAD) != 0, 0, (f & RS_BILERP0) != 0, d->factors, &t0, &t0);
         {
@@ -965,10 +973,16 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         dither_coefficients(st, x, y >> ((f & RS_INTERLACE_FIELD) ? 1 : 0), (int)(st->dither >> 2), (int)(st->dither & 3),
                             &rgbDith, &alphaDith);
 
-        memcpy(in.shade, shade, sizeof(shade));
         memset(in.combined, 0, sizeof(in.combined));
-        memcpy(in.texel0, t0.c, sizeof(in.texel0));
-        memcpy(in.texel1, t1.c, sizeof(in.texel1));
+        if (anyTex)
+        {
+            memcpy(in.texel0, t0.c, sizeof(in.texel0));
+            memcpy(in.texel1, t1.c, sizeof(in.texel1));
+        }
+        else
+        {
+            for (i = 0; i < 4; i++) in.texel0[i] = in.texel1[i] = 0;
+        }
         in.lodFrac = lodFrac;
         in.noise = (s32)(((st->noise & 7) << 6) | 0x20);
         if (multi)
@@ -978,8 +992,11 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
                             (f & RS_ALPHA_CVG_SELECT) != 0, (f & RS_ALPHA_TEST) != 0, c0, &alphaRef);
             memcpy(in.combined, c0, sizeof(c0));
             // Pipelining: texel1 is promoted to texel0 in the second cycle.
-            memcpy(in.texel0, t1.c, sizeof(in.texel0));
-            memcpy(in.texel1, t0.c, sizeof(in.texel1));
+            if (anyTex)
+            {
+                memcpy(in.texel0, t1.c, sizeof(in.texel0));
+                memcpy(in.texel1, t0.c, sizeof(in.texel1));
+            }
             if (d->needNoiseDual)
             {
                 reseed_noise(st, (u32)x + 1023, (u32)y + 7, st->primitives + 11);
@@ -1107,7 +1124,7 @@ static void draw(H64System *sys, H64RdpState *st, TriSetup *ts, AttrSetup *a)
 {
     PrimContext pc;
     s32 minLine, maxLine, y, fbWidth = (s32)st->colorWidth;
-    Span cur, next;
+    Span spans[2], *cur = &spans[0], *next = &spans[1], *tmp;
     // fixup_triangle_setup
     if (ts->ym < (ts->yh & ~3)) ts->ym = 0x7FFF;
     if (st->rasterFlags & RS_INTERLACE_FIELD)
@@ -1130,18 +1147,28 @@ static void draw(H64System *sys, H64RdpState *st, TriSetup *ts, AttrSetup *a)
     if (maxLine < minLine) return;
     if (maxLine - minLine > 1023) maxLine = minLine + 1023;
 
-    span_setup(st, &pc.ts, &pc.a, minLine, &next);
+    u64 tp0 = st->softDraw ? h64_prof_now(sys) : 0, tSpan = 0, ts0 = 0;
+    // Two span buffers swapped by pointer (copying the one just written
+    // stalled on every word on the Xbox 360: load-hit-store).
+    span_setup(st, &pc.ts, &pc.a, minLine, next);
     for (y = minLine; y <= maxLine; y++)
     {
         s32 x, x0, x1;
-        cur = next;
-        span_setup(st, &pc.ts, &pc.a, y + 1, &next);
-        if (!cur.valid) continue;
-        x0 = cur.startX < 0 ? 0 : cur.startX;
-        x1 = cur.endX >= fbWidth ? fbWidth - 1 : cur.endX;
+        tmp = cur; cur = next; next = tmp;
+        if (tp0) ts0 = h64_prof_now(sys);
+        span_setup(st, &pc.ts, &pc.a, y + 1, next);
+        if (tp0) tSpan += h64_prof_now(sys) - ts0;
+        if (!cur->valid) continue;
+        x0 = cur->startX < 0 ? 0 : cur->startX;
+        x1 = cur->endX >= fbWidth ? fbWidth - 1 : cur->endX;
+        if (tp0) { st->softLines++; if (x1 >= x0) st->softPixels += (u32)(x1 - x0 + 1); }
+#ifdef H64_BENCH8
+        if (fb_size_of(st->colorFmt) == 1) { g_b8px += (u64)(x1 >= x0 ? x1 - x0 + 1 : 0); g_b8lines++; }
+#endif
         for (x = x0; x <= x1; x++)
-            shade_and_write(sys, st, &pc, &cur, &next, x, y);
+            shade_and_write(sys, st, &pc, cur, next, x, y);
     }
+    if (tp0) { st->softTicks += h64_prof_now(sys) - tp0; st->softSpanTicks += tSpan; st->softTris++; }
 }
 
 // ---- Command decoding (rdp_device.cpp) ----
@@ -1282,6 +1309,44 @@ static void set_other_modes(H64RdpState *st, const u32 *w)
     st->usePrimDepth = (w[1] & (1 << 2)) != 0;
 }
 
+// A fill rectangle into an 8-bit image, as fill_pixel/store_pixel_to write
+// it (byte by RDRAM address, the hidden bit pair of odd bytes), without the
+// span and pixel pipeline: Banjo-Tooie fills a 304x270 8-bit image a frame
+// for its shadows (~14 ms a frame through the pipeline on the console).
+// Integer coordinates and scissor only, no interlaced scissor.
+int h64_rdp_fill8_fast(H64System *sys, const u64 *words, u32 count)
+{
+    H64RdpState *st = state(sys);
+    u32 w0, w1, lrx, lry, ulx, uly, x0, x1, y0, y1, x, y, k;
+    u8 *mem[2], *hid = sys->rdramHidden;
+    if (count != 1 || ((words[0] >> 56) & 0x3F) != 0x36 || !(st->rasterFlags & RS_FILL) || st->colorFmt != FB_I8 ||
+        (st->rasterFlags & RS_INTERLACE_FIELD) || !st->colorWidth)
+        return 0;
+    w0 = (u32)(words[0] >> 32);
+    w1 = (u32)words[0];
+    lrx = (w0 >> 12) & 0xFFF; lry = w0 & 0xFFF; ulx = (w1 >> 12) & 0xFFF; uly = w1 & 0xFFF;
+    if ((lrx | lry | ulx | uly | st->scissorXlo | st->scissorXhi | st->scissorYlo | st->scissorYhi) & 3) return 0;
+    x0 = ulx >> 2; x1 = (lrx >> 2) + 1; y0 = uly >> 2; y1 = (lry >> 2) + 1;   // fill mode: lower right included
+    if (x0 < (st->scissorXlo >> 2)) x0 = st->scissorXlo >> 2;
+    if (x1 > (st->scissorXhi >> 2) + 1) x1 = (st->scissorXhi >> 2) + 1;   // fill mode: the scissor's right edge too
+    if (y0 < (st->scissorYlo >> 2)) y0 = st->scissorYlo >> 2;
+    if (y1 > (st->scissorYhi >> 2)) y1 = st->scissorYhi >> 2;
+    mem[0] = st->drawRam ? st->drawRam : sys->rdram;
+    mem[1] = st->drawRam2;
+    for (y = y0; y < y1; y++)
+        for (x = x0; x < x1; x++)
+        {
+            u32 idx = (st->colorAddr + st->colorWidth * y + x) & (H64_RDRAM_SIZE - 1);
+            u8 col = (u8)(st->fillColor >> (((idx & 3) ^ 3) * 8));
+            for (k = 0; k < 2; k++)
+                if (mem[k]) mem[k][idx] = col;
+            if (idx & 1) hid[idx >> 1] = (u8)((col & 1) * 3);
+        }
+    if (sys->jit && !st->softDraw && y1 > y0 && x1 > x0)
+        h64_jit_notify_write(sys, st->colorAddr + st->colorWidth * y0, st->colorWidth * (y1 - y0));
+    return 1;
+}
+
 void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
 {
     H64RdpState *st = state(sys);
@@ -1309,7 +1374,16 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
         if (op & 4) { decode_rgba(p, &a); p += 16; }
         if (op & 2) { decode_tex(p, &a); p += 16; }
         if (op & 1) decode_z(p, &a);
-        if (!sys->options.rdpStateOnly || st->softDraw) draw(sys, st, &ts, &a);
+        if (!sys->options.rdpStateOnly || st->softDraw)
+        {
+#ifdef H64_BENCH8
+            unsigned long long b0 = __rdtsc();
+#endif
+            draw(sys, st, &ts, &a);
+#ifdef H64_BENCH8
+            if (fb_size_of(st->colorFmt) == 1) { extern unsigned long long g_bench8, g_bench8n; g_bench8 += __rdtsc() - b0; g_bench8n++; }
+#endif
+        }
         return;
     }
     case 0x24:

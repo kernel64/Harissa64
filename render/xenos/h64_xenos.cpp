@@ -142,6 +142,7 @@ struct Xenos
     // drawn by a later job (another snapshot); the range not yet used.
     u8 *ramShadow;
     u32 ramCopyLo, ramCopyHi, ramCopyGen;
+    u32 freshGen, freshUsed;   // profile gfxCimgFromRdram: the job (loadRamGen) and its st->cimgFresh entries done
     int cpuFbNext;
 
     std::map<u64, IDirect3DPixelShader9 *> shaders;
@@ -154,6 +155,12 @@ struct Xenos
     std::map<u32, std::vector<IDirect3DTexture9 *> > pool;
     u8 *arena;                              // ARENA_BYTES of physical memory (NULL: CreateTexture only)
     u32 arenaHead;                          // next free byte
+    // The present (presentCount) whose frame last bound a texture of each
+    // chunk (0xFFFFFFFF: none), and a fence after each of the last 8
+    // presents: re-entering a chunk waits for that frame only.
+    u32 chunkUse[ARENA_CHUNKS];
+    DWORD presentFence[8];
+    u32 presentFenceSet;                    // bit n: presentFence[n] holds a fence
     std::vector<u64> arenaKeys[ARENA_CHUNKS];          // cache keys of the textures in each chunk
     std::vector<IDirect3DTexture9 *> arenaHeaders[ARENA_CHUNKS];
     u32 poolBytes;
@@ -197,7 +204,8 @@ struct Xenos
     u32 staleCount;     // words set in staleTmem
     IDirect3DTexture9 *fbTex;   // set: bind_texture puts this image on unit 0 instead of decoding the tile
     float fbTexels[2];          // its N64 texels across [0, 1] (3-point filter sizes)
-    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; } memo[8];
+    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; int chunk; } memo[8];
+    int lookupChunk;    // arena chunk of the texture lookup_texture returned last (-1: none)
 
     FbSlot fb[FB_SLOTS];
     int curSlot;        // slot whose image is in the N64 render target (-1: none)
@@ -564,6 +572,7 @@ static void retire_all_textures(Xenos *x)
             for (k = 0; k < x->arenaHeaders[c].size(); k++) delete x->arenaHeaders[c][k];
             x->arenaHeaders[c].clear();
             x->arenaKeys[c].clear();
+            x->chunkUse[c] = 0xFFFFFFFFu;   // (after the wait for the GPU above)
         }
         x->arenaHead = 0;
     }
@@ -612,7 +621,7 @@ static u32 tile_extent(u32 lo, u32 hi)
 }
 
 // Decoded texture size and addressing for one tile.
-static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskToTile)
+static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskToTile, int tlut)
 {
     u32 tw = tile_extent(t->slo, t->shi), th = tile_extent(t->tlo, t->thi);
     u32 ms = t->maskS ? 1u << (t->maskS > 10 ? 10 : t->maskS) : 0, mt = t->maskT ? 1u << (t->maskT > 10 ? 10 : t->maskT) : 0;
@@ -645,7 +654,11 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskTo
         // pictures repeated their middle column).
         int yuv = t->fmt == 1 && t->size == 2;
         u32 rowTexels = yuv ? stride : t->size == 0 ? stride * 2 : t->size == 1 ? stride : stride / 2;
-        u32 rows = (yuv || t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 / stride : 4096 / stride;
+        // CI textures: the lower half only when the TLUT (upper half) is on;
+        // without it the RDP reads all of TMEM (Banjo-Tooie's shadow strips,
+        // CI8 112 x 36: their lower half repeated the upper, vertical lines).
+        int half = yuv || t->size == 3 || (t->fmt == 2 && t->size <= 1 && tlut);
+        u32 rows = half ? 2048 / stride : 4096 / stride;
         if (rowTexels < 1) rowTexels = 1;
         if (rows < 1) rows = 1;
         // Not with a mask: the decode then wraps or mirrors inside it, and a
@@ -665,7 +678,7 @@ static void tile_layout(const H64RdpTile *t, TexBinding *b, int copy, int maskTo
         // the whole texture (a power of two dividing the mask; at least 2 for
         // the odd-line word swap).
         {
-            u32 bytes = (t->size == 3 || (t->fmt == 2 && t->size <= 1)) ? 2048 : 4096;
+            u32 bytes = (t->size == 3 || (t->fmt == 2 && t->size <= 1 && tlut)) ? 2048 : 4096;
             if (b->wrapT && stride && bytes % stride == 0)
             {
                 u32 p = bytes / stride;
@@ -693,17 +706,31 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
     u32 t = tileIndex & 7, rf = x->st->rasterFlags & (RS_TLUT | RS_TLUT_TYPE);
-    if (x->win.active && x->win.tile == t) return lookup_texture(x, t, b);
+    if (x->win.active && x->win.tile == t) return lookup_texture(x, t, b);   // (lookup_texture marks the chunk)
     if (x->memo[t].gen == x->tmemGen && x->memo[t].rasterFlags == rf && x->memo[t].tex)
     {
         *b = x->memo[t].b;
+        if (x->memo[t].chunk >= 0) x->chunkUse[x->memo[t].chunk] = x->presentCount;
         return x->memo[t].tex;
     }
     x->memo[t].tex = lookup_texture(x, t, b);
+    x->memo[t].chunk = x->lookupChunk;
     x->memo[t].b = *b;
     x->memo[t].gen = x->tmemGen;
     x->memo[t].rasterFlags = rf;
     return x->memo[t].tex;
+}
+
+// Whether the GPU is done with every frame that used chunk c (no wait needed).
+static int chunk_idle(Xenos *x, u32 c)
+{
+    u32 last = x->chunkUse[c];
+    if (x->arenaKeys[c].empty() || last == 0xFFFFFFFFu) return 1;
+    if (last == x->presentCount) return 0;   // the frame being drawn
+    if (x->presentCount - last <= 7)
+        return (x->presentFenceSet & (1u << (last & 7))) && !x->dev->IsFencePending(x->presentFence[last & 7]);
+    return (x->presentFenceSet & (1u << ((x->presentCount + 1) & 7))) &&
+           !x->dev->IsFencePending(x->presentFence[(x->presentCount + 1) & 7]);
 }
 
 // Makes room for `size` bytes at arenaHead (moving to the next chunk when it
@@ -716,16 +743,45 @@ static int arena_alloc(Xenos *x, u32 size, u32 *offset)
     {
         u32 next = x->arenaHead % ARENA_CHUNK == 0 ? x->arenaHead : (x->arenaHead / ARENA_CHUNK + 1) * ARENA_CHUNK;
         if (next >= ARENA_BYTES) next = 0;
-        x->arenaHead = next;
         c = next / ARENA_CHUNK;
+        // A chunk the GPU may still read (textures of the frame being drawn or
+        // of frames still queued) is skipped for the next one it is done with:
+        // waiting for it drained the queued frames, up to ~45 ms (Mario
+        // Tennis at the start of each point). Its textures stay cached.
+        if (!chunk_idle(x, c))
+        {
+            u32 i;
+            for (i = 1; i < ARENA_CHUNKS; i++)
+                if (chunk_idle(x, (c + i) % ARENA_CHUNKS)) { c = (c + i) % ARENA_CHUNKS; x->stats.arenaSkips += i; break; }
+        }
+        next = c * ARENA_CHUNK;
+        x->arenaHead = next;
         if (!x->arenaKeys[c].empty())
         {
             // The GPU may still read this chunk's textures: unbind, wait for
             // everything issued so far, then drop them.
-            u32 k;
+            u32 k, last = x->chunkUse[c];
             x->dev->SetTexture(0, x->dummy);
             x->dev->SetTexture(1, x->dummy);
-            x->dev->BlockOnFence(x->dev->InsertFence());
+            // Only the frame that used the chunk last must be done: it is
+            // almost always several presents old and its fence passed already.
+            // Waiting for everything issued drained the GPU at each re-entry
+            // (Mario Tennis's replays: ~18 a second, ~8 ms a frame).
+            u64 w0 = h64_prof_now(x->sys), dw;
+            if (last == 0xFFFFFFFFu)
+                ;
+            else if (last == x->presentCount || !(x->presentFenceSet & (1u << (last & 7))))
+                x->dev->BlockOnFence(x->dev->InsertFence());   // the frame being drawn
+            else if (x->presentCount - last <= 7)
+                x->dev->BlockOnFence(x->presentFence[last & 7]);
+            else if (x->presentFenceSet & (1u << ((x->presentCount + 1) & 7)))
+                x->dev->BlockOnFence(x->presentFence[(x->presentCount + 1) & 7]);   // the oldest fence kept, after that frame
+            else
+                x->dev->BlockOnFence(x->dev->InsertFence());
+            dw = h64_prof_now(x->sys) - w0;
+            x->stats.tArenaWait += dw;
+            if (dw > x->stats.maxArenaWait) x->stats.maxArenaWait = dw;
+            x->chunkUse[c] = 0xFFFFFFFFu;
             for (k = 0; k < x->arenaKeys[c].size(); k++)
             {
                 std::map<u64, TexEntry>::iterator it = x->textures.find(x->arenaKeys[c][k]);
@@ -757,7 +813,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
     std::map<u64, TexEntry>::iterator it;
     TexEntry e;
     D3DLOCKED_RECT lr;
-    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0, x->sys->options.gfxMaskToTile);
+    tile_layout(t, b, (st->rasterFlags & RS_COPY) != 0, x->sys->options.gfxMaskToTile, (st->rasterFlags & RS_TLUT) != 0);
     if (x->win.active && x->win.tile == (tileIndex & 7))
     {
         // Per axis, decode only the texels sampled, when that is at most half
@@ -850,8 +906,13 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         else key = mem_hash(key, st->tmem + 0x800, 0x800);
     }
     it = x->textures.find(key);
+    x->lookupChunk = -1;
     if (it != x->textures.end() && x->debug != 12)   // xenosdebug=12: every texture decoded again (diagnosis)
+    {
+        x->lookupChunk = it->second.chunk;
+        if (it->second.chunk >= 0) x->chunkUse[it->second.chunk] = x->presentCount;
         return it->second.tex;
+    }
     if (it != x->textures.end()) x->textures.erase(it);
     if (x->debug == 8 && x->presentCount >= x->debugFrom && x->presentCount < x->debugFrom + 2)
     {
@@ -912,8 +973,9 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
             }
         }
         x->stats.tFill += h64_prof_now(x->sys) - f0;
-        if (x->debug == 17 && x->debugLines < 60)
+        if ((x->debug == 17 || (x->debug == 19 && t->fmt == 2 && t->size == 1)) && x->debugLines < 60)
         {
+            // xenosdebug=19: the same for 8-bit CI textures only.
             // xenosdebug=17: the first texels of each texture decoded (diagnosis).
             x->debugLines++;
             H64_INFO("[xtex] decoded tile %u fmt %u size %u tlut %d %ux%u at %d,%d: %08X %08X %08X %08X | mid %08X", tileIndex & 7, t->fmt,
@@ -971,6 +1033,8 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         x->textureBytes += e.w * e.h * 4;
     }
     x->textures[key] = e;
+    x->lookupChunk = e.chunk;
+    if (e.chunk >= 0) x->chunkUse[e.chunk] = x->presentCount;
     x->stats.tDecode += h64_prof_now(x->sys) - d0;
     x->stats.textureUploads++;
     x->stats.texelsDecoded += b->w * b->h;
@@ -1054,7 +1118,13 @@ static u32 fb_height(const Xenos *x, u32 width)
     // gfxTallFrame: a VI line twice the image's width steps two image lines
     // (an interlaced 480-line frame; Star Wars Racer's intro, 320 x 480,
     // showed its top half stretched over the screen).
-    if (x->sys->options.gfxTallFrame && width <= 320 && (x->sys->vi.regs[2] & 0xFFF) == width * 2) return 480;
+    // Or an interlaced picture whose VI steps two image lines per line (Y
+    // scale 2.0): Duke Nukem: Zero Hour's 320 x 480 frames (guessed 240
+    // lines, drawn at that scale: the bottom half fell outside the target).
+    if (x->sys->options.gfxTallFrame && width <= 320 &&
+        ((x->sys->vi.regs[2] & 0xFFF) == width * 2 || ((x->sys->vi.regs[0] & 0x40) && (x->sys->vi.regs[13] & 0xFFF) >= 0x800 &&
+                                                         (x->sys->vi.regs[2] & 0xFFF) == width)))
+        return 480;
     if (x->tallH && width == x->tallW) return x->tallH;
     return width <= 320 ? 240 : width * 3 / 4;
 }
@@ -1404,6 +1474,16 @@ static u32 display_quad(Xenos *x, const ViGeom *g, float ox, float oy, float uPe
         q->px0 = (q->bw - w) / 2 + x->offsetX + g->dx0 * w; q->pw = (g->dx1 - g->dx0) * w;
         q->py0 = (q->bh - h) / 2 + x->offsetY + g->dy0 * h; q->ph = (g->dy1 - g->dy0) * h;
         lines = (u32)g->lines;
+        // A VI line longer than the image (Resident Evil 2: 335 pixels of a
+        // 328-pixel image) ends in black, as the software VI shows it: past
+        // the image's width the texture holds whatever was there (a column of
+        // garbage at the right edge).
+        if (g->sx1 + ox > (float)width && g->sx1 > g->sx0 && (float)width > g->sx0 + ox)
+        {
+            float keep = ((float)width - (g->sx0 + ox)) / (g->sx1 - g->sx0);
+            q->u1 = (float)width * uPer;
+            q->pw *= keep;
+        }
     }
     else
     {
@@ -1531,7 +1611,7 @@ static void frame_to_rdram(Xenos *x, int slot)
 static void select_framebuffer(Xenos *x)
 {
     u32 addr = x->st->colorAddr & 0xFFFFFF, i;
-    int best = -1, ramFresh;
+    int best = -1, ramFresh, fresh = -1;
     FbSlot *s;
     x->wsMain = ws_on(x);
     // Resident Evil 2 (profile gfxRdramCopy) copies its background into the
@@ -1541,7 +1621,16 @@ static void select_framebuffer(Xenos *x)
         u32 bytes = x->st->colorWidth * fb_height(x, x->st->colorWidth) * 2;
         ramFresh = x->ramShadow && x->ramCopyHi > x->ramCopyLo && addr < x->ramCopyHi && addr + bytes > x->ramCopyLo;
     }
-    if (!ramFresh && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound &&
+    // Profile gfxCimgFromRdram: the CPU wrote this frame's memory since the
+    // GPU drew it (h64_gfx.cpp, cimg_fresh): the frame starts from the snapshot,
+    // once per job.
+    if (x->st->loadRam && x->st->cimgFreshCount)
+    {
+        if (x->freshGen != x->st->loadRamGen) { x->freshGen = x->st->loadRamGen; x->freshUsed = 0; }
+        for (i = 0; i < x->st->cimgFreshCount && i < 32 && fresh < 0; i++)
+            if (x->st->cimgFresh[i] == addr && !(x->freshUsed & (1u << i))) fresh = (int)i;
+    }
+    if (!ramFresh && fresh < 0 && x->curSlot >= 0 && x->fb[x->curSlot].addr == addr && x->targetBound &&
         (!x->sys->options.gfxSlotByWidth || x->fb[x->curSlot].width == x->st->colorWidth))
         return;
     if (x->curSlot >= 0 && (x->fb[x->curSlot].addr != addr || x->fb[x->curSlot].width != x->st->colorWidth))
@@ -1613,6 +1702,18 @@ static void select_framebuffer(Xenos *x)
         x->ramCopyLo = x->ramCopyHi = 0;
         x->stateDirty = 1;
     }
+    else if (fresh >= 0)
+    {
+        u32 wdt = x->st->colorWidth;
+        IDirect3DTexture9 *t = upload_mem(x, x->st->loadRam, addr, wdt, x->st->colorFmt == FB_RGBA8888);
+        x->freshUsed |= 1u << fresh;
+        if (t)
+        {
+            draw_fullscreen(x, t, (float)wdt / RT_WIDTH, (float)fb_height(x, wdt) / RT_HEIGHT);
+            x->stats.cimgUploads++;
+        }
+        x->stateDirty = 1;
+    }
     s->gpuDirty = 1;
     s->cleanLo = s->cleanHi = 0;
     s->cleanSnap = 0;
@@ -1631,11 +1732,14 @@ static void flush_batch(Xenos *x);
 
 // One copied-back pixel (c = 0x00RRGGBB) in the colour image's format. 8-bit
 // images took two bytes a pixel before, writing past them (Conker froze).
-static void store_pixel(u8 *p, int fmt, u32 c)
+// keepAlpha (profile gfxCopyBackAlpha): a 16-bit pixel's alpha bit from the
+// GPU's alpha, else 1.
+static void store_pixel(u8 *p, int fmt, u32 c, int keepAlpha)
 {
     u32 i = (((c >> 16) & 0xFF) + ((c >> 8) & 0xFF) + (c & 0xFF)) / 3;
     if (fmt == FB_RGBA8888) h64_store_be32(p, (c << 8) | 0xFF);
-    else if (fmt == FB_RGBA5551) h64_store_be16(p, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | 1));
+    else if (fmt == FB_RGBA5551)
+        h64_store_be16(p, (u16)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07C0) | ((c >> 2) & 0x003E) | (keepAlpha ? c >> 31 : 1)));
     else if (fmt == FB_IA88) h64_store_be16(p, (u16)((i << 8) | 0xFF));
     else *p = (u8)i;   // I8
 }
@@ -1705,7 +1809,7 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
             {
                 u32 a = s->addr + (y * w + xx) * s->bytes;
                 if (a + s->bytes > H64_RDRAM_SIZE) break;
-                store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx]);
+                store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx], x->sys->options.gfxCopyBackAlpha);
             }
         }
     }
@@ -1723,7 +1827,7 @@ static void copy_back_rows(Xenos *x, int slot, u32 r0, u32 r1)
         {
             u32 a = s->addr + (y * w + xx) * s->bytes;
             if (a + s->bytes > H64_RDRAM_SIZE) break;
-            store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx * x->rtW / w]);
+            store_pixel(snap ? snap + a : ram + a, s->fmt, src[xx * x->rtW / w], x->sys->options.gfxCopyBackAlpha);
         }
     }
     }
@@ -2010,10 +2114,12 @@ static void set_scissor(Xenos *x, float sx, float sy)
     RECT r;
     float xlo = (float)(x->st->scissorXlo >> 2), xhi = (float)(x->st->scissorXhi >> 2);
     float fbw = (float)(x->st->colorWidth ? x->st->colorWidth : 320);
-    if (x->sys->options.gfxTallFrame && x->st->colorWidth > 320)
+    if (x->sys->options.gfxTallFrame && x->st->colorWidth >= 256)
     {
         // A scissor taller than the 4:3 guess (up to 1.25 times the width):
-        // the image's real height, kept for that width.
+        // the image's real height, kept for that width. Images up to 320
+        // wide too (240 lines guessed): Banjo-Tooie's European frames are
+        // 304 x 268.
         u32 w = x->st->colorWidth, h = (x->st->scissorYhi + 3) >> 2;
         if (h > fb_height(x, w) && h <= w * 5 / 4)
         {
@@ -2109,7 +2215,7 @@ static void set_depth(Xenos *x, int hasDepth)
     x->dev->SetRenderState(D3DRS_ZENABLE, test || update ? TRUE : FALSE);
     x->dev->SetRenderState(D3DRS_ZFUNC, test ? D3DCMP_LESSEQUAL : D3DCMP_ALWAYS);
     x->dev->SetRenderState(D3DRS_ZWRITEENABLE, update && st->zMode != 3 ? TRUE : FALSE);
-    if (st->zMode == 3 || st->zMode == 2)
+    if (st->zMode == 3 || (st->zMode == 2 && !x->sys->options.gfxXluNoBias))
     {
         // Decal: the N64 passes a pixel whose depth is within the surface's
         // own slope (dz) of the stored one. Translucent surfaces (Z mode XLU)
@@ -2184,7 +2290,8 @@ static void log_mode(Xenos *x, int hasDepth, u32 tile)
 
 static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *tb1, u32 tile, int zOut)
 {
-    if (x->debug == 4) log_mode(x, hasDepth, tile);
+    // xenosdebug=20: the same for drawing into 8-bit colour images only.
+    if (x->debug == 4 || (x->debug == 20 && x->st->colorFmt == FB_I8)) log_mode(x, hasDepth, tile);
     const H64RdpState *st = x->st;
     int two = (st->rasterFlags & RS_MULTI_CYCLE) != 0;
     u32 flags = two ? KEY_TWO_CYCLE : 0;
@@ -2249,6 +2356,9 @@ static void flush_batch(Xenos *x)
     x->batchN = 0;
 }
 
+static void xenos_rdp(void *user, const u64 *words, u32 count);
+static int skip_zimage(const Xenos *x);
+
 static void xenos_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
                            u32 flags, u32 tile, u32 levels)
 {
@@ -2258,6 +2368,18 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[(tile + 1) & 7];
     XVtx *q;
     int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0, wsFull;
+    if (skip_zimage(x)) return;
+    if (x->sys->options.gfxSoft8bit && st->colorFmt == FB_I8)
+    {
+        // Profile gfxSoft8bit: an HLE triangle into an 8-bit colour image goes
+        // to the software RDP like the rectangles and fills (xenos_rdp), so the
+        // image stays whole in memory. Banjo-Tooie draws Banjo's shadow so
+        // (a fill, then triangles): drawn by the GPU, it was a dark square.
+        u64 w[22];
+        u32 n = h64_rdp_build_triangle(a, b, c, flags, tile, levels, w);
+        xenos_rdp(user, w, n);
+        return;
+    }
     (void)levels;
     if (st->rasterFlags & (RS_FILL | RS_COPY)) return;
     if (!st->usePrimDepth)
@@ -2379,6 +2501,7 @@ static void fill_rect(Xenos *x, const u32 *w)
     float sx = x->rtW / fbw, sy = x->rtH / fbh;
     u32 xh = (w[0] >> 12) & 0xFFF, yh = w[0] & 0xFFF, xl = (w[1] >> 12) & 0xFFF, yl = w[1] & 0xFFF;
     D3DRECT r;
+    u32 zRow = 0;   // a depth fill through an image that starts zRow lines into the depth image
     float fx1 = (float)(xl >> 2), fx2 = (float)((xh >> 2) + 1);
     // Full width, or (profile gfxWsBorder) touching an edge: in place.
     if (!ws_wide(fx2 - fx1, fbw) && !(x->sys->options.gfxWsBorder && ((xl >> 2) == 0 || fx2 >= fbw)))
@@ -2394,7 +2517,25 @@ static void fill_rect(Xenos *x, const u32 *w)
     if (r.y2 > (LONG)x->rtH) r.y2 = (LONG)x->rtH;
     if (r.x1 >= r.x2 || r.y1 >= r.y2) return;
     x->stats.fills++;
-    if ((st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF))
+    {
+        // A fill of the depth image, or of a 16-bit image as wide that starts
+        // on one of its lines: GoldenEye clears player 2's half of the depth
+        // image through an image 120 lines into it (missed, the bottom view
+        // kept the previous frame's depth: walls vanished, black flashes).
+        u32 ca = st->colorAddr & 0xFFFFFF, za = st->depthAddr & 0xFFFFFF, rowB = (u32)fbw * 2;
+        // Only with the usual clear value (the farthest depth, 0xFFFC): a game
+        // drawing a small colour image in that memory keeps its fill.
+        if (ca != za && ca > za && st->colorFmt == FB_RGBA5551 && (ca - za) % rowB == 0 && (ca - za) / rowB < (u32)fbh &&
+            (st->fillColor & 0xFFFCFFFCu) == 0xFFFCFFFCu)
+        {
+            zRow = (ca - za) / rowB;
+            r.y1 += (LONG)(zRow * sy);
+            r.y2 += (LONG)(zRow * sy);
+            if (r.y2 > (LONG)x->rtH) r.y2 = (LONG)x->rtH;
+            if (r.y1 >= r.y2) return;
+        }
+    }
+    if ((st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF) || zRow)
     {
         // Filling the depth image: a depth clear of the frame being drawn.
         // Whatever colour image the EDRAM target holds (the depth is separate
@@ -2410,7 +2551,7 @@ static void fill_rect(Xenos *x, const u32 *w)
         x->stateDirty = 1;
         x->dev->Clear(1, &r, D3DCLEAR_ZBUFFER, 0, 1.0f, 0);
         x->edramDepthAddr = st->depthAddr & 0xFFFFFF;
-        if (x->sys->options.gfxDepthFillToRdram) depth_fill_rdram(x, xl >> 2, xh >> 2, yl >> 2, yh >> 2);
+        if (x->sys->options.gfxDepthFillToRdram) depth_fill_rdram(x, xl >> 2, xh >> 2, (yl >> 2) + zRow, (yh >> 2) + zRow);
         return;
     }
     if (st->scissorXhi || st->scissorYhi)
@@ -2457,6 +2598,8 @@ static void fill_rect(Xenos *x, const u32 *w)
         {
             u32 p = c >> 16, R = (p >> 11) & 31, G = (p >> 6) & 31, B = (p >> 1) & 31;
             argb = 0xFF000000u | ((R << 3 | R >> 2) << 16) | ((G << 3 | G >> 2) << 8) | (B << 3 | B >> 2);
+            // Profile gfxCopyBackAlpha: the fill's alpha bit, as the RDP writes it.
+            if (x->sys->options.gfxCopyBackAlpha && !(p & 1)) argb &= 0x00FFFFFFu;
         }
         x->dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
         x->dev->Clear(1, &r, D3DCLEAR_TARGET, x->debug == 1 ? 0xFF00FF00 : argb, 1.0f, 0);
@@ -2812,6 +2955,22 @@ static void xenos_reset(void *user)
     x->stateDirty = 1;
 }
 
+// Profile gfxSkipZImage (Mario Tennis): ~50 times a frame it draws an effect's
+// sprite into the depth image's memory (as a colour image), loads it, loads
+// the frame's pixels behind the effect too and draws both into the frame.
+// Each sprite made the GPU switch colour images and back (two resolves and
+// two full-screen restores of the 960x720 target): up to ~60 ms a frame at
+// the start of each point. Nothing read what the GPU drew there (the loads
+// read memory, no copy backs), so those rectangles and triangles are not
+// drawn at all: the same picture. (Drawn in software into memory, the
+// sprites were real but the frame behind them is only on the GPU: black
+// squares around the ball.) Fills there stay depth clears (fill_rect).
+static int skip_zimage(const Xenos *x)
+{
+    const H64RdpState *st = x->st;
+    return x->sys->options.gfxSkipZImage && (st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF);
+}
+
 static void xenos_rdp(void *user, const u64 *words, u32 count)
 {
     Xenos *x = (Xenos *)user;
@@ -2886,7 +3045,17 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     }
     int tiny = x->sys->options.gfxSoftTiny && x->st->scissorXhi > x->st->scissorXlo && x->st->scissorXhi - x->st->scissorXlo <= 16 * 4 &&
                x->st->scissorYhi > x->st->scissorYlo && x->st->scissorYhi - x->st->scissorYlo <= 16 * 4;
-    if (((x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8) || tiny) &&
+    // Profile gfxSoft8bit also takes fills of 16-bit images at most 64 wide:
+    // Mario Tennis clears its 64x64 8-bit shadow image as a 64x32 16-bit
+    // image, then draws the shadows into it as 8-bit.
+    int smallFill = x->sys->options.gfxSoft8bit && op == 0x36 && (x->st->rasterFlags & RS_FILL) &&
+                    x->st->colorFmt == FB_RGBA5551 && x->st->colorWidth && x->st->colorWidth <= 64;
+    if ((op == 0x24 || op == 0x25 || (op >= 0x08 && op <= 0x0F)) && skip_zimage(x))
+    {
+        x->stats.tRdp += h64_prof_now(x->sys) - tStart;
+        return;   // profile gfxSkipZImage: not drawn (skip_zimage)
+    }
+    if (((x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8) || tiny || smallFill) &&
         (op == 0x24 || op == 0x25 || op == 0x36 || (op >= 0x08 && op <= 0x0F)))
     {
         // (Profile gfxSoftTiny: the same for drawing within a scissor of at
@@ -2904,7 +3073,17 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         st->softDraw = 1;
         st->drawRam = (u8 *)st->loadRam;
         st->drawRam2 = st->loadRam ? x->sys->rdram : NULL;
-        h64_rdp_command(x->sys, words, count);
+        if (!h64_rdp_fill8_fast(x->sys, words, count))   // a whole-image fill: bytes, not the pixel pipeline
+        {
+            // No depth test or update: the depth image is the GPU's (EDRAM),
+            // memory holds an old one. Banjo-Tooie draws Banjo's shadow with
+            // a decal depth test: tested against that, it came out as
+            // scattered dots instead of his silhouette.
+            u32 db = st->depthBlendFlags;
+            if (!tiny) st->depthBlendFlags &= ~(u32)(DB_DEPTH_TEST | DB_DEPTH_UPDATE);
+            h64_rdp_command(x->sys, words, count);
+            st->depthBlendFlags = db;
+        }
         st->softDraw = 0;
         st->drawRam = st->drawRam2 = NULL;
         if (hi > H64_RDRAM_SIZE) hi = H64_RDRAM_SIZE;
@@ -2916,8 +3095,13 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
         else
             h64_jit_notify_write(x->sys, lo, hi - lo);
         x->stats.tState += h64_prof_now(x->sys) - t0;
-        x->stats.tRdp += h64_prof_now(x->sys) - tStart;
-        return;
+        // A small 16-bit fill also clears the GPU's image as before (the
+        // game may draw there with the GPU too).
+        if (!smallFill || x->debug == 21)   // xenosdebug=21: software only (measure)
+        {
+            x->stats.tRdp += h64_prof_now(x->sys) - tStart;
+            return;
+        }
     }
     // State and TMEM: the software RDP (state only).
     t0 = h64_prof_now(x->sys);
@@ -3125,6 +3309,22 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
              (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;
     }
+    if (x->sys->options.gfxViLineStart && found >= 0)
+    {
+        // Profile gfxViLineStart: the slot where the origin starts a line (the
+        // nearest such start); the closest start may put it mid-line.
+        int best = -1;
+        for (i = 0; i < FB_SLOTS; i++)
+        {
+            const FbSlot *s = &x->fb[i];
+            u32 stride = s->width * s->bytes;
+            if (s->valid && s->tex && stride && s->bytes == (type == 3 ? 4u : 2u) && origin >= s->addr &&
+                origin < s->addr + stride * s->height && (origin - s->addr) % stride == 0 &&
+                (best < 0 || s->addr > x->fb[best].addr))
+                best = (int)i;
+        }
+        if (best >= 0) found = best;
+    }
     if (x->sys->options.gfxSlotByWidth && found >= 0 && x->fb[found].width != width)
     {
         // Profile gfxSlotByWidth: at the same address, the image as wide as the VI line.
@@ -3275,6 +3475,8 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->vsyncSet = x->vsync;
     }
     x->dev->Present(NULL, NULL, NULL, NULL);
+    x->presentFence[x->presentCount & 7] = x->dev->InsertFence();   // the end of frame presentCount
+    x->presentFenceSet |= 1u << (x->presentCount & 7);
     x->stats.presents++;
     x->presentCount++;
     // The next draw rebinds the N64 target and restores its content.
@@ -3329,6 +3531,12 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->presentCount = 0;
     x->tallW = x->tallH = 0;
     x->arenaHead = 0;
+    {
+        u32 c;
+        for (c = 0; c < ARENA_CHUNKS; c++) x->chunkUse[c] = 0xFFFFFFFFu;
+        x->presentFenceSet = 0;
+        x->lookupChunk = -1;
+    }
     x->arena = (u8 *)XPhysicalAlloc(ARENA_BYTES, MAXULONG_PTR, 4096, PAGE_READWRITE | PAGE_WRITECOMBINE);
     if (!x->arena) H64_WARN("[xenos] no texture arena (%u MB): CreateTexture for every texture", ARENA_BYTES >> 20);
     x->stateDirty = 1;
@@ -3338,6 +3546,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     memset(x->staleTmem, 0, sizeof(x->staleTmem));
     x->staleCount = 0;
     x->ramCopyLo = x->ramCopyHi = x->ramCopyGen = 0;
+    x->freshGen = x->freshUsed = 0;
     x->ramShadow = NULL;
     memset(&x->fbLoad, 0, sizeof(x->fbLoad));
     x->fbTex = NULL;

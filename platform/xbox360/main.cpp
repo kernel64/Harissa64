@@ -27,6 +27,7 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
 #include "../../core/system/h64_profile.h"
+#include "../../core/rdp/h64_rdp_state.h"
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
@@ -34,6 +35,7 @@
 #include "../../render/xenos/h64_xenos.h"
 #include "../../tests/unit/unit_tests.h"
 #include "xb_config.h"
+#include "xb_drives.h"
 #include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_menu.h"
@@ -1354,15 +1356,17 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             // A frame whose emulation took over 100 ms: where the time went
             // (sys->prof deltas, in ms; the N64 pc), to find periodic stalls.
             double ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
-            if (ms > 100.0)
+            if (ms > (double)c->stallMs)
             {
                 double k = 1000.0 / (double)freq.QuadPart;   // profClock is the QPC
-                H64_INFO("[stall] frame %u: run %.1f ms | cpu code %.1f helper %.1f events %.1f jit %.1f gfx %.1f audio %.1f rsp lle %.1f wait gfx %.1f | %llu instructions, pc %08X",
+                H64_INFO("[stall] frame %u: run %.1f ms | cpu code %.1f helper %.1f events %.1f jit %.1f gfx %.1f (parse %.1f) audio %.1f rsp lle %.1f wait gfx %.1f (task start %.1f, task end %.1f) | %llu instructions, pc %08X",
                          presented, ms, (sys->prof[H64_PROF_BLOCKS] - profBefore[H64_PROF_BLOCKS]) * k,
                          (sys->prof[H64_PROF_HELPER] - profBefore[H64_PROF_HELPER]) * k, (sys->prof[H64_PROF_EVENTS] - profBefore[H64_PROF_EVENTS]) * k,
                          (sys->prof[H64_PROF_JIT_COMPILE] - profBefore[H64_PROF_JIT_COMPILE]) * k, (sys->prof[H64_PROF_GFX_HLE] - profBefore[H64_PROF_GFX_HLE]) * k,
+                         (sys->prof[H64_PROF_GFX_PARSE] - profBefore[H64_PROF_GFX_PARSE]) * k,
                          (sys->prof[H64_PROF_AUDIO_HLE] - profBefore[H64_PROF_AUDIO_HLE]) * k, (sys->prof[H64_PROF_RSP_LLE] - profBefore[H64_PROF_RSP_LLE]) * k,
                          (sys->prof[H64_PROF_ASYNC_WAIT] - profBefore[H64_PROF_ASYNC_WAIT]) * k,
+                         (sys->prof[H64_PROF_WAIT_START] - profBefore[H64_PROF_WAIT_START]) * k, (sys->prof[H64_PROF_WAIT_TASK] - profBefore[H64_PROF_WAIT_TASK]) * k,
                          (unsigned long long)(sys->cpu.instructions - instBefore), (u32)sys->cpu.pc);
             }
         }
@@ -1576,9 +1580,17 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                          pr[H64_PROF_BLOCKS] * k, pr[H64_PROF_HELPER] * k, pr[H64_PROF_EVENTS] * k, pr[H64_PROF_TLB] * k, pr[H64_PROF_ASYNC_WAIT] * k,
                          pr[H64_PROF_WAIT_TASK] * k, pr[H64_PROF_WAIT_DPC] * k, pr[H64_PROF_WAIT_START] * k,
                          s_gfxQ.thread ? " (graphics and audio HLE run on workers, beside cpu)" : "");
-                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses, %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes, %u CPU sprite presents",
+                H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses (%u skipped, GPU wait %.1f, longest %.1f ms), %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes, %u CPU sprite presents, %u frames from memory",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
-                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads, xs.cpuSprites);
+                         xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.arenaSkips, xs.tArenaWait * k, xs.maxArenaWait * k * framesSincePerf, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads, xs.cpuSprites, xs.cimgUploads);
+                if (sys->rdpState && sys->rdpState->softTris)
+                {
+                    H64RdpState *rs = sys->rdpState;
+                    H64_INFO("[sprof] software drawing for the GPU renderer, per frame: %.2f ms (span setup %.2f), %u primitives, %u lines, %u pixels",
+                             rs->softTicks * k, rs->softSpanTicks * k, rs->softTris / framesSincePerf, rs->softLines / framesSincePerf, rs->softPixels / framesSincePerf);
+                    rs->softTicks = rs->softSpanTicks = 0;
+                    rs->softTris = rs->softLines = rs->softPixels = 0;
+                }
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;
@@ -1670,6 +1682,7 @@ int __cdecl main()
         dev = NULL;
     }
 
+    DrivesMount();   // Hdd1:, Usb0:..Usb2:, Dvd: for the ROM list's file browser and romdir=
     if (failures)
         MessageScreen(dev, "Unit tests failed", status, D3DCOLOR_XRGB(240, 60, 60));
     else if (!strcmp(cfg.mode, "jittest"))
@@ -1696,7 +1709,7 @@ int __cdecl main()
         int scripted = cfg.input.count || cfg.exitAfter || cfg.trace || cfg.shotCount || cfg.loadState || cfg.saveStateAt;
         // Checks driven by harissa64v2.ini: no language list.
         int checks = cfg.autoStart || cfg.controlsTest >= 0 || cfg.browserDemo || cfg.artAll || cfg.browserSel[0] || cfg.browserAt ||
-                     cfg.menuAt || cfg.aboutAt;
+                     cfg.menuAt || cfg.aboutAt || cfg.filesOpen;
         char dir[64], menuFile[160];
         _snprintf(dir, sizeof(dir), "%s:\\config", s_logDrive);
         dir[sizeof(dir) - 1] = 0;

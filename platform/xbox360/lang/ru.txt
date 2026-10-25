@@ -23,6 +23,7 @@ SAVE_GAME = Сохранить только для этой игры
 BACK = Назад
 ON = Вкл.
 OFF = Выкл.
+VSYNC_STRICT = Строгий
 CUSTOM = Свои
 DEFAULT = Стандарт
 RECOMPILER = Рекомпилятор
@@ -143,9 +144,16 @@ SAVE_NONE = нет
 SAVE_UNKNOWN = неизвестно (EEPROM 4 Kbit, SRAM или FlashRAM)
 NO_ROM = ROM не найдены
 COPY_ROMS = Скопируйте файлы .z64, .n64, .v64 или .zip
-INTO_ROMS = в game:\roms\
-FOOT_BROWSER = A:Играть|LB/RB:Страница|Y:Настройки|X:Инфо|BACK:Выход
-FOOT_BROWSER_EMPTY = Y:Настройки|X:Инфо|BACK:Выход
+INTO_ROMS = в %s
+FOOT_BROWSER = A:Играть|Y:Настройки|X:Инфо|START:Файлы|BACK:Выход
+FOOT_BROWSER_EMPTY = Y:Настройки|X:Инфо|START:Файлы|BACK:Выход
+
+# ---- File browser (START in the ROM list) ----
+FILES = Файлы
+FILES_DRIVES = Диски
+FOOT_FILES = A:Открыть|B:Назад|Y:Папка ROM
+FILES_EMPTY = Здесь нет папок и ROM
+ROM_FOLDER_SET = Папка ROM: %s
 ART_PROGRESS = Обложки %d / %d
 ART_CONNECTING = Обложки: подключение…
 UPDATE_AVAILABLE = Harissa64 %s доступна на GitHub

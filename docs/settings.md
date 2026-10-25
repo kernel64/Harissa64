@@ -73,7 +73,12 @@ Pulls the 4:3 picture wider to fill a wide TV, at any resolution. Everything loo
 Fit the picture to your TV. *Picture size* makes it bigger or smaller (100% is the normal size): go a little above 100% if your TV shows black borders around the picture, or below if it cuts the edges. The two others move the picture, if it is not centred on your screen.
 
 **V-Sync**
-Off by default. When on, each picture waits for the TV to be ready, so the image doesn't tear (a line cutting through the picture when the camera moves). When a game is late on a picture, that picture is shown at once instead of waiting; you may see a tear on that picture only. Some busy games run slower with it on, so turn it on per game where tearing bothers you. If you never want a tear, even when a game slows down, put `vsync=2` in harissa64v2.ini.
+Stops the image from tearing (a line cutting through the picture when the camera moves).
+- *Off* (the default): no waiting, the fastest.
+- *On*: each picture waits for the TV to be ready. When a game is late on a picture, that picture is shown at once instead of waiting; you may see a tear on that picture only.
+- *Strict*: every picture waits for the TV, so you never see a tear. Busy games can run slower, because a late picture waits for the next refresh.
+
+Turn it on per game where tearing bothers you.
 
 **Anti-flicker**
 Off by default. Some N64 games make an effect see-through by drawing it only every other picture (a shadow, a glow, the disc under the character you're looking at in Smash Remix). On an old TV this looked like a soft, see-through effect; on a modern screen it flickers. With this on, each picture is mixed with the one before, so those effects look as they did on an old TV. Fast motion gets a little softer.

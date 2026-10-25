@@ -59,6 +59,7 @@ struct H64XenosStats
     u32 resolveCopyBacks;   // copy backs those made
     u32 cpuWrittenLoads;    // loads from GPU frames the CPU wrote over since (no copy back)
     u32 cpuSprites;         // presents with pixels the CPU drew over the frame (profile gfxCpuSprites)
+    u32 cimgUploads;        // frames started from the memory the CPU wrote (profile gfxCimgFromRdram)
     // The largest texture decoded: its size, tile (fmt, size, stride, masks, flags) and source
     // (0 triangle, 1 rectangle).
     u32 bigW, bigH, bigFmt, bigSize, bigStride, bigMaskS, bigMaskT, bigFlags, bigRect, bigCount;
@@ -68,6 +69,8 @@ struct H64XenosStats
     u64 tHash, tDecode;   // inside tTexture: cache keys (TMEM hashing), decoding and upload
     u64 tCreate, tLock, tFill, tUnlock;   // inside tDecode: creation (or arena header), locking, decoding
     u32 arenaTextures, arenaEvictions;    // textures placed in the arena; arena chunks reused
+    u64 tArenaWait, maxArenaWait;         // waiting for the GPU before reusing an arena chunk: total, longest
+    u32 arenaSkips;                       // arena chunks skipped because the GPU still used them
     u32 retires;          // texture cache emptied (full)
 };
 // Presents with these VI registers (a copy taken at the VI, for the graphics worker).

@@ -73,6 +73,8 @@ struct GfxUcode
     int omInit;  // each task starts from the microcode's default other modes (F3DLP)
     int cullOne; // F3DLX.Rej: culling both faces culls the back faces only
     int combineH;// F3DEX2 2.0xH (Pokemon Snap...): G_SPECIAL_1 combines the matrices, not a counted list
+    int beta;    // F3DBETA (Wave Race 64 (U), Shadows of the Empire): F3D with vertex indices * 5, G_TRI2 at 0xB1,
+                 // RDPHALF_1/2 at 0xB3/0xB2, G_PERSPNORM at 0xB4 (GLideN64 F3DBETA.cpp)
 };
 
 struct GfxVtx
@@ -220,6 +222,14 @@ struct H64Gfx
     int texFromCimg;
     CimgSig cimgSig[8];            // small colour images drawn, with their lines' signatures
     u32 cimgUse;
+    // Profile gfxCimgFromRdram: frames drawn, with a signature of their memory
+    // when the drawing started; those that changed since go to the renderer.
+    struct { u32 start, width, sig, use; } fbSig[8];
+    u32 fbSigUse;
+    // The frame being drawn: its memory changed, what the task drew in it.
+    u32 fbCandStart, fbCandBytes, fbCandRects, fbCandOther;
+    int fbCand;
+    std::vector<u32> cimgFresh;
 
     // S2DEX 1.x: the 2D matrix (uObjMtx), object render mode, the status
     // words G_OBJ_LOADTXTR and G_SELECT_DL test, a pending G_SELECT_DL.
@@ -277,6 +287,7 @@ struct H64GfxOut
     PodVec<GfxOp> ops;
     u8 *snapshot;                  // RDRAM-sized; only the task's load ranges are valid
     std::vector<u32> cpuRanges;    // start, end pairs: loaded colour image lines the CPU wrote since they were drawn
+    std::vector<u32> cimgFresh;    // profile gfxCimgFromRdram: frames whose memory the CPU wrote (in the snapshot)
 };
 
 // ---------------------------------------------------------------- memory
@@ -348,6 +359,12 @@ static void mat_identity(float m[4][4])
 static void out_rdp(H64Gfx *g, const u64 *w, u32 n)
 {
     u32 index = g->words.size(), i;
+    if (g->fbCand)
+    {
+        u32 op = (u32)(w[0] >> 56) & 0x3F;
+        if (op == 0x24 || op == 0x25) g->fbCandRects++;
+        else if (op == 0x36 || (op >= 0x08 && op <= 0x0F)) g->fbCandOther++;
+    }
     u64 *d = g->words.add(n);
     GfxOp *op = g->ops.add(1);
     if (!d || !op) { g->abort = 1; return; }
@@ -414,6 +431,50 @@ static void cimg_check(H64Gfx *g, u32 lo, u32 hi, std::vector<u32> &out)
     }
 }
 
+// Profile gfxCimgFromRdram: a frame (16 or 32-bit, at least 256 wide) whose
+// memory changed since the GPU last started drawing it, or that it never drew,
+// and in which the task then draws only rectangles (2D over a picture already
+// in memory): the CPU wrote that picture (the GPU never writes RDRAM), so its
+// memory goes into the snapshot and the renderer starts the frame from it.
+// LEGO Racers writes its Grand Prix map into both frames with the CPU and only
+// draws the title over it: the GPU's frame was black with the title. Frames
+// with triangles or fills are left alone: during the cutscene before, the CPU
+// writes other data where the 3D frames lie, and loading them gave bands of
+// noise.
+static void cimg_close(H64Gfx *g)
+{
+    if (g->fbCand && g->fbCandRects && !g->fbCandOther)
+    {
+        g->loadRanges.push_back(g->fbCandStart);
+        g->loadRanges.push_back(g->fbCandStart + g->fbCandBytes);
+        g->cimgFresh.push_back(g->fbCandStart);
+    }
+    g->fbCand = 0;
+}
+
+static void cimg_fresh(H64Gfx *g, u32 start, u32 width, u32 size)
+{
+    u32 rows = width <= 320 ? 240 : width * 3 / 4, rowBytes = width << (size - 1), sig = 0x811C9DC5u, r, k;
+    int e = -1;
+    cimg_close(g);
+    if (size < 2 || width < 256 || start + rowBytes * rows > H64_RDRAM_SIZE) return;
+    for (r = 0; r < rows; r++) sig = (sig ^ row_sig(g->sys->rdram, start + r * rowBytes, rowBytes)) * 16777619u;
+    for (k = 0; k < 8 && e < 0; k++)
+        if (g->fbSig[k].use && g->fbSig[k].start == start && g->fbSig[k].width == width) e = (int)k;
+    if (e >= 0 && g->fbSig[e].sig == sig) { g->fbSig[e].use = ++g->fbSigUse; return; }
+    if (e < 0)
+        for (e = 0, k = 1; k < 8; k++)
+            if (g->fbSig[k].use < g->fbSig[e].use) e = (int)k;
+    g->fbSig[e].start = start;
+    g->fbSig[e].width = width;
+    g->fbSig[e].sig = sig;
+    g->fbSig[e].use = ++g->fbSigUse;
+    g->fbCand = 1;
+    g->fbCandStart = start;
+    g->fbCandBytes = rowBytes * rows;
+    g->fbCandRects = g->fbCandOther = 0;
+}
+
 // Texture images and loads (h64_rdp_load's arithmetic): the RDRAM a load reads.
 static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
 {
@@ -435,6 +496,7 @@ static void note_rdp(H64Gfx *g, u32 w0, u32 w1)
         g->cimg[g->cimgNext & 7][1] = start + bytes;
         g->cimgNext++;
         cimg_track(g, start, width << (size ? size - 1 : 0), width <= 320 ? 240 : width * 3 / 4);
+        if (g->sys->options.gfxCimgFromRdram) cimg_fresh(g, start, width, size);
     }
     else if (op == 0x30 || op == 0x33 || op == 0x34)   // LOAD_TLUT, LOAD_BLOCK, LOAD_TILE
     {
@@ -493,6 +555,7 @@ static GfxTri *new_tri(H64Gfx *g, u32 flags)
     GfxTri *t = g->tris.add(1);
     GfxOp *op = g->ops.add(1);
     if (!t || !op) { g->abort = 1; return &s_dummy; }
+    g->fbCandOther++;
     t->flags = flags;
     t->tile = g->texTile;
     t->levels = g->texLevel + 1;
@@ -526,11 +589,14 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
     u->omInit = 0;
     u->cullOne = 0;
     u->combineH = 0;
+    u->beta = 0;
     u->rare = RARE_NONE;
     {
         // CRC-32 of the first 4 KB of code as GLideN64 computes it (its
         // RDRAM holds 32-bit words byte-reversed).
         static const struct { u32 crc; int type, rare, noNear; const char *name; } known[] = {
+            { 0xD17906E2u, UC_F3D, RARE_NONE, 2, "F3DBETA (Wave Race 64 (U))" },
+            { 0x94C4C833u, UC_F3D, RARE_NONE, 2, "F3DBETA (Shadows of the Empire)" },
             { 0x302BCA09u, UC_F3D, RARE_GOLDEN, 0, "GoldenEye" },
             { 0x1C4F7869u, UC_F3D, RARE_PD, 0, "Perfect Dark" },
             { 0x6E6FC893u, UC_F3D, RARE_DKR, 0, "Diddy Kong Racing" },
@@ -569,7 +635,8 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             {
                 u->type = known[k].type;
                 u->rare = known[k].rare;
-                u->noNear = known[k].noNear;
+                u->noNear = known[k].noNear == 1;
+                u->beta = known[k].noNear == 2;
                 H64_INFO("[gfx] microcode at %06X: CRC %08X, %s's variant", u->start, crc, known[k].name);
                 return;
             }
@@ -673,7 +740,7 @@ static void detect_ucode(H64Gfx *g, GfxUcode *u)
             {
                 u->type = o->type; u->zex = o->zex; u->noNear = o->noNear; u->rare = o->rare;
                 u->cull40 = o->cull40; u->flx = o->flx; u->s2v103 = o->s2v103; u->am = o->am; u->line = o->line;
-                u->combineH = o->combineH;
+                u->combineH = o->combineH; u->beta = o->beta;
                 u->omInit = o->omInit; u->cullOne = o->cullOne;
                 H64_INFO("[gfx] microcode at %06X (data %06X): same code as the one at %06X", u->start, u->dstart, o->start);
                 return;
@@ -1264,7 +1331,11 @@ static void project(H64Gfx *g, const ClipVtx *c, H64RenderVertex *o)
 // sampled twice too far showed other letters' pieces.
 static H64_INLINE float st_scale(const H64Gfx *g, const GfxVtx *v)
 {
-    return (g->omH & 0x80000) || v->stOverride ? 1.0f : 0.5f;
+    // Profile gfxModStHalf: halved too when G_MODIFYVTX set them. The microcode
+    // scales them by the W the vertex buffer still holds, half the range for a
+    // vertex loaded at w = 1 (South Park: Chef's Luv Shack builds its 2D quads
+    // with G_MODIFYVTX alone: whole, their textures came out twice too big).
+    return (g->omH & 0x80000) || (v->stOverride && !g->sys->options.gfxModStHalf) ? 1.0f : 0.5f;
 }
 
 static void triangle_body(H64Gfx *g, u32 i0, u32 i1, u32 i2);
@@ -2031,6 +2102,30 @@ static void run_f3d(H64Gfx *g, u32 w0, u32 w1)
     u32 cmd = w0 >> 24;
     int ex = g->uc->type == UC_F3DEX;
     if (g->uc->rare && run_rare(g, w0, w1)) return;
+    if (g->uc->beta)
+    {
+        // F3DBETA: vertex buffer offsets in units of 5 (GLideN64 F3DBETA.cpp).
+        switch (cmd)
+        {
+        case 0x04: load_vertices(g, w1, (w0 >> 9) & 0x7F, ((w0 >> 16) & 0xFF) / 5); return;   // G_VTX
+        case 0xBF: triangle(g, ((w1 >> 16) & 0xFF) / 5, ((w1 >> 8) & 0xFF) / 5, (w1 & 0xFF) / 5); return;   // G_TRI1
+        case 0xB1:   // G_TRI2
+            triangle(g, ((w0 >> 16) & 0xFF) / 5, ((w0 >> 8) & 0xFF) / 5, (w0 & 0xFF) / 5);
+            triangle(g, ((w1 >> 16) & 0xFF) / 5, ((w1 >> 8) & 0xFF) / 5, (w1 & 0xFF) / 5);
+            return;
+        case 0xB5:   // G_QUAD
+        {
+            u32 a = ((w1 >> 24) & 0xFF) / 5, b = ((w1 >> 16) & 0xFF) / 5, c = ((w1 >> 8) & 0xFF) / 5, d = (w1 & 0xFF) / 5;
+            triangle(g, a, b, c);
+            triangle(g, a, c, d);
+            return;
+        }
+        case 0xB4: return;                  // G_PERSPNORM (no use with floats)
+        case 0xB3: g->half1 = w1; return;   // G_RDPHALF_1
+        case 0xB2: return;                  // G_RDPHALF_2 (read with TEXRECT)
+        default: break;
+        }
+    }
     if (g->uc->line)   // L3DEX: G_TRI1, G_TRI2 as edges, 0xB5 G_LINE3D
     {
         if (cmd == 0xBF) { line_tri(g, (w1 >> 17) & 0x7F, (w1 >> 9) & 0x7F, (w1 >> 1) & 0x7F, 0); return; }
@@ -3761,6 +3856,11 @@ H64Gfx *h64_gfx_create(H64System *sys)
     g->texFromCimg = 0;
     for (i = 0; i < 8; i++) g->cimgSig[i].rows = g->cimgSig[i].use = 0;
     g->cimgUse = 0;
+    g->f5Mtx = 0;
+    memset(g->fbSig, 0, sizeof(g->fbSig));
+    g->fbSigUse = 0;
+    g->fbCand = 0;
+    g->cimgFresh.clear();
     memset(g->zdmem, 0, sizeof(g->zdmem));
     g->zsScale[0] = g->zsScale[1] = g->zsTrans[0] = g->zsTrans[1] = 0;
     g->zsFogM = g->zsFogO = 0;
@@ -3930,6 +4030,9 @@ int h64_gfx_package(H64System *sys, H64Gfx *g, H64GfxOut *out)
     // full sync; the task ends only once that is done.
     mustSync = sys->options.gfxFrameToRdram != 0;
     out->cpuRanges.clear();
+    cimg_close(g);
+    out->cimgFresh.swap(g->cimgFresh);
+    g->cimgFresh.clear();
     if (!out->snapshot) out->snapshot = (u8 *)h64_big_alloc(H64_RDRAM_SIZE);
     if (!out->snapshot) { g->loadRanges.clear(); return 1; }
     {
@@ -3969,10 +4072,14 @@ void h64_gfx_render(H64System *sys, H64Gfx *g, H64GfxOut *out)
     st->loadRamGen++;
     st->cpuRanges = out->cpuRanges.empty() ? 0 : &out->cpuRanges[0];
     st->cpuRangeCount = (u32)out->cpuRanges.size() / 2;
+    st->cimgFresh = out->cimgFresh.empty() ? 0 : &out->cimgFresh[0];
+    st->cimgFreshCount = (u32)out->cimgFresh.size();
     flush_lists(sys, out->words, out->tris, out->ops);
     st->loadRam = 0;
     st->cpuRanges = 0;
     st->cpuRangeCount = 0;
+    st->cimgFresh = 0;
+    st->cimgFreshCount = 0;
 }
 
 #include "h64_gfx_f5.inc"
@@ -4080,6 +4187,7 @@ static int parse_task_lists(H64System *sys, H64Gfx *g, int *fullSync)
     {
         g->f5ColorBase = g->f5VpAddr = g->f5PerspAddr = 0;
         g->f5TexScale[0] = g->f5TexScale[1] = 0;
+        g->f5Mtx = 0;   // Indiana Jones' generator matrix only (was never set here: a random pointer, a random crash)
         f5_enter(g);   // the task's list starts with its link word too
     }
     if (u->type == UC_F5INDI)

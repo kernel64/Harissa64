@@ -40,7 +40,11 @@ static const GameProfile s_profiles[] = {
     // and no copy back at all left the course black once the camera stops.
     { "NMF", "Mario Golf", H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_FULL },
     // Missing players and net with copy backs; right without.
-    { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK },
+    // Players' shadows: drawn each frame into a 64x64 8-bit image (cleared
+    // as a 64x32 16-bit one), then pasted: the software RDP draws it (they
+    // were missing; issue #23). The ball's energy trail reads the frame and
+    // needs copy backs (still missing: Mario vanished with them).
+    { "NM8", "Mario Tennis", H64_GP_NO_COPY_BACK | H64_GP_SOFT_8BIT },
     // Never sets the texture conversion either (F3DLX 1.23): its legal
     // screens' 32-bit letters were read as YUV, almost invisible.
     { "N22", "Ready 2 Rumble Boxing: Round 2", H64_GP_OTHERMODE_INIT },
@@ -51,7 +55,28 @@ static const GameProfile s_profiles[] = {
     { "NBO", "Bottom of the 9th", H64_GP_COPY_BACK_WHOLE },
     // Loads its textures from memory where the intro's 640x480 frames were:
     // copying those old frames back over them drew the snow canyons black.
-    { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH },
+    // In flight its frames are 512 x ~442 (the 4:3 guess, 384 lines,
+    // stretched the last line over the bottom of the screen; issue #16).
+    { "NRS", "Star Wars: Rogue Squadron", H64_GP_COPY_BACK_SAME_WIDTH | H64_GP_TALL_FRAME },
+    // The European version's frames are 304 x 268 (the 4:3 guess, 240 lines,
+    // left a blurred band over the bottom of the screen; issue #23). The US
+    // version's scissor stays within 240 lines: unchanged. Banjo's shadow is
+    // drawn into an 8-bit image (a fill, then triangles) then pasted over the
+    // ground: drawn by the GPU it was a dark square, the software RDP draws it.
+    { "NB7", "Banjo-Tooie", H64_GP_TALL_FRAME | H64_GP_SOFT_8BIT },
+    // 320 x 480 interlaced frames (VI Y scale 2.0): drawn as 240 lines tall,
+    // the bottom half was broken.
+    { "NDZ", "Duke Nukem: Zero Hour", H64_GP_TALL_FRAME },
+    // Draws each battling Pokemon's picture once into a 32x32 image
+    // (0x257F80, 0x258800) and shows it for the whole battle: when the GPU
+    // slot holding the player's one was reused, its box went black. The
+    // small images go back to memory as soon as they are drawn.
+    { "NP3", "Pokemon Stadium 2", H64_GP_SMALL_TO_RDRAM },
+    // As Rogue Squadron: the intro draws 640x480 frames at 0x2D4000 and
+    // 0x36A000, the fights load their text box and fighters' textures there
+    // later. The old frames copied back over them drew both black (and cost
+    // ~117 ms a frame on the console).
+    { "NFD", "Flying Dragon", H64_GP_COPY_BACK_SAME_WIDTH },
     // Never sets the texture conversion (F3DEX2 2.08): its textures were
     // read as YUV, a grey picture.
     { "NXO", "Cruis'n Exotica", H64_GP_OTHERMODE_INIT },
@@ -62,7 +87,9 @@ static const GameProfile s_profiles[] = {
     // Copies its background into the frame's memory through 512-pixel
     // images with copy-mode rectangles, then draws in a 328-pixel frame at
     // the same address (one slot for both showed horizontal streaks).
-    { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY | H64_GP_SLOT_BY_WIDTH },
+    // Its intro frames are 436 x 383 (the 4:3 guess, 327 lines, left a band
+    // of stripes at the bottom of the picture): the height from the scissor.
+    { "NRE", "Resident Evil 2", H64_GP_RDRAM_COPY | H64_GP_SLOT_BY_WIDTH | H64_GP_TALL_FRAME },
     // Reads its background back six lines at a time (~40 copy backs a frame,
     // ~47 VI/s in a match): one whole copy instead, 60 VI/s. Draws the capsule
     // Mario throws into the frame with the CPU (H64_GP_CPU_SPRITES).
@@ -140,6 +167,11 @@ static const GameProfile s_profiles[] = {
     // Its 400-wide frames are 448 lines tall: the GPU renderer takes the
     // height from the scissor (only the top part showed, zoomed in).
     { "NIJ", "Indiana Jones and the Infernal Machine", H64_GP_BOOT_TIME | H64_GP_TALL_FRAME },
+    // Its init sets the refresh rate (50/60, for the audio frame size) only
+    // if its VI counter is still 0 after osContInit; with Count near 0
+    // osContInit waits 0.5 s, retraces count, the rate stays 0: frame size
+    // 0x80000010, no sound task ever, and a match never started.
+    { "N7I", "FIFA Soccer 64", H64_GP_BOOT_TIME },
     // 6106: with the HLE boot only its sound ran, never a graphics task.
     { "NCW", "Cruis'n World", H64_GP_IPL3_BOOT },
     // With the HLE boot, whole parts of rooms were missing depending on the
@@ -234,7 +266,14 @@ static const GameProfile s_profiles[] = {
 };
 
 // Options with no bit left in the flags above, set by h64_apply_game_profile.
-enum { H64_GX_SOFT_TINY = 1 };   // options.gfxSoftTiny
+enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
+       H64_GX_COPYBACK_ALPHA = 2,     // options.gfxCopyBackAlpha
+       H64_GX_MODIFY_ST_HALF = 4,     // options.gfxModStHalf
+       H64_GX_CIMG_FROM_RDRAM = 8,    // options.gfxCimgFromRdram
+       H64_GX_XLU_NO_BIAS = 16,       // options.gfxXluNoBias
+       H64_GX_VI_LINE0 = 32,          // options.viIntrLine0
+       H64_GX_VI_LINE_START = 64,     // options.gfxViLineStart
+       H64_GX_SKIP_ZIMAGE = 128 };    // options.gfxSkipZImage
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -242,6 +281,45 @@ static const GameExtra s_extras[] = {
     // it back (~10 a frame; Peach's castle in the prologue ran at ~20 VI/s).
     // The software RDP draws them in memory instead: nothing to copy back.
     { "NMQ", H64_GX_SOFT_TINY },
+    // Racers near the camera are drawn into 64x64 images first (filled with
+    // a transparent colour, alpha bit 0), then shown as cut-out textures:
+    // fills wrote alpha 1 and copy-backs forced it, black squares around them.
+    // Before a race, the CPU writes the Grand Prix map into both frames and
+    // the RDP only draws the title over it: the GPU's frame was black with
+    // the title (the frame's memory goes to the GPU first now).
+    { "NLG", H64_GX_COPYBACK_ALPHA | H64_GX_CIMG_FROM_RDRAM },
+    // Builds its 2D pictures (title, menus, backgrounds) from quads whose
+    // vertices only G_MODIFYVTX sets, without texture perspective: the
+    // microcode halves their s, t as any vertex's (GitHub issue #22: textures
+    // twice too big, pictures distorted beyond recognition; same as LLE now).
+    { "NCY", H64_GX_MODIFY_ST_HALF },
+    // ~50 times a frame it draws an effect's sprite into the depth image's
+    // memory as a colour image: each one made the GPU switch colour images
+    // and back (two resolves and two full-screen restores of the 960x720
+    // target), up to ~60 ms a frame at the start of each point. Nothing read
+    // what the GPU drew there: not drawn (h64_xenos.cpp, skip_zimage).
+    { "NM8", H64_GX_SKIP_ZIMAGE },
+    // Stacked Deck: each card's shadow lies just under the card in Z mode
+    // XLU; the depth bias that keeps OoT's paths on the ground brought the
+    // shadows over the cards (dark cards; issue #23).
+    { "NMV", H64_GX_XLU_NO_BIAS },
+    // A boot race the console wins by being slow on code it runs for the
+    // first time. osCreateViManager waits for the VI to start a field; the
+    // game then makes its controller thread a client of its scheduler and only
+    // later creates the queue osContInit uses. The VI interrupt at VI_V_INTR's
+    // line 2 came ~6000 cycles after that wait, before the queue existed (this
+    // core runs that code at 1-2 cycles an instruction, the VR4300 misses its
+    // instruction cache there): the retrace woke the controller thread, which
+    // read the controllers through the null queue (lw at 800D89E8), and the
+    // game stopped on noise after two graphics tasks. With the interrupt at
+    // the start of the field, as in mupen64plus, it is taken during the wait
+    // and the next one comes a frame later. (h64test --cpi 4 boots it too.)
+    { "N7I", H64_GX_VI_LINE0 },
+    // Its two 320-pixel frames lie side by side in one 640-wide image (colour
+    // images at 0x329A00 and 0x329C80, scissor x 16..304, VI origin one line
+    // in). The VI took the slot starting closest to its origin, the right-hand
+    // frame's, and showed its empty half: a black frame every other frame.
+    { "NWZ", H64_GX_VI_LINE_START },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -269,6 +347,13 @@ void h64_apply_game_profile(H64System *sys)
     for (i = 0; i < sizeof(s_extras) / sizeof(s_extras[0]); i++)
         if (!memcmp(sys->rom.gameCode, s_extras[i].code, 3)) extra = s_extras[i].extra;
     sys->options.gfxSoftTiny = (extra & H64_GX_SOFT_TINY) != 0;
+    sys->options.gfxCopyBackAlpha = (extra & H64_GX_COPYBACK_ALPHA) != 0;
+    sys->options.gfxModStHalf = (extra & H64_GX_MODIFY_ST_HALF) != 0;
+    sys->options.gfxCimgFromRdram = (extra & H64_GX_CIMG_FROM_RDRAM) != 0;
+    sys->options.gfxXluNoBias = (extra & H64_GX_XLU_NO_BIAS) != 0;
+    sys->options.viIntrLine0 = (extra & H64_GX_VI_LINE0) != 0;
+    sys->options.gfxViLineStart = (extra & H64_GX_VI_LINE_START) != 0;
+    sys->options.gfxSkipZImage = (extra & H64_GX_SKIP_ZIMAGE) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

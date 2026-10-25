@@ -33,6 +33,7 @@ SAVE_GAME = Save for this game only
 BACK = Back
 ON = On
 OFF = Off
+VSYNC_STRICT = Strict
 CUSTOM = Custom
 DEFAULT = Default
 RECOMPILER = Recompiler
@@ -157,9 +158,16 @@ SAVE_NONE = none
 SAVE_UNKNOWN = unknown (EEPROM 4 Kbit, SRAM or FlashRAM)
 NO_ROM = No ROM found
 COPY_ROMS = Copy .z64, .n64, .v64 or .zip files
-INTO_ROMS = into game:\roms\
-FOOT_BROWSER = A:Play|LB/RB:Page|Y:Settings|X:About|BACK:Dashboard
-FOOT_BROWSER_EMPTY = Y:Settings|X:About|BACK:Dashboard
+INTO_ROMS = into %s
+FOOT_BROWSER = A:Play|Y:Settings|X:About|START:Files|BACK:Dashboard
+FOOT_BROWSER_EMPTY = Y:Settings|X:About|START:Files|BACK:Dashboard
+
+# ---- File browser (START in the ROM list) ----
+FILES = Files
+FILES_DRIVES = Drives
+FOOT_FILES = A:Open|B:Back|Y:Use as ROM folder
+FILES_EMPTY = No folder or ROM here
+ROM_FOLDER_SET = ROM folder: %s
 ART_PROGRESS = Box art %d / %d
 ART_CONNECTING = Box art: connecting…
 UPDATE_AVAILABLE = Harissa64 %s is available on GitHub

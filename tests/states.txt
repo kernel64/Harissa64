@@ -1,0 +1,45 @@
+# Save-state cases for tests/scripts/run_states.py: each state replays for a
+# few seconds on the PC and the hashes of what reaches the renderer and of
+# the machine are compared with tests/expected/states.txt.
+# name|ROM (in xbox64/Release/roms)|state (in tests/console/data)|frames|input (optional, VI numbers after the load)
+# The states come from the console checks and from players' bug reports:
+# every new report with a save state can be added here.
+amped_race|Mario Kart 64 (Amped Up v3.21).z64|amped_race.h64s|120|
+amped_start|Mario Kart 64 (Amped Up v3.21).z64|amped_start.h64s|120|
+bte_user1|Banjo-Tooie (Europe).zip|bte_user1.h64s|120|
+bte_user2|Banjo-Tooie (Europe).zip|bte_user2.h64s|120|
+conker_bubble|Conker's Bad Fur Day (U).zip|conker_bubble.h64s|120|
+cv64_book|Castlevania (U) (V1.2).zip|cv64_book.h64s|120|
+cv64_forest|Castlevania (U) (V1.2).zip|cv64_forest.h64s|120|
+cv64_intro|Castlevania (U) (V1.2).zip|cv64_intro.h64s|120|
+cv64_user1|Castlevania (U) (V1.2).zip|cv64_user1.h64s|120|
+cv64_user2|Castlevania (U) (V1.2).zip|cv64_user2.h64s|120|
+cv64_user3|Castlevania (U) (V1.2).zip|cv64_user3.h64s|120|
+cv64_user4|Castlevania (U) (V1.2).zip|cv64_user4.h64s|120|
+dk64_user1|Donkey Kong 64 (U).zip|dk64_user1.h64s|120|
+dkr_island|Diddy Kong Racing (U) (M2) (V1.1).zip|dkr_island.h64s|120|
+drmario|Dr. Mario 64 (U).zip|drmario.h64s|120|
+golf_hole1|Mario Golf (U).zip|golf_hole1.h64s|120|
+lego_race|LEGO Racers (U) (M10).zip|lego_race.h64s|120|
+lego_user1|LEGO Racers (U) (M10).zip|lego_user1.h64s|1300|A@25-31
+lod_user1|Castlevania - Legacy of Darkness (U).zip|lod_user1.h64s|120|
+lod_user7|Castlevania - Legacy of Darkness (U).zip|lod_user7.h64s|120|
+mk64pal_points|Mario Kart 64 (Europe) (Rev 1).zip|mk64pal_points.h64s|120|
+oot_kokiri|Legend of Zelda The - Ocarina of Time.zip|oot_kokiri.h64s|120|
+pm_house|Paper Mario (U).zip|pm_house.h64s|120|
+re2_intro_user|Resident Evil 2 (U) (V1.1).zip|re2_intro_user.h64s|120|
+re2_street|Resident Evil 2 (U) (V1.1).zip|re2_street.h64s|120|
+rs_user|Star Wars - Rogue Squadron (U) (M3).zip|rs_user.h64s|120|
+smash_select|Super Smash Bros. (U).zip|smash_select.h64s|120|
+v8_logo|Vigilante 8 (U).zip|v8_logo.h64s|120|
+v8_quest|Vigilante 8 (U).zip|v8_quest.h64s|120|
+v8_race|Vigilante 8 (U).zip|v8_race.h64s|120|
+yoshi_level|Yoshi's Story (U) (M2).zip|yoshi_level.h64s|120|
+ge_2p|GoldenEye 007 (U).zip|ge_2p.h64s|120|X=60@0-120,Y=50@0-120
+tennis_match|Mario Tennis (U).zip|tennis_match.h64s|120|
+tennis_power|Mario Tennis (U).zip|tennis_power.h64s|120|
+tennis_replay|Mario Tennis (U).zip|tennis_replay.h64s|240|
+mp3_stacked|Mario Party 3 (U).zip|mp3_stacked.h64s|120|
+mp3_frigid|Mario Party 3 (U).zip|mp3_frigid.h64s|120|
+mp3_awful|Mario Party 3 (U).zip|mp3_awful.h64s|120|
+mp3_aces|Mario Party 3 (U).zip|mp3_aces.h64s|120|

@@ -76,9 +76,13 @@ struct H64RdpState
     u32 loadRamGen;              // changes each time a deferred job sets loadRam (one per task or DPC batch)
     const u32 *cpuRanges;        // with loadRam: start, end pairs of colour images the CPU wrote over since
     u32 cpuRangeCount;           // the GPU drew them (loads there read the snapshot, see h64_gfx.cpp)
+    const u32 *cimgFresh;        // with loadRam: colour images whose memory changed since the GPU drew them
+    u32 cimgFreshCount;          // (profile gfxCimgFromRdram): drawing there starts from the snapshot
     int softDraw;                // 1: this command draws even with options.rdpStateOnly (a GPU renderer hands it over)
     u8 *drawRam;                 // where drawing reads and writes (NULL: RDRAM), e.g. a deferred job's snapshot
     u8 *drawRam2;                // also written (NULL: none), e.g. RDRAM beside the snapshot
+    u64 softTicks, softSpanTicks;  // profiling (profClock): primitives drawn with softDraw, their span setups
+    u32 softTris, softLines, softPixels;
     H64RdpTile tiles[8];
 
     u32 rasterFlags;             // RS_*
@@ -128,6 +132,11 @@ void h64_rdp_fetch_texel(const H64RdpState *st, const H64RdpTile *tile, u32 s, u
 int h64_rdp_fetch_row_argb(const H64RdpState *st, const H64RdpTile *tile, u32 s0, u32 t, u32 n, int tlut, u32 *out);
 // The state of the software RDP (allocated on first use).
 H64RdpState *h64_rdp_state(H64System *sys);
+// A fill rectangle into an 8-bit colour image written directly (the same
+// bytes and hidden bits as h64_rdp_command; tests/unit/test_rdp_fill8.cpp):
+// returns 0 (nothing done) for anything else. Writes st->drawRam (else
+// RDRAM) and st->drawRam2.
+int h64_rdp_fill8_fast(H64System *sys, const u64 *words, u32 count);
 s32 h64_rdp_sample_copy(H64RdpState *st, const H64RdpTile *tile, s32 s, s32 t, int sOffset, int tlut, int fbSize);
 void h64_rdp_texture_convert(const H64RdpTexel *in, const s32 *factors, H64RdpTexel *out);
 // A 16-bit YUV texel as the texture filter reads it (u - 128, v - 128, y, y),

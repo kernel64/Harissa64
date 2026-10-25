@@ -18,6 +18,7 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../core/common/h64_png.h"
 #include "xb_art.h"
+#include "xb_drives.h"
 #include "xb_flags.h"
 #include "xb_lang.h"
 #include "xb_ui.h"
@@ -256,7 +257,7 @@ static void settings_values(UiMenu *m, const Config *c)
             const char *br[3] = { Tr(T_NORMAL), Tr(T_LIGHTER), Tr(T_MUCH_LIGHTER) };
             sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
             sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
-            sprintf(m->value[G_VSYNC], "< %s >", onoff(c->vsync));
+            sprintf(m->value[G_VSYNC], "< %s >", c->vsync == 2 ? Tr(T_VSYNC_STRICT) : onoff(c->vsync));
             sprintf(m->value[G_DEFLICKER], "< %s >", onoff(c->deflicker));
             sprintf(m->value[G_ZOOM], "< %d%% >", c->zoom);
             sprintf(m->value[G_POSX], "< %+d >", c->offsetX);
@@ -847,7 +848,7 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
         case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
         case G_STRETCH: c->stretch = !c->stretch; break;
-        case G_VSYNC: c->vsync = !c->vsync; break;
+        case G_VSYNC: c->vsync = ((c->vsync < 0 || c->vsync > 2 ? 0 : c->vsync) + dir + 3) % 3; break;   // off, on (adaptive), strict
         case G_DEFLICKER: c->deflicker = !c->deflicker; break;
         case G_ZOOM: c->zoom += dir * 2; if (c->zoom < 80) c->zoom = 80; if (c->zoom > 140) c->zoom = 140; break;
         case G_POSX: c->offsetX += dir * 4; if (c->offsetX < -160) c->offsetX = -160; if (c->offsetX > 160) c->offsetX = 160; break;
@@ -1122,10 +1123,11 @@ int LanguageScreen(IDirect3DDevice9 *dev, int initial, int firstStart)
 struct RomEntry { std::string file, shown; };
 static bool rom_less(const RomEntry &a, const RomEntry &b) { return _stricmp(a.shown.c_str(), b.shown.c_str()) < 0; }
 
-static void scan_roms(std::vector<RomEntry> *out)
+// `dir` ends with a backslash (Config.romDir).
+static void scan_roms(const char *dir, std::vector<RomEntry> *out)
 {
     WIN32_FIND_DATAA fd;
-    HANDLE f = FindFirstFileA("game:\\roms\\*", &fd);
+    HANDLE f = FindFirstFileA((std::string(dir) + "*").c_str(), &fd);
     if (f == INVALID_HANDLE_VALUE) return;
     do
     {
@@ -1133,7 +1135,7 @@ static void scan_roms(std::vector<RomEntry> *out)
         RomEntry e;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         if (!dot || (_stricmp(dot, ".z64") && _stricmp(dot, ".n64") && _stricmp(dot, ".v64") && _stricmp(dot, ".zip"))) continue;
-        e.file = std::string("game:\\roms\\") + fd.cFileName;
+        e.file = std::string(dir) + fd.cFileName;
         e.shown = std::string(fd.cFileName, dot - fd.cFileName);
         out->push_back(e);
     } while (FindNextFileA(f, &fd));
@@ -1615,7 +1617,7 @@ static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, in
 }
 
 static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, int rows, const RomInfo *info, const ArtView *view,
-                         int busy, float selAt, const ArtStatus *st)
+                         int busy, float selAt, const ArtStatus *st, const char *romDir)
 {
     static UiAnim selAnim;
     const float listX = UI_SAFE_X, listY = LIST_Y, listW = LIST_W, rowH = ROW_H, pad = 12;
@@ -1632,7 +1634,8 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     {
         sprintf(buf, "%d / %d", sel + 1, n);
         UiText(UI_REGULAR, 19, listX + listW, 64, UI_COL_TEXT2, buf, UI_RIGHT);
-        UiText(UI_REGULAR, 15, listX + listW, 88, UI_COL_TEXT3, "game:\\roms\\", UI_RIGHT);
+        UiTextFit(UI_REGULAR, 15, listW * 0.7f, romDir, buf, sizeof(buf));
+        UiText(UI_REGULAR, 15, listX + listW, 88, UI_COL_TEXT3, buf, UI_RIGHT);
     }
     UiPanel(listX, listY, listW, listH, 20);
     if (!n)
@@ -1640,7 +1643,9 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
         float cy = listY + listH * 0.5f;
         UiText(UI_BOLD, 30, listX + listW * 0.5f, cy - 50, UI_COL_TEXT, Tr(T_NO_ROM), UI_CENTER);
         UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy, UI_COL_TEXT2, Tr(T_COPY_ROMS), UI_CENTER);
-        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy + 32, UI_COL_TEXT2, Tr(T_INTO_ROMS), UI_CENTER);
+        _snprintf(buf, sizeof(buf) - 1, Tr(T_INTO_ROMS), romDir);
+        buf[sizeof(buf) - 1] = 0;
+        UiText(UI_REGULAR, 21, listX + listW * 0.5f, cy + 32, UI_COL_TEXT2, buf, UI_CENTER);
     }
     else
     {
@@ -1680,6 +1685,185 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
     }
 }
 
+// ---- File browser (START in the ROM list) ----
+// The drives (xb_drives.cpp), then folders and ROM files: A opens a folder or
+// starts a ROM, B goes up (from the drives: back to the ROM list), Y makes the
+// folder shown the ROM list's folder (romdir= in settings.ini).
+struct FileEntry { std::string name, full; int dir; };
+static bool file_less(const FileEntry &a, const FileEntry &b)
+{
+    if (a.dir != b.dir) return a.dir > b.dir;   // folders first
+    return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+}
+
+static int rom_ext(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    return dot && (!_stricmp(dot, ".z64") || !_stricmp(dot, ".n64") || !_stricmp(dot, ".v64") || !_stricmp(dot, ".zip"));
+}
+
+// `dir` ends with a backslash; "" lists the drives.
+static void files_scan(const std::string &dir, std::vector<FileEntry> *out)
+{
+    out->clear();
+    if (dir.empty())
+    {
+        char roots[8][16];
+        int n = DrivesList(roots, 8), i;
+        for (i = 0; i < n; i++)
+        {
+            FileEntry e;
+            e.full = roots[i];
+            e.name = std::string(roots[i], strlen(roots[i]) - 1);   // "Usb0:"
+            e.dir = 1;
+            out->push_back(e);
+        }
+        return;
+    }
+    {
+        WIN32_FIND_DATAA fd;
+        HANDLE f = FindFirstFileA((dir + "*").c_str(), &fd);
+        if (f == INVALID_HANDLE_VALUE) return;
+        do
+        {
+            FileEntry e;
+            int isDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            if (!isDir && !rom_ext(fd.cFileName)) continue;
+            e.name = fd.cFileName;
+            e.full = dir + fd.cFileName + (isDir ? "\\" : "");
+            e.dir = isDir;
+            out->push_back(e);
+        } while (FindNextFileA(f, &fd) && out->size() < 4000);
+        FindClose(f);
+    }
+    std::sort(out->begin(), out->end(), file_less);
+}
+
+static void files_draw(const std::string &dir, const std::vector<FileEntry> &list, int sel, int top, int rows)
+{
+    static UiAnim selAnim;
+    const float listX = UI_SAFE_X, listY = LIST_Y, listW = UI_WIDTH - 2 * UI_SAFE_X, rowH = ROW_H, pad = 12;
+    const float listH = rows * rowH + 2 * pad;
+    int n = (int)list.size(), i;
+    char buf[300];
+    UiBackdrop();
+    UiBrand(UI_SAFE_X, 72, 34);
+    UiText(UI_BOLD, 24, listX + listW, 64, UI_COL_TEXT, Tr(T_FILES), UI_RIGHT);
+    UiTextFit(UI_REGULAR, 17, listW * 0.6f, dir.empty() ? Tr(T_FILES_DRIVES) : dir.c_str(), buf, sizeof(buf));
+    UiText(UI_REGULAR, 17, listX + listW, 92, UI_COL_TEXT3, buf, UI_RIGHT);
+    UiPanel(listX, listY, listW, listH, 20);
+    if (!n)
+        UiText(UI_REGULAR, 22, listX + listW * 0.5f, listY + listH * 0.5f, UI_COL_TEXT2, Tr(T_FILES_EMPTY), UI_CENTER);
+    else
+    {
+        float sy = anim_step(&selAnim, listY + pad + (sel - top) * rowH, 0);
+        selection_bar(listX + 10, sy + 1, listW - (n > rows ? 36 : 20), rowH - 2);
+        for (i = 0; i < rows && top + i < n; i++)
+        {
+            const FileEntry &e = list[top + i];
+            float cy = listY + pad + i * rowH + rowH * 0.5f;
+            int s = top + i == sel;
+            if (e.dir)
+            {
+                // A small folder mark before folders and drives.
+                UiRoundRect(listX + 30, cy - 7, 18, 13, 3, UI_COL_ACCENT, UI_COL_ACCENT);
+                UiRoundRect(listX + 30, cy - 10, 8, 5, 2, UI_COL_ACCENT, UI_COL_ACCENT);
+            }
+            UiTextFit(s ? UI_BOLD : UI_REGULAR, 21, listW - 120, e.name.c_str(), buf, sizeof(buf));
+            UiText(s ? UI_BOLD : UI_REGULAR, 21, listX + 60, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, buf, UI_LEFT);
+        }
+        if (n > rows)
+        {
+            float tx = listX + listW - 16, ty = listY + pad + 4, th = listH - 2 * pad - 8;
+            float hh = th * rows / n, yy;
+            if (hh < 28) hh = 28;
+            yy = ty + (th - hh) * top / (float)(n - rows);
+            UiRoundRect(tx, ty, 4, th, 2, D3DCOLOR_ARGB(20, 255, 255, 255), D3DCOLOR_ARGB(20, 255, 255, 255));
+            UiRoundRect(tx, yy, 4, hh, 2, D3DCOLOR_ARGB(150, 255, 255, 255), D3DCOLOR_ARGB(110, 255, 255, 255));
+        }
+    }
+    UiScreenFooter(Tr(T_FOOT_FILES));
+}
+
+// Returns 1 with `path` set when a ROM was chosen, 2 when the ROM folder
+// changed (c->romDir, written to settings.ini), 0 when left with B.
+static int file_browser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char *path, size_t pathSize)
+{
+    static std::string s_dir;   // where the browser was left (this session)
+    std::vector<FileEntry> list;
+    UiInput in;
+    int sel = 0, top = 0;
+    const int rows = 13;
+    std::string came;   // the folder just left with B: selected again in its parent
+    files_scan(s_dir, &list);
+    if (list.empty() && !s_dir.empty()) { s_dir.clear(); files_scan(s_dir, &list); }   // a drive taken out
+    UiInputInit(&in);
+    for (;;)
+    {
+        WORD down = UiInputPoll(&in);
+        int n = (int)list.size();
+        if (n)
+        {
+            if (down & XINPUT_GAMEPAD_DPAD_UP) sel = (sel + n - 1) % n;
+            if (down & XINPUT_GAMEPAD_DPAD_DOWN) sel = (sel + 1) % n;
+            if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) sel = sel > rows ? sel - rows : 0;
+            if (down & XINPUT_GAMEPAD_RIGHT_SHOULDER) sel = sel + rows < n ? sel + rows : n - 1;
+            if (down & XINPUT_GAMEPAD_A)
+            {
+                const FileEntry &e = list[sel];
+                if (e.dir)
+                {
+                    s_dir = e.full;
+                    files_scan(s_dir, &list);
+                    sel = top = 0;
+                    continue;
+                }
+                strncpy(path, e.full.c_str(), pathSize - 1);
+                path[pathSize - 1] = 0;
+                strncpy(c->lastRom, path, sizeof(c->lastRom) - 1);
+                c->lastRom[sizeof(c->lastRom) - 1] = 0;
+                ConfigWriteMenuKeys(c, settingsPath, 1);
+                H64_INFO("[files] %s", path);
+                return 1;
+            }
+        }
+        if ((down & XINPUT_GAMEPAD_Y) && !s_dir.empty())
+        {
+            strncpy(c->romDir, s_dir.c_str(), sizeof(c->romDir) - 1);
+            c->romDir[sizeof(c->romDir) - 1] = 0;
+            ConfigWriteMenuKeys(c, settingsPath, 1);
+            H64_INFO("[files] ROM folder %s", c->romDir);
+            return 2;
+        }
+        if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK))
+        {
+            size_t cut;
+            int k;
+            if (s_dir.empty()) return 0;
+            // Up one folder ("Usb0:\N64\" -> "Usb0:\"), or to the drives from a root.
+            came = s_dir;
+            cut = s_dir.find_last_of('\\', s_dir.size() - 2);
+            if (s_dir.size() >= 2 && s_dir[s_dir.size() - 2] == ':') s_dir.clear();
+            else if (cut == std::string::npos) s_dir.clear();
+            else s_dir.resize(cut + 1);
+            files_scan(s_dir, &list);
+            sel = top = 0;
+            for (k = 0; k < (int)list.size(); k++)
+                if (!_stricmp(list[k].full.c_str(), came.c_str())) sel = k;
+            continue;
+        }
+        if (sel < top) top = sel;
+        if (sel >= top + rows) top = sel - rows + 1;
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+        UiBegin(dev);
+        files_draw(s_dir, list, sel, top, rows);
+        UiEnd();
+        dev->Present(NULL, NULL, NULL, NULL);
+        Sleep(16);
+    }
+}
+
 #define MSG_MS 6000   // how long a message (new version, box art) stays
 
 // Box art may be downloaded here (the settings allow it; not in Xenia, whose
@@ -1698,7 +1882,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     DWORD msgAt = 0, demoAt = GetTickCount();
     float selAt = 0;
     msg[0] = 0;
-    scan_roms(&roms);
+    scan_roms(c->romDir, &roms);
     for (i = 0; i < (int)roms.size(); i++)
     {
         paths.push_back(roms[i].file.c_str());
@@ -1740,6 +1924,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     // in the background and may answer later, or never without a network).
     // updatecheck=2 (testing): as if this were version 0.0.0, so any release is newer.
     if (c->updateCheck && !c->xenia && h64_fenv_reliable()) UpdateCheckStart(c->updateCheck == 2 ? "0.0.0" : H64_VERSION_STRING);
+    if (c->filesOpen && file_browser(dev, c, settingsPath, path, pathSize) == 1) return 1;   // filesopen=1 (checks)
     for (;;)
     {
         WORD down = UiInputPoll(&in);
@@ -1819,13 +2004,37 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             AboutScreen(dev);
             UiInputInit(&in);
         }
+        if (down & XINPUT_GAMEPAD_START)
+        {
+            int r = file_browser(dev, c, settingsPath, path, pathSize);
+            if (r == 1)
+            {
+                views_clear(dev);
+                ArtPause(1);
+                return 1;
+            }
+            if (r == 2)
+            {
+                // Another ROM folder: the list again from it.
+                roms.clear();
+                paths.clear();
+                scan_roms(c->romDir, &roms);
+                for (i = 0; i < (int)roms.size(); i++) paths.push_back(roms[i].file.c_str());
+                sel = top = 0;
+                detailsFor = lastSel = -1;
+                _snprintf(msg, sizeof(msg) - 1, Tr(T_ROM_FOLDER_SET), c->romDir);
+                msg[sizeof(msg) - 1] = 0;
+                msgAt = GetTickCount();
+            }
+            UiInputInit(&in);
+        }
         views_take(dev);
         ArtGetStatus(&st);
 
         dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
         UiBegin(dev);
         browser_draw(roms, sel, top, rows, &details, n ? view_find(roms[sel].file.c_str()) : NULL,
-                     n && !_stricmp(st.busyPath, roms[sel].file.c_str()), selAt, &st);
+                     n && !_stricmp(st.busyPath, roms[sel].file.c_str()), selAt, &st, c->romDir);
         if (msg[0])
         {
             DWORD age = GetTickCount() - msgAt;

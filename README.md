@@ -45,6 +45,16 @@ While playing:
 
 In the game list, X shows the About page.
 
+### Games on a USB stick or in another folder
+
+In the game list, press **START** to open **Files**. It lists the console's drives: `game:` (the Harissa64 folder), `Hdd1:` (the hard disk), `Usb0:` to `Usb2:` (USB sticks and drives) and `Dvd:`. Only folders and N64 games show up.
+
+- **A** opens a folder, or starts the game.
+- **B** goes back up one folder. From the list of drives, it goes back to the game list.
+- **Y** makes the folder you're in your game folder: the game list then shows the games from there, every time you start Harissa64.
+
+A USB stick plugged in while Harissa64 is running shows up the next time you open Files.
+
 ## Box art and game info
 
 When you move through the game list, the right side shows the game's box art, its real title, year, developer, genre, number of players and a few lines about it.

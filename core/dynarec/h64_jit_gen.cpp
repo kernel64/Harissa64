@@ -103,6 +103,17 @@ static int helper_interp(H64System *sys, u32 expectedNext, u32 op, u32 haveOp)
             }
         }
     }
+    if (sys->jit->opHist)
+    {
+        // Entries 232..: (pc, count) pairs of a 4096-slot table (open
+        // addressing): where the helper runs most (h64test --jit-ops).
+        u32 pc0 = (u32)cpu->pc, h = (pc0 >> 2) & 4095, n;
+        for (n = 0; n < 4096; n++, h = (h + 1) & 4095)
+        {
+            u32 *e = &sys->jit->opHist[232 + 2 * h];
+            if (e[0] == pc0 || !e[1]) { e[0] = pc0; e[1]++; break; }
+        }
+    }
     {
         u64 t0 = h64_prof_now(sys);
         u64 nested = h64_prof_nested(sys);
@@ -1178,7 +1189,18 @@ static int is_branch(u32 op)
 }
 
 // COP0 (MTC0, ERET, TLB...), except MFC0/DMFC0, which change nothing.
-static int ends_block(u32 op) { return (op >> 26) == 0x10 && ((op >> 21) & 31) != 0 && ((op >> 21) & 31) != 1; }
+// MTC0 to Index, EntryLo0/1 or PageMask: plain masked stores (emit_mtc0).
+static int mtc0_plain(u32 op)
+{
+    u32 rd = (op >> 11) & 31;
+    return (op >> 26) == 0x10 && ((op >> 21) & 31) == 4 && (rd == CP0_INDEX || rd == CP0_ENTRYLO0 || rd == CP0_ENTRYLO1 ||
+                                                           rd == CP0_PAGEMASK);
+}
+
+static int ends_block(u32 op)
+{
+    return (op >> 26) == 0x10 && ((op >> 21) & 31) != 0 && ((op >> 21) & 31) != 1 && !mtc0_plain(op);
+}
 
 // ---- Native ALU ----
 static void slt_result(Gen *g, int unsignedCmp, u32 rd)
@@ -2393,6 +2415,25 @@ static void store_branch_pc(Gen *g, int dynamicTarget, u64 target, u32 fallthrou
     ppc_std(c, 3, OFF_NEXTPC, JR_CPU);
 }
 
+// MTC0 to Index, EntryLo0/1, PageMask (cop0_write in h64_cpu.cpp): the
+// value sign-extended from 32 bits goes to the latch, masked to the register.
+// Mario Tennis maps TLB pages ~260 times a frame (Index, PageMask, EntryHi,
+// EntryLo0/1, TLBWI): each write called the interpreter and ended the block.
+static int emit_mtc0(Gen *g, u32 op)
+{
+    H64PpcCode *c = &g->c;
+    u32 rt = (op >> 16) & 31, rd = (op >> 11) & 31, mask;
+    if (!mtc0_plain(op)) return 0;
+    mask = rd == CP0_INDEX ? 0x8000003Fu : rd == CP0_PAGEMASK ? 0x01FFE000u : 0x3FFFFFFFu;
+    load_gpr(g, 3, rt);
+    ppc_extsw(c, 3, 3);
+    ppc_std(c, 3, (s32)offsetof(H64Cpu, cop0Latch), JR_CPU);
+    ppc_li32u(c, 4, mask);
+    ppc_and(c, 3, 3, 4);
+    ppc_std(c, 3, OFF_COP0(rd), JR_CPU);
+    return 1;
+}
+
 // MFC0, DMFC0 (cop0_read in h64_cpu.cpp), except Random. Count is computed
 // from the cycles at this instruction (synced cycles + pending ones).
 static int emit_mfc0(Gen *g, u32 op)
@@ -2425,6 +2466,7 @@ static int emit_native(Gen *g, u32 op, u32 pc)
 {
     if (emit_alu(g, op)) { g->pending++; return 1; }
     if (emit_mfc0(g, op)) { g->pending++; return 1; }
+    if (emit_mtc0(g, op)) { g->pending++; return 1; }
     if ((op >> 26) == 0x2F) { g->pending++; return 1; }   // CACHE: caches are not emulated
     if (emit_ovf(g, op, pc)) return 1;
     if (emit_fpu(g, op, pc)) return 1;
@@ -2500,7 +2542,7 @@ static int emit_side_branch(Gen *g, u32 op, u32 pc, u32 ds)
     if (likely) cont = bc_not_taken(g);
     if (!is_branch(ds) && !ends_block(ds))
     {
-        done = emit_alu(g, ds);
+        done = emit_alu(g, ds) || (ds >> 26) == 0x2F;   // CACHE: a no-op (caches are not emulated)
         if (!done && (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) ||
                       emit_fpu_fast(g, ds, slow, &nSlow)))
         {
@@ -2571,7 +2613,7 @@ static void emit_branch_body(Gen *g, u32 op, u32 pc, u32 ds)
     {
         u32 slow[16], nSlow = 0, i;
         u32 pend = g->pending;
-        int done = emit_alu(g, ds);
+        int done = emit_alu(g, ds) || (ds >> 26) == 0x2F;   // CACHE: a no-op (caches are not emulated)
         if (!done && (emit_mem_fast(g, ds, slow, &nSlow) || emit_ovf_fast(g, ds, slow, &nSlow) ||
                       emit_fpu_fast(g, ds, slow, &nSlow)))
         {
