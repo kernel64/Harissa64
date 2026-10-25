@@ -81,6 +81,8 @@ struct H64RdpState
     int softDraw;                // 1: this command draws even with options.rdpStateOnly (a GPU renderer hands it over)
     u8 *drawRam;                 // where drawing reads and writes (NULL: RDRAM), e.g. a deferred job's snapshot
     u8 *drawRam2;                // also written (NULL: none), e.g. RDRAM beside the snapshot
+    u64 softTicks, softSpanTicks;  // profiling (profClock): primitives drawn with softDraw, their span setups
+    u32 softTris, softLines, softPixels;
     H64RdpTile tiles[8];
 
     u32 rasterFlags;             // RS_*

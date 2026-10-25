@@ -27,6 +27,7 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
 #include "../../core/system/h64_profile.h"
+#include "../../core/rdp/h64_rdp_state.h"
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
@@ -1580,6 +1581,14 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses (%u skipped, GPU wait %.1f, longest %.1f ms), %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes, %u CPU sprite presents, %u frames from memory",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
                          xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.arenaSkips, xs.tArenaWait * k, xs.maxArenaWait * k * framesSincePerf, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads, xs.cpuSprites, xs.cimgUploads);
+                if (sys->rdpState && sys->rdpState->softTris)
+                {
+                    H64RdpState *rs = sys->rdpState;
+                    H64_INFO("[sprof] software drawing for the GPU renderer, per frame: %.2f ms (span setup %.2f), %u primitives, %u lines, %u pixels",
+                             rs->softTicks * k, rs->softSpanTicks * k, rs->softTris / framesSincePerf, rs->softLines / framesSincePerf, rs->softPixels / framesSincePerf);
+                    rs->softTicks = rs->softSpanTicks = 0;
+                    rs->softTris = rs->softLines = rs->softPixels = 0;
+                }
             }
             memset(sys->prof, 0, sizeof(sys->prof));
             profRun = profPresent = profWait = 0;

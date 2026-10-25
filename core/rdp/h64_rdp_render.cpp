@@ -67,8 +67,6 @@ struct Pixel   // one pixel of the colour and depth images, as the RDP sees it
 };
 
 // ---- Small helpers ----
-static s32 min4(const u16 *v) { s32 m = v[0]; int i; for (i = 1; i < 4; i++) if (v[i] < m) m = v[i]; return m; }
-static s32 max4(const u16 *v) { s32 m = v[0]; int i; for (i = 1; i < 4; i++) if (v[i] > m) m = v[i]; return m; }
 static s32 clamp9(s32 c) { return h64_clamp(h64_sext(c - 0x80, 9) + 0x80, 0, 0xFF); }
 
 static s32 clamp_z(s32 z)
@@ -156,7 +154,7 @@ static int fb_size_of(int fmt)
 }
 
 // ---- Framebuffer access (memory_interfacing.h) ----
-static void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
+static H64_INLINE void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
 {
     u8 *r = st->drawRam ? st->drawRam : sys->rdram, *hid = sys->rdramHidden;
     u32 w = st->colorWidth, idx, word;
@@ -195,8 +193,8 @@ static void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
     p->dz = (u8)(hid[idx] | ((word & 3) << 2));
 }
 
-static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r);
-static void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
+static H64_INLINE void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r);
+static H64_INLINE void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
 {
     // A GPU renderer's hand-over (softDraw) may run on its worker: the
     // recompiler is told by the renderer, not from here.
@@ -210,7 +208,7 @@ static void store_pixel(H64System *sys, H64RdpState *st, const Pixel *p)
     if (st->drawRam2) store_pixel_to(sys, st, p, st->drawRam2);
 }
 
-static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r)
+static H64_INLINE void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r)
 {
     u8 *hid = sys->rdramHidden;
     u32 idx = p->colorIndex;
@@ -257,7 +255,7 @@ static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *
     }
 }
 
-static void write_color(H64RdpState *st, Pixel *p, u8 r, u8 g, u8 b, u8 a)
+static H64_INLINE void write_color(H64RdpState *st, Pixel *p, u8 r, u8 g, u8 b, u8 a)
 {
     p->c[0] = r; p->c[1] = g; p->c[2] = b;
     if (st->colorFmt != FB_I4) p->c[3] = a;
@@ -316,6 +314,7 @@ static void span_setup(const H64RdpState *st, const TriSetup *ts, const AttrSetu
     s32 yhi = ts->yl < (s32)st->scissorYhi ? ts->yl : (s32)st->scissorYhi;
     s32 xleft[4], xright[4], lo = (s32)(st->scissorXlo << 1), hi = (s32)(st->scissorXhi << 1);
     int invalid[4], allOver = 1, allUnder = 1, allInvalid = 1;
+    s32 minL = 0x7FFFFFFF, maxR = -1;
 
     if (ts->flags & TS_DO_OFFSET)
     {
@@ -363,9 +362,11 @@ static void span_setup(const H64RdpState *st, const TriSetup *ts, const AttrSetu
         else allInvalid = 0;
         sp->xleft[i] = (u16)xleft[i];
         sp->xright[i] = (u16)xright[i];
+        if ((s32)(u16)xleft[i] < minL) minL = (u16)xleft[i];
+        if ((s32)(u16)xright[i] > maxR) maxR = (u16)xright[i];
     }
-    sp->startX = min4(sp->xleft) >> 3;
-    sp->endX = max4(sp->xright) >> 3;
+    sp->startX = minL >> 3;
+    sp->endX = maxR >> 3;
     sp->valid = !allInvalid && !allOver && !allUnder;
     if ((ts->flags & TS_INTERLACE_FIELD) && ((y & 1) != ((ts->flags & TS_INTERLACE_KEEP_ODD) ? 1 : 0)))
         sp->valid = 0;
@@ -373,7 +374,7 @@ static void span_setup(const H64RdpState *st, const TriSetup *ts, const AttrSetu
 }
 
 // ---- Coverage (coverage.h) ----
-static u32 compute_coverage(const Span *sp, s32 x)
+static H64_INLINE u32 compute_coverage(const Span *sp, s32 x)
 {
     static const u16 off[4] = { 0, 4, 2, 6 };
     u32 cov = 0, i;
@@ -387,7 +388,7 @@ static u32 compute_coverage(const Span *sp, s32 x)
     return cov;
 }
 
-static s32 blend_coverage(s32 coverage, s32 memCoverage, int blendEn, int mode)
+static H64_INLINE s32 blend_coverage(s32 coverage, s32 memCoverage, int blendEn, int mode)
 {
     switch (mode)
     {
@@ -618,7 +619,7 @@ static const u8 dither_matrices[2][16] = {
     { 0, 6, 1, 7, 4, 2, 5, 3, 3, 5, 2, 4, 7, 1, 6, 0 },
     { 0, 4, 1, 5, 4, 0, 5, 1, 3, 7, 2, 6, 7, 3, 6, 2 } };
 
-static void dither_coefficients(const H64RdpState *st, s32 x, s32 y, int modeRgb, int modeAlpha, s32 *rgbDith, s32 *alphaDith)
+static H64_INLINE void dither_coefficients(const H64RdpState *st, s32 x, s32 y, int modeRgb, int modeAlpha, s32 *rgbDith, s32 *alphaDith)
 {
     const s32 SPLAT = (1 << 0) | (1 << 3) | (1 << 6);
     if (modeRgb < 2) *rgbDith = dither_matrices[modeRgb][(y & 3) * 4 + (x & 3)] * SPLAT;
@@ -636,7 +637,7 @@ static void dither_coefficients(const H64RdpState *st, s32 x, s32 y, int modeRgb
 // ---- Depth test (depth_test.h) ----
 static s32 combine_dz(s32 dz) { return dz ? 1 << h64_find_msb((u32)dz) : 0; }
 
-static int depth_test(const H64RdpState *st, s32 z, s32 dz, s32 dzCompressed, u32 curDepth, u32 curDz,
+static H64_INLINE int depth_test(const H64RdpState *st, s32 z, s32 dz, s32 dzCompressed, u32 curDepth, u32 curDz,
                       s32 *coverageCount, s32 curCoverage, int *blendEn, int *coverageWrap, s32 *shift)
 {
     int forceBlend = (st->depthBlendFlags & DB_FORCE_BLEND) != 0, aa = (st->depthBlendFlags & DB_AA) != 0;
@@ -761,7 +762,7 @@ struct PrimContext
     Derived d;
 };
 
-static void depth_blend(H64RdpState *st, const Derived *d, Pixel *p, const s32 *combined, s32 z, s32 dith,
+static H64_INLINE void depth_blend(H64RdpState *st, const Derived *d, Pixel *p, const s32 *combined, s32 z, s32 dith,
                         s32 coverageCount, u8 shadeAlpha)
 {
     int imageRead = (st->depthBlendFlags & DB_IMAGE_READ) != 0, blendEn = 0, coverageWrap = 0;
@@ -867,6 +868,7 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         s32 stw[3], stwDx[3], stwDy[3], stc[2], stDx[2], stDy[2], lodFrac = 0, rgbDith, alphaDith;
         s32 combined[4], alphaRef = 0;
         int ovf = 0, multi = (f & RS_MULTI_CYCLE) != 0, aa = (f & RS_AA) != 0;
+        int anyTex = d->usesTexel0 || d->usesTexel1 || d->usesPipelinedTexel1;
         H64RdpTexel t0, t1;
         CombIn in;
         u8 shadeAlpha;
@@ -927,8 +929,11 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         if (d->usesLod)
             h64_rdp_compute_lod(&tile0, &tile1, &lodFrac, maxLevel, d->minLod, stc, stDx, stDy, ovf,
                                 (f & RS_TEX_LOD) != 0, (f & RS_SHARPEN_LOD) != 0, (f & RS_DETAIL_LOD) != 0);
-        memset(&t0, 0, sizeof(t0));
-        memset(&t1, 0, sizeof(t1));
+        if (anyTex)
+        {
+            memset(&t0, 0, sizeof(t0));
+            memset(&t1, 0, sizeof(t1));
+        }
         if (d->usesTexel0)
             sample_tile(st, tile0, stc, (f & RS_SAMPLE_QUAD) != 0, 0, (f & RS_BILERP0) != 0, d->factors, &t0, &t0);
         {
@@ -969,8 +974,15 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
                             &rgbDith, &alphaDith);
 
         memset(in.combined, 0, sizeof(in.combined));
-        memcpy(in.texel0, t0.c, sizeof(in.texel0));
-        memcpy(in.texel1, t1.c, sizeof(in.texel1));
+        if (anyTex)
+        {
+            memcpy(in.texel0, t0.c, sizeof(in.texel0));
+            memcpy(in.texel1, t1.c, sizeof(in.texel1));
+        }
+        else
+        {
+            for (i = 0; i < 4; i++) in.texel0[i] = in.texel1[i] = 0;
+        }
         in.lodFrac = lodFrac;
         in.noise = (s32)(((st->noise & 7) << 6) | 0x20);
         if (multi)
@@ -980,8 +992,11 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
                             (f & RS_ALPHA_CVG_SELECT) != 0, (f & RS_ALPHA_TEST) != 0, c0, &alphaRef);
             memcpy(in.combined, c0, sizeof(c0));
             // Pipelining: texel1 is promoted to texel0 in the second cycle.
-            memcpy(in.texel0, t1.c, sizeof(in.texel0));
-            memcpy(in.texel1, t0.c, sizeof(in.texel1));
+            if (anyTex)
+            {
+                memcpy(in.texel0, t1.c, sizeof(in.texel0));
+                memcpy(in.texel1, t0.c, sizeof(in.texel1));
+            }
             if (d->needNoiseDual)
             {
                 reseed_noise(st, (u32)x + 1023, (u32)y + 7, st->primitives + 11);
@@ -1109,7 +1124,7 @@ static void draw(H64System *sys, H64RdpState *st, TriSetup *ts, AttrSetup *a)
 {
     PrimContext pc;
     s32 minLine, maxLine, y, fbWidth = (s32)st->colorWidth;
-    Span cur, next;
+    Span spans[2], *cur = &spans[0], *next = &spans[1], *tmp;
     // fixup_triangle_setup
     if (ts->ym < (ts->yh & ~3)) ts->ym = 0x7FFF;
     if (st->rasterFlags & RS_INTERLACE_FIELD)
@@ -1132,21 +1147,28 @@ static void draw(H64System *sys, H64RdpState *st, TriSetup *ts, AttrSetup *a)
     if (maxLine < minLine) return;
     if (maxLine - minLine > 1023) maxLine = minLine + 1023;
 
-    span_setup(st, &pc.ts, &pc.a, minLine, &next);
+    u64 tp0 = st->softDraw ? h64_prof_now(sys) : 0, tSpan = 0, ts0 = 0;
+    // Two span buffers swapped by pointer (copying the one just written
+    // stalled on every word on the Xbox 360: load-hit-store).
+    span_setup(st, &pc.ts, &pc.a, minLine, next);
     for (y = minLine; y <= maxLine; y++)
     {
         s32 x, x0, x1;
-        cur = next;
-        span_setup(st, &pc.ts, &pc.a, y + 1, &next);
-        if (!cur.valid) continue;
-        x0 = cur.startX < 0 ? 0 : cur.startX;
-        x1 = cur.endX >= fbWidth ? fbWidth - 1 : cur.endX;
+        tmp = cur; cur = next; next = tmp;
+        if (tp0) ts0 = h64_prof_now(sys);
+        span_setup(st, &pc.ts, &pc.a, y + 1, next);
+        if (tp0) tSpan += h64_prof_now(sys) - ts0;
+        if (!cur->valid) continue;
+        x0 = cur->startX < 0 ? 0 : cur->startX;
+        x1 = cur->endX >= fbWidth ? fbWidth - 1 : cur->endX;
+        if (tp0) { st->softLines++; if (x1 >= x0) st->softPixels += (u32)(x1 - x0 + 1); }
 #ifdef H64_BENCH8
         if (fb_size_of(st->colorFmt) == 1) { g_b8px += (u64)(x1 >= x0 ? x1 - x0 + 1 : 0); g_b8lines++; }
 #endif
         for (x = x0; x <= x1; x++)
-            shade_and_write(sys, st, &pc, &cur, &next, x, y);
+            shade_and_write(sys, st, &pc, cur, next, x, y);
     }
+    if (tp0) { st->softTicks += h64_prof_now(sys) - tp0; st->softSpanTicks += tSpan; st->softTris++; }
 }
 
 // ---- Command decoding (rdp_device.cpp) ----
