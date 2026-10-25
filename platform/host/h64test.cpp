@@ -917,6 +917,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         u32 ch, rh;
         h64_system_state_hash(sys, &ch, &rh);
         printf("[run] state hash cpu=%08X ram=%08X\n", ch, rh);
+#ifdef H64_BENCH8
+        { extern unsigned long long g_bench8, g_bench8n, g_b8px, g_b8lines; printf("[bench8] %llu triangles, %.1f Mcycles, %llu lines, %llu span pixels\n", g_bench8n, g_bench8 / 1e6, g_b8lines, g_b8px); }
+#endif
         if (peekVa)
         {
             // --peek VA: 48 words from VA - 0x40, through the current TLB.

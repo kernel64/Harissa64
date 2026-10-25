@@ -14,6 +14,10 @@
 
 #include <stdlib.h>
 #include <string.h>
+#ifdef H64_BENCH8
+#include <intrin.h>
+unsigned long long g_bench8, g_bench8n, g_b8span, g_b8px, g_b8lines;
+#endif
 
 #include "../common/h64_log.h"
 #include "../system/h64_system.h"
@@ -183,10 +187,12 @@ static void load_pixel(H64System *sys, H64RdpState *st, u32 x, u32 y, Pixel *p)
     }
     p->colorIndex = idx;
     idx = ((st->depthAddr >> 1) + w * y + x) & (H64_RDRAM_SIZE / 2 - 1);
+    p->depthIndex = idx;
+    // Only the depth test reads the memory's depth (an update overwrites it).
+    if (!(st->depthBlendFlags & DB_DEPTH_TEST)) { p->depth = 0; p->dz = 0; return; }
     word = (u32)r[idx * 2] << 8 | r[idx * 2 + 1];
     p->depth = (u16)(word >> 2);
     p->dz = (u8)(hid[idx] | ((word & 3) << 2));
-    p->depthIndex = idx;
 }
 
 static void store_pixel_to(H64System *sys, H64RdpState *st, const Pixel *p, u8 *r);
@@ -455,19 +461,20 @@ struct CombIn
     s32 lodFrac, noise;
 };
 
-static void unpack_rgba(u32 c, s32 *o) { o[0] = (s32)(c >> 24); o[1] = (s32)((c >> 16) & 0xFF); o[2] = (s32)((c >> 8) & 0xFF); o[3] = (s32)(c & 0xFF); }
+// Channel ch (0 red .. 3 alpha) of an RGBA8888 colour, without a byte array
+// (stored then read back: a load-hit-store stall on the Xbox 360).
+static H64_INLINE s32 chan8(u32 c, int ch) { return (s32)((c >> (24 - 8 * ch)) & 0xFF); }
 
 static s32 sel_rgb_muladd(const H64RdpState *st, const CombIn *in, u32 s, int ch)
 {
-    s32 c[4];
     switch (s)
     {
     case 0: return in->combined[ch];
     case 1: return in->texel0[ch];
     case 2: return in->texel1[ch];
-    case 3: unpack_rgba(st->primColor, c); return c[ch];
+    case 3: return chan8(st->primColor, ch);
     case 4: return in->shade[ch];
-    case 5: unpack_rgba(st->envColor, c); return c[ch];
+    case 5: return chan8(st->envColor, ch);
     case 6: return 0x100;
     case 7: return in->noise;
     default: return 0;
@@ -475,15 +482,14 @@ static s32 sel_rgb_muladd(const H64RdpState *st, const CombIn *in, u32 s, int ch
 }
 static s32 sel_rgb_mulsub(const H64RdpState *st, const CombIn *in, u32 s, int ch)
 {
-    s32 c[4];
     switch (s)
     {
     case 0: return in->combined[ch];
     case 1: return in->texel0[ch];
     case 2: return in->texel1[ch];
-    case 3: unpack_rgba(st->primColor, c); return c[ch];
+    case 3: return chan8(st->primColor, ch);
     case 4: return in->shade[ch];
-    case 5: unpack_rgba(st->envColor, c); return c[ch];
+    case 5: return chan8(st->envColor, ch);
     case 6: return (s32)st->keyCenter[ch];
     case 7: return st->convert[4];   // K4, 9 bits
     default: return 0;
@@ -491,15 +497,14 @@ static s32 sel_rgb_mulsub(const H64RdpState *st, const CombIn *in, u32 s, int ch
 }
 static s32 sel_rgb_mul(const H64RdpState *st, const CombIn *in, u32 s, int ch)
 {
-    s32 c[4];
     switch (s)
     {
     case 0: return in->combined[ch];
     case 1: return in->texel0[ch];
     case 2: return in->texel1[ch];
-    case 3: unpack_rgba(st->primColor, c); return c[ch];
+    case 3: return chan8(st->primColor, ch);
     case 4: return in->shade[ch];
-    case 5: unpack_rgba(st->envColor, c); return c[ch];
+    case 5: return chan8(st->envColor, ch);
     case 6: return (s32)st->keyScale[ch];
     case 7: return in->combined[3];
     case 8: return in->texel0[3];
@@ -628,18 +633,6 @@ static void dither_coefficients(const H64RdpState *st, s32 x, s32 y, int modeRgb
     }
 }
 
-static void rgb_dither(u8 *rgb, s32 dith)
-{
-    int i;
-    for (i = 0; i < 3; i++)
-    {
-        s32 d = (dith >> (3 * i)) & 7, o = rgb[i];
-        s32 r = o > 247 ? 255 : (o & 0xF8) + 8;
-        s32 replace = (d - (o & 7)) >> 31;
-        rgb[i] = (u8)((o + ((r - o) & replace)) & 0xFF);
-    }
-}
-
 // ---- Depth test (depth_test.h) ----
 static s32 combine_dz(s32 dz) { return dz ? 1 << h64_find_msb((u32)dz) : 0; }
 
@@ -701,63 +694,63 @@ static int depth_test(const H64RdpState *st, s32 z, s32 dz, s32 dzCompressed, u3
 }
 
 // ---- Blender (blender.h) ----
-static void blender(const H64RdpState *st, const u8 *pixel, const u8 *memory, u8 shadeAlpha, const u8 *modes,
-                    int blendEn, int coverageWrap, const s32 *shift, int finalCycle, u8 *out)
+// Scalar form (no byte arrays): on the in-order Xbox 360 core each byte
+// stored then read back stalled the pipeline (load-hit-store), per pixel.
+static H64_INLINE s32 blend_src(int mode, s32 pix, s32 mem, s32 blend, s32 fog)
 {
-    u8 fog[4], blend[4], rgb0[3], rgb1[3];
-    s32 a0, a1;
-    int forceBlend = (st->depthBlendFlags & DB_FORCE_BLEND) != 0, i;
-    fog[0] = (u8)(st->fogColor >> 24); fog[1] = (u8)(st->fogColor >> 16); fog[2] = (u8)(st->fogColor >> 8); fog[3] = (u8)st->fogColor;
-    blend[0] = (u8)(st->blendColor >> 24); blend[1] = (u8)(st->blendColor >> 16); blend[2] = (u8)(st->blendColor >> 8); blend[3] = (u8)st->blendColor;
-    for (i = 0; i < 3; i++)
-    {
-        const u8 *src2 = modes[2] == 0 ? pixel : modes[2] == 1 ? memory : modes[2] == 2 ? blend : fog;
-        const u8 *src1 = modes[0] == 0 ? pixel : modes[0] == 1 ? memory : modes[0] == 2 ? blend : fog;
-        rgb1[i] = src2[i];
-        rgb0[i] = src1[i];
-    }
+    return mode == 0 ? pix : mode == 1 ? mem : mode == 2 ? blend : fog;
+}
+
+static H64_INLINE s32 blend_channel(s32 c0, s32 c1, s32 a0, s32 a1, s32 sum, int direct)
+{
+    s16 blended = (s16)(c0 * a0 + c1 * (a1 + 1));
+    if (direct) return (blended >> 5) & 0xFF;
+    return h64_rdp_blender_lut[((sum << 11) | ((blended >> 2) & 0x7FF)) & 0x7FFF];
+}
+
+static H64_INLINE void blender(const H64RdpState *st, s32 pr, s32 pg, s32 pb, s32 pa, s32 mr, s32 mg, s32 mb, s32 ma,
+                               s32 shadeAlpha, const u8 *modes, int blendEn, int coverageWrap, const s32 *shift,
+                               int finalCycle, s32 *outR, s32 *outG, s32 *outB)
+{
+    u32 fogc = st->fogColor, bc = st->blendColor;
+    s32 fr = (s32)((fogc >> 24) & 0xFF), fg = (s32)((fogc >> 16) & 0xFF), fb = (s32)((fogc >> 8) & 0xFF), fa = (s32)(fogc & 0xFF);
+    s32 br = (s32)((bc >> 24) & 0xFF), bgc = (s32)((bc >> 16) & 0xFF), bb = (s32)((bc >> 8) & 0xFF);
+    int m0 = modes[0], m1 = modes[1], m2 = modes[2], m3 = modes[3];
+    int forceBlend = (st->depthBlendFlags & DB_FORCE_BLEND) != 0, direct;
+    s32 r0 = blend_src(m0, pr, mr, br, fr), g0 = blend_src(m0, pg, mg, bgc, fg), b0 = blend_src(m0, pb, mb, bb, fb);
+    s32 r1 = blend_src(m2, pr, mr, br, fr), g1 = blend_src(m2, pg, mg, bgc, fg), b1 = blend_src(m2, pb, mb, bb, fb);
+    s32 a0, a1, sum;
     if (finalCycle && (st->depthBlendFlags & DB_COLOR_ON_CVG) && !coverageWrap)
     {
-        memcpy(out, rgb1, 3);
+        *outR = r1; *outG = g1; *outB = b1;
         return;
     }
-    if (finalCycle && (!blendEn || (modes[1] == 0 && modes[3] == 0 && pixel[3] == 0xFF)))
+    if (finalCycle && (!blendEn || (m1 == 0 && m3 == 0 && pa == 0xFF)))
     {
-        memcpy(out, rgb0, 3);
+        *outR = r0; *outG = g0; *outB = b0;
         return;
     }
-    switch (modes[1])
-    {
-    case 0: a0 = pixel[3]; break;
-    case 1: a0 = fog[3]; break;
-    case 2: a0 = shadeAlpha; break;
-    default: a0 = 0; break;
-    }
-    switch (modes[3])
-    {
-    case 0: a1 = ~a0 & 0xFF; break;
-    case 1: a1 = memory[3]; break;
-    case 2: a1 = 0xFF; break;
-    default: a1 = 0; break;
-    }
+    a0 = m1 == 0 ? pa : m1 == 1 ? fa : m1 == 2 ? shadeAlpha : 0;
+    a1 = m3 == 0 ? (~a0 & 0xFF) : m3 == 1 ? ma : m3 == 2 ? 0xFF : 0;
     a0 >>= 3;
     a1 >>= 3;
-    if (modes[3] == 1)
+    if (m3 == 1)
     {
         a0 = (a0 >> shift[0]) & 0x3C;
         a1 = (a1 >> shift[1]) | 3;
     }
-    for (i = 0; i < 3; i++)
-    {
-        s16 blended = (s16)(rgb0[i] * a0 + rgb1[i] * (a1 + 1));
-        if (!finalCycle || forceBlend) out[i] = (u8)((blended >> 5) & 0xFF);
-        else
-        {
-            s32 sum = (a0 >> 2) + (a1 >> 2) + 1;
-            s32 b = (blended >> 2) & 0x7FF;
-            out[i] = h64_rdp_blender_lut[((sum << 11) | b) & 0x7FFF];
-        }
-    }
+    direct = !finalCycle || forceBlend;
+    sum = (a0 >> 2) + (a1 >> 2) + 1;
+    *outR = blend_channel(r0, r1, a0, a1, sum, direct);
+    *outG = blend_channel(g0, g1, a0, a1, sum, direct);
+    *outB = blend_channel(b0, b1, a0, a1, sum, direct);
+}
+
+static H64_INLINE s32 dither_channel(s32 o, s32 d)
+{
+    s32 r = o > 247 ? 255 : (o & 0xF8) + 8;
+    s32 replace = (d - (o & 7)) >> 31;
+    return (o + ((r - o) & replace)) & 0xFF;
 }
 
 // ---- Pixel pipeline ----
@@ -772,42 +765,46 @@ static void depth_blend(H64RdpState *st, const Derived *d, Pixel *p, const s32 *
                         s32 coverageCount, u8 shadeAlpha)
 {
     int imageRead = (st->depthBlendFlags & DB_IMAGE_READ) != 0, blendEn = 0, coverageWrap = 0;
-    u8 memory[4], pixel[4], rgb[3];
+    s32 mr, mg, mb, ma, pr, pg, pb, pa, r, g, b;
     s32 shift[2], memCov, newCov;
     switch (st->colorFmt)
     {
-    case FB_I4: memory[0] = memory[1] = memory[2] = 0; memory[3] = 0xE0; break;
-    case FB_I8: memory[0] = memory[1] = memory[2] = p->c[0]; memory[3] = 0xE0; break;
+    case FB_I4: mr = mg = mb = 0; ma = 0xE0; break;
+    case FB_I8: mr = mg = mb = p->c[0]; ma = 0xE0; break;
     case FB_RGBA5551:
-        memory[0] = (u8)(p->c[0] & 0xF8); memory[1] = (u8)(p->c[1] & 0xF8); memory[2] = (u8)(p->c[2] & 0xF8);
-        memory[3] = imageRead ? (u8)(p->c[3] & 0xE0) : 0xE0;
+        mr = p->c[0] & 0xF8; mg = p->c[1] & 0xF8; mb = p->c[2] & 0xF8;
+        ma = imageRead ? (p->c[3] & 0xE0) : 0xE0;
         break;
     case FB_IA88:
-        memory[0] = memory[1] = memory[2] = p->c[0];
-        memory[3] = imageRead ? (u8)(p->c[3] & 0xE0) : 0xE0;
+        mr = mg = mb = p->c[0];
+        ma = imageRead ? (p->c[3] & 0xE0) : 0xE0;
         break;
     default:
-        memory[0] = p->c[0]; memory[1] = p->c[1]; memory[2] = p->c[2];
-        memory[3] = imageRead ? (u8)(p->c[3] & 0xE0) : 0xE0;
+        mr = p->c[0]; mg = p->c[1]; mb = p->c[2];
+        ma = imageRead ? (p->c[3] & 0xE0) : 0xE0;
         break;
     }
-    memCov = memory[3] >> 5;
+    memCov = ma >> 5;
     if (!depth_test(st, z, d->dz, d->dzCompressed, p->depth, p->dz, &coverageCount, memCov, &blendEn, &coverageWrap, shift))
         return;
     if ((st->depthBlendFlags & DB_AA) && coverageCount == 0)
         return;
-    pixel[0] = (u8)combined[0]; pixel[1] = (u8)combined[1]; pixel[2] = (u8)combined[2]; pixel[3] = (u8)combined[3];
+    pr = combined[0] & 0xFF; pg = combined[1] & 0xFF; pb = combined[2] & 0xFF; pa = combined[3] & 0xFF;
     if (st->depthBlendFlags & DB_MULTI_CYCLE)
     {
-        blender(st, pixel, memory, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 0, rgb);
-        pixel[0] = rgb[0]; pixel[1] = rgb[1]; pixel[2] = rgb[2];
-        blender(st, pixel, memory, shadeAlpha, st->blend[1], blendEn, coverageWrap, shift, 1, rgb);
+        blender(st, pr, pg, pb, pa, mr, mg, mb, ma, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 0, &r, &g, &b);
+        blender(st, r, g, b, pa, mr, mg, mb, ma, shadeAlpha, st->blend[1], blendEn, coverageWrap, shift, 1, &r, &g, &b);
     }
     else
-        blender(st, pixel, memory, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 1, rgb);
-    if (st->depthBlendFlags & DB_DITHER) rgb_dither(rgb, dith);
+        blender(st, pr, pg, pb, pa, mr, mg, mb, ma, shadeAlpha, st->blend[0], blendEn, coverageWrap, shift, 1, &r, &g, &b);
+    if (st->depthBlendFlags & DB_DITHER)
+    {
+        r = dither_channel(r, dith & 7);
+        g = dither_channel(g, (dith >> 3) & 7);
+        b = dither_channel(b, (dith >> 6) & 7);
+    }
     newCov = blend_coverage(coverageCount, memCov, blendEn, st->coverageMode);
-    write_color(st, p, rgb[0], rgb[1], rgb[2], (u8)(newCov << 5));
+    write_color(st, p, (u8)r, (u8)g, (u8)b, (u8)(newCov << 5));
     if (st->depthBlendFlags & DB_DEPTH_UPDATE)
     {
         p->depth = z_compress(z);
@@ -866,13 +863,14 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
 
     {
         u32 coverage = compute_coverage(sp, x), tile0, tile1, maxLevel;
-        s32 coverageCount, dx = x - sp->baseX, dir = flip ? 1 : -1, z, shade[4], fc, xoff, yoff, i;
+        s32 coverageCount, dx = x - sp->baseX, dir = flip ? 1 : -1, z, *shade, fc, xoff, yoff, i;
         s32 stw[3], stwDx[3], stwDy[3], stc[2], stDx[2], stDy[2], lodFrac = 0, rgbDith, alphaDith;
         s32 combined[4], alphaRef = 0;
         int ovf = 0, multi = (f & RS_MULTI_CYCLE) != 0, aa = (f & RS_AA) != 0;
         H64RdpTexel t0, t1;
         CombIn in;
         u8 shadeAlpha;
+        shade = in.shade;   // written in place (a copy was stored then read back)
         if (!coverage) return;
         coverageCount = 0;
         for (i = 0; i < 8; i++) coverageCount += (coverage >> i) & 1;
@@ -896,7 +894,12 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         stw[0] = sp->stzw[0] + (a->dstzwDx[0] & ~0x1F) * dx;
         stw[1] = sp->stzw[1] + (a->dstzwDx[1] & ~0x1F) * dx;
         stw[2] = sp->stzw[3] + (a->dstzwDx[3] & ~0x1F) * dx;
-        st_from_stw(stw, perspective, stc, &ovf);
+        // s and t only feed texture sampling and the LOD: no divide without them
+        // (Mario Tennis's shadows, untextured silhouettes, on the in-order core).
+        if (d->usesTexel0 || d->usesTexel1 || d->usesPipelinedTexel1 || d->usesLod)
+            st_from_stw(stw, perspective, stc, &ovf);
+        else
+            stc[0] = stc[1] = 0;
         if (d->usesLod)
         {
             stwDx[0] = stw[0] + dir * (a->dstzwDx[0] & ~0x1F);
@@ -965,7 +968,6 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         dither_coefficients(st, x, y >> ((f & RS_INTERLACE_FIELD) ? 1 : 0), (int)(st->dither >> 2), (int)(st->dither & 3),
                             &rgbDith, &alphaDith);
 
-        memcpy(in.shade, shade, sizeof(shade));
         memset(in.combined, 0, sizeof(in.combined));
         memcpy(in.texel0, t0.c, sizeof(in.texel0));
         memcpy(in.texel1, t1.c, sizeof(in.texel1));
@@ -1139,6 +1141,9 @@ static void draw(H64System *sys, H64RdpState *st, TriSetup *ts, AttrSetup *a)
         if (!cur.valid) continue;
         x0 = cur.startX < 0 ? 0 : cur.startX;
         x1 = cur.endX >= fbWidth ? fbWidth - 1 : cur.endX;
+#ifdef H64_BENCH8
+        if (fb_size_of(st->colorFmt) == 1) { g_b8px += (u64)(x1 >= x0 ? x1 - x0 + 1 : 0); g_b8lines++; }
+#endif
         for (x = x0; x <= x1; x++)
             shade_and_write(sys, st, &pc, &cur, &next, x, y);
     }
@@ -1347,7 +1352,16 @@ void h64_rdp_command(H64System *sys, const u64 *words, u32 count)
         if (op & 4) { decode_rgba(p, &a); p += 16; }
         if (op & 2) { decode_tex(p, &a); p += 16; }
         if (op & 1) decode_z(p, &a);
-        if (!sys->options.rdpStateOnly || st->softDraw) draw(sys, st, &ts, &a);
+        if (!sys->options.rdpStateOnly || st->softDraw)
+        {
+#ifdef H64_BENCH8
+            unsigned long long b0 = __rdtsc();
+#endif
+            draw(sys, st, &ts, &a);
+#ifdef H64_BENCH8
+            if (fb_size_of(st->colorFmt) == 1) { extern unsigned long long g_bench8, g_bench8n; g_bench8 += __rdtsc() - b0; g_bench8n++; }
+#endif
+        }
         return;
     }
     case 0x24:
