@@ -26,6 +26,7 @@ struct Config
     u32 shots[64];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)
     int shotCount;
     u32 exitAfter;      // exitafter=N: return to the dashboard after N VIs (scripted runs)
+    u32 stallMs;        // stallms=N: log the frames whose emulation took over N ms ([stall], default 100)
     u32 trace, traceStep;   // trace=N tracestep=C: log N state hashes every C cycles (h64test --trace-frames)
     int fpuFlags;       // fpuflags=0: never read the host FPU flags (FPSCR)
     int jitFpu;         // jitfpu=0: the recompiler leaves COP1 arithmetic to the interpreter

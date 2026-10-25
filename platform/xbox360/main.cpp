@@ -1356,15 +1356,17 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             // A frame whose emulation took over 100 ms: where the time went
             // (sys->prof deltas, in ms; the N64 pc), to find periodic stalls.
             double ms = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / freq.QuadPart;
-            if (ms > 100.0)
+            if (ms > (double)c->stallMs)
             {
                 double k = 1000.0 / (double)freq.QuadPart;   // profClock is the QPC
-                H64_INFO("[stall] frame %u: run %.1f ms | cpu code %.1f helper %.1f events %.1f jit %.1f gfx %.1f audio %.1f rsp lle %.1f wait gfx %.1f | %llu instructions, pc %08X",
+                H64_INFO("[stall] frame %u: run %.1f ms | cpu code %.1f helper %.1f events %.1f jit %.1f gfx %.1f (parse %.1f) audio %.1f rsp lle %.1f wait gfx %.1f (task start %.1f, task end %.1f) | %llu instructions, pc %08X",
                          presented, ms, (sys->prof[H64_PROF_BLOCKS] - profBefore[H64_PROF_BLOCKS]) * k,
                          (sys->prof[H64_PROF_HELPER] - profBefore[H64_PROF_HELPER]) * k, (sys->prof[H64_PROF_EVENTS] - profBefore[H64_PROF_EVENTS]) * k,
                          (sys->prof[H64_PROF_JIT_COMPILE] - profBefore[H64_PROF_JIT_COMPILE]) * k, (sys->prof[H64_PROF_GFX_HLE] - profBefore[H64_PROF_GFX_HLE]) * k,
+                         (sys->prof[H64_PROF_GFX_PARSE] - profBefore[H64_PROF_GFX_PARSE]) * k,
                          (sys->prof[H64_PROF_AUDIO_HLE] - profBefore[H64_PROF_AUDIO_HLE]) * k, (sys->prof[H64_PROF_RSP_LLE] - profBefore[H64_PROF_RSP_LLE]) * k,
                          (sys->prof[H64_PROF_ASYNC_WAIT] - profBefore[H64_PROF_ASYNC_WAIT]) * k,
+                         (sys->prof[H64_PROF_WAIT_START] - profBefore[H64_PROF_WAIT_START]) * k, (sys->prof[H64_PROF_WAIT_TASK] - profBefore[H64_PROF_WAIT_TASK]) * k,
                          (unsigned long long)(sys->cpu.instructions - instBefore), (u32)sys->cpu.pc);
             }
         }

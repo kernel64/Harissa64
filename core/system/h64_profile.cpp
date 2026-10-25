@@ -272,7 +272,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_CIMG_FROM_RDRAM = 8,    // options.gfxCimgFromRdram
        H64_GX_XLU_NO_BIAS = 16,       // options.gfxXluNoBias
        H64_GX_VI_LINE0 = 32,          // options.viIntrLine0
-       H64_GX_VI_LINE_START = 64 };   // options.gfxViLineStart
+       H64_GX_VI_LINE_START = 64,     // options.gfxViLineStart
+       H64_GX_SKIP_ZIMAGE = 128 };    // options.gfxSkipZImage
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -292,6 +293,12 @@ static const GameExtra s_extras[] = {
     // microcode halves their s, t as any vertex's (GitHub issue #22: textures
     // twice too big, pictures distorted beyond recognition; same as LLE now).
     { "NCY", H64_GX_MODIFY_ST_HALF },
+    // ~50 times a frame it draws an effect's sprite into the depth image's
+    // memory as a colour image: each one made the GPU switch colour images
+    // and back (two resolves and two full-screen restores of the 960x720
+    // target), up to ~60 ms a frame at the start of each point. Nothing read
+    // what the GPU drew there: not drawn (h64_xenos.cpp, skip_zimage).
+    { "NM8", H64_GX_SKIP_ZIMAGE },
     // Stacked Deck: each card's shadow lies just under the card in Z mode
     // XLU; the depth bias that keeps OoT's paths on the ground brought the
     // shadows over the cards (dark cards; issue #23).
@@ -346,6 +353,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxXluNoBias = (extra & H64_GX_XLU_NO_BIAS) != 0;
     sys->options.viIntrLine0 = (extra & H64_GX_VI_LINE0) != 0;
     sys->options.gfxViLineStart = (extra & H64_GX_VI_LINE_START) != 0;
+    sys->options.gfxSkipZImage = (extra & H64_GX_SKIP_ZIMAGE) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

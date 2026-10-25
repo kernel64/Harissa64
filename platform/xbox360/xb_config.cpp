@@ -78,6 +78,7 @@ void ConfigDefaults(Config *c)
     c->lateParse = -1;   // per game (main.cpp)
     c->cpi = 2;      // mupen64plus's CountPerOp 1 (its exact setting; its default 2 is our 4)
     c->exitAfter = 0;
+    c->stallMs = 100;
     c->audioMs = XB_AUDIO_DEFAULT_MS;
     c->stateSlot = 1;
     c->loadState = 0;
@@ -133,6 +134,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "browserat")) c->browserAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "hle")) c->hle = atoi(eq + 1);
         else if (!strcmp(line, "exitafter")) c->exitAfter = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "stallms")) c->stallMs = (u32)atoi(eq + 1);
         else if (!strcmp(line, "stateslot")) c->stateSlot = atoi(eq + 1);
         else if (!strcmp(line, "audioms")) c->audioMs = atoi(eq + 1);
         else if (!strcmp(line, "loadstate")) c->loadState = atoi(eq + 1);

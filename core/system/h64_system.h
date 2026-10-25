@@ -130,6 +130,8 @@ struct H64Options
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
     int gfxCopyBackAlpha;   // GPU renderer (game profile): 16-bit fills write their alpha bit and copy-backs keep the
                             // GPU's alpha (else always 1): images drawn to be used as cut-out textures
+    int gfxSkipZImage;      // GPU renderer (game profile): rectangles and triangles drawn into a colour image at the depth
+                            // image's address are not drawn (Mario Tennis's effect sprites: nothing read them)
     int gfxViLineStart;     // GPU renderer (game profile): among the frame slots holding the VI origin, the one where it
                             // falls at the start of a line (NBA in the Zone 2000's two frames side by side in one image)
     int viIntrLine0;        // game profile: the VI interrupt fires when a field starts (half-line 0), whatever

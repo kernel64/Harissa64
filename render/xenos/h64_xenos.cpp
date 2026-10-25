@@ -2357,6 +2357,7 @@ static void flush_batch(Xenos *x)
 }
 
 static void xenos_rdp(void *user, const u64 *words, u32 count);
+static int skip_zimage(const Xenos *x);
 
 static void xenos_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
                            u32 flags, u32 tile, u32 levels)
@@ -2367,6 +2368,7 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[(tile + 1) & 7];
     XVtx *q;
     int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0, wsFull;
+    if (skip_zimage(x)) return;
     if (x->sys->options.gfxSoft8bit && st->colorFmt == FB_I8)
     {
         // Profile gfxSoft8bit: an HLE triangle into an 8-bit colour image goes
@@ -2953,6 +2955,22 @@ static void xenos_reset(void *user)
     x->stateDirty = 1;
 }
 
+// Profile gfxSkipZImage (Mario Tennis): ~50 times a frame it draws an effect's
+// sprite into the depth image's memory (as a colour image), loads it, loads
+// the frame's pixels behind the effect too and draws both into the frame.
+// Each sprite made the GPU switch colour images and back (two resolves and
+// two full-screen restores of the 960x720 target): up to ~60 ms a frame at
+// the start of each point. Nothing read what the GPU drew there (the loads
+// read memory, no copy backs), so those rectangles and triangles are not
+// drawn at all: the same picture. (Drawn in software into memory, the
+// sprites were real but the frame behind them is only on the GPU: black
+// squares around the ball.) Fills there stay depth clears (fill_rect).
+static int skip_zimage(const Xenos *x)
+{
+    const H64RdpState *st = x->st;
+    return x->sys->options.gfxSkipZImage && (st->colorAddr & 0xFFFFFF) == (st->depthAddr & 0xFFFFFF);
+}
+
 static void xenos_rdp(void *user, const u64 *words, u32 count)
 {
     Xenos *x = (Xenos *)user;
@@ -3032,6 +3050,11 @@ static void xenos_rdp(void *user, const u64 *words, u32 count)
     // image, then draws the shadows into it as 8-bit.
     int smallFill = x->sys->options.gfxSoft8bit && op == 0x36 && (x->st->rasterFlags & RS_FILL) &&
                     x->st->colorFmt == FB_RGBA5551 && x->st->colorWidth && x->st->colorWidth <= 64;
+    if ((op == 0x24 || op == 0x25 || (op >= 0x08 && op <= 0x0F)) && skip_zimage(x))
+    {
+        x->stats.tRdp += h64_prof_now(x->sys) - tStart;
+        return;   // profile gfxSkipZImage: not drawn (skip_zimage)
+    }
     if (((x->sys->options.gfxSoft8bit && x->st->colorFmt == FB_I8) || tiny || smallFill) &&
         (op == 0x24 || op == 0x25 || op == 0x36 || (op >= 0x08 && op <= 0x0F)))
     {
