@@ -67,6 +67,11 @@ static const GameProfile s_profiles[] = {
     // 320 x 480 interlaced frames (VI Y scale 2.0): drawn as 240 lines tall,
     // the bottom half was broken.
     { "NDZ", "Duke Nukem: Zero Hour", H64_GP_TALL_FRAME },
+    // Draws each battling Pokemon's picture once into a 32x32 image
+    // (0x257F80, 0x258800) and shows it for the whole battle: when the GPU
+    // slot holding the player's one was reused, its box went black. The
+    // small images go back to memory as soon as they are drawn.
+    { "NP3", "Pokemon Stadium 2", H64_GP_SMALL_TO_RDRAM },
     // As Rogue Squadron: the intro draws 640x480 frames at 0x2D4000 and
     // 0x36A000, the fights load their text box and fighters' textures there
     // later. The old frames copied back over them drew both black (and cost
@@ -266,7 +271,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_MODIFY_ST_HALF = 4,     // options.gfxModStHalf
        H64_GX_CIMG_FROM_RDRAM = 8,    // options.gfxCimgFromRdram
        H64_GX_XLU_NO_BIAS = 16,       // options.gfxXluNoBias
-       H64_GX_VI_LINE0 = 32 };        // options.viIntrLine0
+       H64_GX_VI_LINE0 = 32,          // options.viIntrLine0
+       H64_GX_VI_LINE_START = 64 };   // options.gfxViLineStart
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -302,6 +308,11 @@ static const GameExtra s_extras[] = {
     // the start of the field, as in mupen64plus, it is taken during the wait
     // and the next one comes a frame later. (h64test --cpi 4 boots it too.)
     { "N7I", H64_GX_VI_LINE0 },
+    // Its two 320-pixel frames lie side by side in one 640-wide image (colour
+    // images at 0x329A00 and 0x329C80, scissor x 16..304, VI origin one line
+    // in). The VI took the slot starting closest to its origin, the right-hand
+    // frame's, and showed its empty half: a black frame every other frame.
+    { "NWZ", H64_GX_VI_LINE_START },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -334,6 +345,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxCimgFromRdram = (extra & H64_GX_CIMG_FROM_RDRAM) != 0;
     sys->options.gfxXluNoBias = (extra & H64_GX_XLU_NO_BIAS) != 0;
     sys->options.viIntrLine0 = (extra & H64_GX_VI_LINE0) != 0;
+    sys->options.gfxViLineStart = (extra & H64_GX_VI_LINE_START) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

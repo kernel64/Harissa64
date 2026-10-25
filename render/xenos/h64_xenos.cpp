@@ -3286,6 +3286,22 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
              (s->addr == x->fb[found].addr && s->lastUse > x->fb[found].lastUse)))
             found = (int)i;
     }
+    if (x->sys->options.gfxViLineStart && found >= 0)
+    {
+        // Profile gfxViLineStart: the slot where the origin starts a line (the
+        // nearest such start); the closest start may put it mid-line.
+        int best = -1;
+        for (i = 0; i < FB_SLOTS; i++)
+        {
+            const FbSlot *s = &x->fb[i];
+            u32 stride = s->width * s->bytes;
+            if (s->valid && s->tex && stride && s->bytes == (type == 3 ? 4u : 2u) && origin >= s->addr &&
+                origin < s->addr + stride * s->height && (origin - s->addr) % stride == 0 &&
+                (best < 0 || s->addr > x->fb[best].addr))
+                best = (int)i;
+        }
+        if (best >= 0) found = best;
+    }
     if (x->sys->options.gfxSlotByWidth && found >= 0 && x->fb[found].width != width)
     {
         // Profile gfxSlotByWidth: at the same address, the image as wide as the VI line.
