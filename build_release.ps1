@@ -159,14 +159,18 @@ Step "Done: release\Harissa64-$version.zip ($size MB, $count entries)"
 if ($Publish) {
     if (-not $NotesFile -or -not (Test-Path $NotesFile)) { throw "-Publish needs -NotesFile with the release notes." }
     $tag = "v$version"
-    & gh release view $tag *> $null
-    if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists." }
+    # gh writes to stderr; Windows PowerShell turns that into errors under 'Stop'.
+    $ErrorActionPreference = 'Continue'
+    & gh release view $tag 2>&1 | Out-Null
+    $exists = $LASTEXITCODE -eq 0
+    if ($exists) { throw "Release $tag already exists." }
     $notes = Join-Path $env:TEMP "harissa64_notes_$version.md"
     $text = (Get-Content $NotesFile -Raw).TrimEnd()
     $text += "`n`nDownload ``Harissa64-$version.zip``, extract it and copy the ``Harissa64`` folder to the console (see INSTALL.txt in the zip).`n"
     [System.IO.File]::WriteAllText($notes, $text, (New-Object System.Text.UTF8Encoding($false)))
     Step "Publishing GitHub release $tag"
-    & gh release create $tag $zip --target master --title "Harissa64 $version" --notes-file $notes
+    & gh release create $tag $zip --target master --title "Harissa64 $version" --notes-file $notes 2>&1 | Write-Host
     if ($LASTEXITCODE -ne 0) { throw "gh release create failed." }
+    $ErrorActionPreference = 'Stop'
     Step "Published: $tag"
 }
