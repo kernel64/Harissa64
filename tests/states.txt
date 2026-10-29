@@ -43,3 +43,5 @@ mp3_stacked|Mario Party 3 (U).zip|mp3_stacked.h64s|120|
 mp3_frigid|Mario Party 3 (U).zip|mp3_frigid.h64s|120|
 mp3_awful|Mario Party 3 (U).zip|mp3_awful.h64s|120|
 mp3_aces|Mario Party 3 (U).zip|mp3_aces.h64s|120|
+iss64_user1|International Superstar Soccer 64 (U).zip|iss64_user1.h64s|120|
+iss64_user2|International Superstar Soccer 64 (U).zip|iss64_user2.h64s|120|

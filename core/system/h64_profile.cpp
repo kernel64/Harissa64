@@ -273,7 +273,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_XLU_NO_BIAS = 16,       // options.gfxXluNoBias
        H64_GX_VI_LINE0 = 32,          // options.viIntrLine0
        H64_GX_VI_LINE_START = 64,     // options.gfxViLineStart
-       H64_GX_SKIP_ZIMAGE = 128 };    // options.gfxSkipZImage
+       H64_GX_SKIP_ZIMAGE = 128,      // options.gfxSkipZImage
+       H64_GX_DECAL_STENCIL = 256 };  // options.gfxDecalStencil
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -299,6 +300,10 @@ static const GameExtra s_extras[] = {
     // target), up to ~60 ms a frame at the start of each point. Nothing read
     // what the GPU drew there: not drawn (h64_xenos.cpp, skip_zimage).
     { "NM8", H64_GX_SKIP_ZIMAGE },
+    // Each player's shadow: his silhouette drawn on the pitch as depth only,
+    // then a dark quad as a decal (Z mode 3) over it. The GPU's decal test
+    // only had the near side: the whole quad showed as a dark rectangle.
+    { "NJP", H64_GX_DECAL_STENCIL },
     // Stacked Deck: each card's shadow lies just under the card in Z mode
     // XLU; the depth bias that keeps OoT's paths on the ground brought the
     // shadows over the cards (dark cards; issue #23).
@@ -354,6 +359,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.viIntrLine0 = (extra & H64_GX_VI_LINE0) != 0;
     sys->options.gfxViLineStart = (extra & H64_GX_VI_LINE_START) != 0;
     sys->options.gfxSkipZImage = (extra & H64_GX_SKIP_ZIMAGE) != 0;
+    sys->options.gfxDecalStencil = (extra & H64_GX_DECAL_STENCIL) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

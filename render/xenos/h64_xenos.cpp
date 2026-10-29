@@ -229,6 +229,10 @@ struct Xenos
     u32 copyBacks;
     u32 useCounter;
     int debug;
+    // Profile gfxDecalStencil: the current batch is a decal drawn in two passes
+    // (draw_decal), and the stencil value marking its pixels.
+    int decalStencil;
+    u32 stencilRef;
     u32 debugFrom;
     u32 tallW, tallH;   // profile gfxTallFrame: an image this wide is this tall (from the game's scissor)
     u32 dzPrim, dzHigh, dzTris, dzLastPrim;   // xenosdebug=15: triangles with prim depth / a vertex z >= 32767 / all, last prim depth
@@ -2188,6 +2192,15 @@ static void set_blend(Xenos *x, int lastCycle)
         x->dev->SetRenderState(D3DRS_SRCBLEND, b[1] == 3 ? D3DBLEND_ZERO : D3DBLEND_SRCALPHA);
         x->dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
     }
+    else if (force && x->sys->options.gfxDecalStencil && b[1] == 3 && b[2] == 1 && b[3] == 2)
+    {
+        // Profile gfxDecalStencil: P * 0 + mem * 1 = mem, whatever P (ISS 64
+        // draws its players' silhouettes on the pitch so, depth only; drawn
+        // with the fog colour or the combiner's green they showed).
+        x->dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+        x->dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ZERO);
+        x->dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
+    }
     else if (force && b[0] == 1 && b[2] == 0 && b[3] == 0)
     {
         // mem * A + in * (1 - A)
@@ -2215,6 +2228,7 @@ static void set_depth(Xenos *x, int hasDepth)
     x->dev->SetRenderState(D3DRS_ZENABLE, test || update ? TRUE : FALSE);
     x->dev->SetRenderState(D3DRS_ZFUNC, test ? D3DCMP_LESSEQUAL : D3DCMP_ALWAYS);
     x->dev->SetRenderState(D3DRS_ZWRITEENABLE, update && st->zMode != 3 ? TRUE : FALSE);
+    x->decalStencil = x->sys->options.gfxDecalStencil && test && st->zMode == 3;
     if (st->zMode == 3 || (st->zMode == 2 && !x->sys->options.gfxXluNoBias))
     {
         // Decal: the N64 passes a pixel whose depth is within the surface's
@@ -2345,12 +2359,66 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
 
 
 // ---------------------------------------------------------------- primitives
+// Profile gfxDecalStencil (International Superstar Soccer 64): the RDP's decal
+// test passes a pixel only within the surface's slope of the stored depth, on
+// both sides (and never on the cleared, farthest depth). The GPU's one compare
+// (LESS_EQUAL with a bias toward the camera, set_depth) only does the near side.
+// ISS 64 draws each player's silhouette on the pitch as depth only, then a
+// dark quad as a decal over it: the whole quad came out as a dark rectangle.
+// Pass 1 marks in the stencil the pixels not farther than the stored depth
+// (GREATER_EQUAL, bias away from the camera), colour off; pass 2 is the usual
+// draw on the marked pixels. Each decal gets its own stencil value.
+static void draw_decal(Xenos *x, D3DPRIMITIVETYPE type, UINT count, const void *v, UINT stride)
+{
+    IDirect3DDevice9 *d = x->dev;
+    float bias = 0.0001f, slope = 6.0f, c[4] = { 0.0001f, 6.0f, 0.0f, 0.0f };
+    // Pass 2's near side: the RDP's tolerance is the surfaces' depth slope
+    // (ISS 64's shadow quads lie ~0.0007 behind the silhouettes they cover);
+    // the stencil already keeps out what is farther.
+    float nbias = -0.002f, nslope = -6.0f, nc[4] = { -0.002f, -6.0f, 0.0f, 0.0f };
+    if (++x->stencilRef > 255)
+    {
+        DWORD sc = 0;
+        d->GetRenderState(D3DRS_SCISSORTESTENABLE, &sc);
+        d->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);   // Clear() keeps to the scissor
+        d->Clear(0, NULL, D3DCLEAR_STENCIL, 0, 1.0f, 0);
+        d->SetRenderState(D3DRS_SCISSORTESTENABLE, sc);
+        x->stencilRef = 1;
+    }
+    d->SetRenderState(D3DRS_STENCILENABLE, TRUE);
+    d->SetRenderState(D3DRS_STENCILWRITEMASK, 0xFF);
+    d->SetRenderState(D3DRS_STENCILMASK, 0xFF);
+    d->SetRenderState(D3DRS_STENCILREF, x->stencilRef);
+    d->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
+    d->SetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
+    d->SetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
+    d->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_REPLACE);
+    d->SetRenderState(D3DRS_COLORWRITEENABLE, 0);
+    d->SetRenderState(D3DRS_ZFUNC, D3DCMP_GREATEREQUAL);
+    d->SetRenderState(D3DRS_DEPTHBIAS, *(DWORD *)&bias);
+    d->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *(DWORD *)&slope);
+    d->SetPixelShaderConstantF(7, c, 1);
+    d->DrawPrimitiveUP(type, count, v, stride);
+    d->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_ALL);
+    d->SetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
+    d->SetRenderState(D3DRS_DEPTHBIAS, *(DWORD *)&nbias);
+    d->SetRenderState(D3DRS_SLOPESCALEDEPTHBIAS, *(DWORD *)&nslope);
+    d->SetPixelShaderConstantF(7, nc, 1);
+    d->SetRenderState(D3DRS_STENCILFUNC, D3DCMP_EQUAL);
+    d->SetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
+    d->DrawPrimitiveUP(type, count, v, stride);
+    d->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+}
+
 static void flush_batch(Xenos *x)
 {
     u64 t0;
     if (!x->batchN) return;
     t0 = h64_prof_now(x->sys);
-    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, x->batchN / 3, x->batch, sizeof(XVtx));
+    if (x->decalStencil)
+        draw_decal(x, D3DPT_TRIANGLELIST, x->batchN / 3, x->batch, sizeof(XVtx));
+    else
+        x->dev->DrawPrimitiveUP(D3DPT_TRIANGLELIST, x->batchN / 3, x->batch, sizeof(XVtx));
     x->stats.tDraw += h64_prof_now(x->sys) - t0;
     x->stats.draws++;
     x->batchN = 0;
@@ -2915,7 +2983,10 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     }
     x->win.active = 0;
     x->fbTex = NULL;
-    x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
+    if (x->decalStencil)
+        draw_decal(x, D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
+    else
+        x->dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, q, sizeof(XVtx));
     x->stats.rects++;
     x->stats.draws++;
     if (fbSrc) x->stats.fbTexRects++;
@@ -3556,6 +3627,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->curSlot = -1;
     x->edramOwner = -1;
     x->edramDepthAddr = 0xFFFFFFFFu;
+    x->decalStencil = 0;
+    x->stencilRef = 0;
     x->shownSlot = -1;
     x->drewFrame = 0;
     x->blankPresents = 0;
