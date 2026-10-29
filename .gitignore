@@ -77,10 +77,9 @@ CLAUDE.md
 
 # Technical notes kept on this machine only (not published)
 docs-local/
-# Release zips are committed (build_release.ps1, .github/workflows/release.yml)
-!/release/
-/release/*
-!/release/*.zip
+# Release zips are not committed: they are attached to the GitHub release
+# (build_release.ps1 -Publish)
+/release/
 
 # console regression data (game memory and pictures) and console settings: local only
 /tests/console/data/

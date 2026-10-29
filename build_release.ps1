@@ -23,16 +23,29 @@
     Saves and settings are created by the emulator on the console. No ROMs,
     saves, logs or local settings are ever packaged.
 
+    The zip is never committed: with -Publish it is attached to a new GitHub
+    release v<version> (gh CLI), made on master's commit on GitHub, so push
+    master first.
+
 .PARAMETER NoBuild
     Package the existing build instead of rebuilding.
+
+.PARAMETER Publish
+    Create the GitHub release v<version> with the zip (needs -NotesFile).
+
+.PARAMETER NotesFile
+    The release notes (Markdown); a line on how to install is added.
 
 .EXAMPLE
     .\build_release.ps1
     .\build_release.ps1 -NoBuild
+    .\build_release.ps1 -NoBuild -Publish -NotesFile notes.md
 #>
 [CmdletBinding()]
 param(
-    [switch] $NoBuild
+    [switch] $NoBuild,
+    [switch] $Publish,
+    [string] $NotesFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -141,3 +154,19 @@ finally { $zipFile.Dispose() }
 
 $size = [math]::Round((Get-Item $zip).Length / 1MB, 2)
 Step "Done: release\Harissa64-$version.zip ($size MB, $count entries)"
+
+# -------------------------------------------------------------- publish --
+if ($Publish) {
+    if (-not $NotesFile -or -not (Test-Path $NotesFile)) { throw "-Publish needs -NotesFile with the release notes." }
+    $tag = "v$version"
+    & gh release view $tag *> $null
+    if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists." }
+    $notes = Join-Path $env:TEMP "harissa64_notes_$version.md"
+    $text = (Get-Content $NotesFile -Raw).TrimEnd()
+    $text += "`n`nDownload ``Harissa64-$version.zip``, extract it and copy the ``Harissa64`` folder to the console (see INSTALL.txt in the zip).`n"
+    [System.IO.File]::WriteAllText($notes, $text, (New-Object System.Text.UTF8Encoding($false)))
+    Step "Publishing GitHub release $tag"
+    & gh release create $tag $zip --target master --title "Harissa64 $version" --notes-file $notes
+    if ($LASTEXITCODE -ne 0) { throw "gh release create failed." }
+    Step "Published: $tag"
+}

@@ -16,6 +16,8 @@ dkr_island|render=B01A6793 cpu=18BD8941 ram=5B2633EE
 drmario|render=2013163D cpu=F22763ED ram=BD428CB2
 ge_2p|render=C68285E4 cpu=58F223EF ram=5877ADC4
 golf_hole1|render=E2D56209 cpu=17003A33 ram=E0636692
+iss64_user1|render=C226BF7D cpu=54B15631 ram=8D800591
+iss64_user2|render=C95F8658 cpu=DE13674D ram=A40EA07A
 lego_race|render=788BB3EC cpu=C422CF5C ram=82D950A7
 lego_user1|render=5E7F5F4F cpu=2A35A32D ram=43B8DC48
 lod_user1|render=FAA8DFE3 cpu=D955CB12 ram=A8EF67F4
