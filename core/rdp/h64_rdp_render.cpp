@@ -11,6 +11,7 @@
 #include "h64_rdp.h"
 #include "h64_rdp_state.h"
 #include "h64_rdp_luts.h"
+#include "h64_rdp_hires.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1140,6 +1141,12 @@ static void draw(H64System *sys, H64RdpState *st, TriSetup *ts, AttrSetup *a)
     pc.ts = *ts;
     pc.a = *a;
     derive(st, a, &pc.d);
+    if (st->hires)
+    {
+        // Hi-res texture keys of the tiles this primitive samples (h64_rdp_hires.cpp).
+        if (pc.d.usesTexel0 || (st->rasterFlags & RS_COPY)) h64_rdp_hires_on_use(sys, ts->tile & 7);
+        if (pc.d.usesTexel1) h64_rdp_hires_on_use(sys, (ts->tile + 1) & 7);
+    }
     st->primitives++;
 
     minLine = (ts->yh > (s32)st->scissorYlo ? ts->yh : (s32)st->scissorYlo) >> 2;

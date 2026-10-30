@@ -83,6 +83,7 @@ struct H64RdpState
     u8 *drawRam2;                // also written (NULL: none), e.g. RDRAM beside the snapshot
     u64 softTicks, softSpanTicks;  // profiling (profClock): primitives drawn with softDraw, their span setups
     u32 softTris, softLines, softPixels;
+    void *hires;                 // hi-res texture key tracking (h64_rdp_hires.cpp), NULL when off
     H64RdpTile tiles[8];
 
     u32 rasterFlags;             // RS_*

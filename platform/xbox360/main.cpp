@@ -1264,6 +1264,18 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         {
             int k;
             for (k = 0; k < 3; k++) s_padsMoreValid[k] = XInputGetState(k + 1, &s_padsMore[k]) == ERROR_SUCCESS;
+            {
+                // Each controller connected or removed while a game runs (XInput
+                // user = the console's quadrant - 1 = N64 port - 1).
+                static int seen = -1;
+                int now = s_padValid | (s_padsMoreValid[0] << 1) | (s_padsMoreValid[1] << 2) | (s_padsMoreValid[2] << 3);
+                if (seen >= 0 && now != seen)
+                    for (k = 0; k < 4; k++)
+                        if (((now ^ seen) >> k) & 1)
+                            H64_INFO("[pad] VI %u: controller %d (XInput user %d, N64 port %d) %s", presented, k + 1, k, k + 1,
+                                     (now >> k) & 1 ? "connected" : "removed");
+                seen = now;
+            }
             // The plugged ports, for the games' controller probes (osContInit).
             sys->padMask = 1;
             if (!s_script)
