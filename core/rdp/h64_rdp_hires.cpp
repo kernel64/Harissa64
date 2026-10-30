@@ -139,6 +139,11 @@ void h64_rdp_hires_enable(H64System *sys, int on)
     if (!on && st->hires) { delete (Track *)st->hires; st->hires = 0; }
 }
 
+int h64_rdp_hires_enabled(H64System *sys)
+{
+    return track(sys) != 0;
+}
+
 void h64_rdp_hires_on_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th, int mode)
 {
     Track *t = track(sys);

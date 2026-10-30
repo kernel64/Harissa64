@@ -20,6 +20,8 @@ struct H64HiresKey
 
 // Starts (on) or stops (off) tracking texture loads and uses.
 void h64_rdp_hires_enable(H64System *sys, int on);
+// Whether texture loads are tracked (h64_rdp_hires_enable).
+int h64_rdp_hires_enabled(H64System *sys);
 // Called by the software RDP: a LOAD_TILE (mode 0), LOAD_TLUT (1) or LOAD_BLOCK (2)
 // before it runs, and each tile a drawn primitive samples.
 void h64_rdp_hires_on_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th, int mode);

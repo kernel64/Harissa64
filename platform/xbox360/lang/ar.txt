@@ -44,6 +44,7 @@ BRIGHTNESS = السطوع
 VSYNC = V-Sync
 ANTIFLICKER = منع الوميض
 TEXFILTER = فلتر الخامات
+HD_TEXTURES = خامات عالية الدقة
 FXAA = تنعيم الحواف (FXAA)
 SHARPEN = الحدة
 BLUR = التمويه

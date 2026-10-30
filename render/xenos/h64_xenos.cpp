@@ -218,6 +218,7 @@ struct Xenos
     std::unordered_map<u64, int> hdMap;
     u32 hdBytes, hdBudget;
     int hdBound;        // the texture get_texture just gave is a hi-res one
+    int hdOn;           // the menu's "HD textures" (H64XenosOptions.hdTextures)
     u32 hdHits, hdNoKey, hdSize, hdLoads, hdFull;
     int lookupChunk;    // arena chunk of the texture lookup_texture returned last (-1: none)
 
@@ -841,7 +842,7 @@ static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         tex = x->memo[t].tex;
         key = x->lastTexKey;
     }
-    if (x->hdFile && tex && tex != x->dummy)
+    if (x->hdFile && x->hdOn && tex && tex != x->dummy)
     {
         IDirect3DTexture9 *hd = hd_texture(x, t, b, key);
         if (hd) { x->hdBound = 1; return hd; }
@@ -3821,6 +3822,7 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->hdBytes = 0;
     x->hdBudget = 96u << 20;
     x->hdBound = 0;
+    x->hdOn = 1;
     x->hdHits = x->hdNoKey = x->hdSize = x->hdLoads = x->hdFull = 0;
     x->blankPresents = 0;
     x->overlay = NULL;
@@ -4098,6 +4100,7 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     if (o->texFilter != x->texFilter)
     {
         x->texFilter = o->texFilter < 0 || o->texFilter > 2 ? 1 : o->texFilter;
+        x->hdOn = o->hdTextures != 0;
         x->stateDirty = 1;
     }
     if (scale != x->scale)

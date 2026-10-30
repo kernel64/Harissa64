@@ -43,6 +43,7 @@ BRIGHTNESS = Яркость
 VSYNC = V-Sync
 ANTIFLICKER = Антимерцание
 TEXFILTER = Фильтр текстур
+HD_TEXTURES = HD-текстуры
 FXAA = Сглаживание (FXAA)
 SHARPEN = Резкость
 BLUR = Размытие

@@ -81,7 +81,8 @@ void h64_xenos_set_worker(H64Renderer *r, int on);
 // Edge smoothing (FXAA) when the frame is shown, in place of the VI's anti-aliasing (on by default).
 void h64_xenos_set_smooth(H64Renderer *r, int on);
 // Hi-res texture pack (a .h64hd file, see core/rdp/h64_hdpack.h): pictures shown instead of the
-// textures they replace, read on first use up to budgetMB. Returns the number of pictures (0: none).
+// textures they replace (while H64XenosOptions.hdTextures is on), read on first use up to budgetMB.
+// Returns the number of pictures (0: none).
 // The core must track texture loads (h64_rdp_hires_enable).
 u32 h64_xenos_set_hd_pack(H64Renderer *r, const char *path, u32 budgetMB);
 // Hi-res statistics since the pack was opened: textures found, keys not computed, sizes not matching, pictures loaded, MB.
@@ -101,6 +102,7 @@ struct H64XenosOptions
     int deflicker;   // 1: each picture shown is mixed half and half with the previous one
     int zoom;        // picture size in percent (100: as the aspect gives; more crops the border)
     int offsetX, offsetY;   // picture position on the 1280x720 output, in pixels
+    int hdTextures;  // 1: a hi-res pack opened with h64_xenos_set_hd_pack is used, 0: the game's own textures
 };
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);

@@ -53,6 +53,7 @@ BRIGHTNESS = Brightness
 VSYNC = V-Sync
 ANTIFLICKER = Anti-flicker
 TEXFILTER = Texture filter
+HD_TEXTURES = HD textures
 FXAA = Edge smoothing (FXAA)
 SHARPEN = Sharpen
 BLUR = Blur

@@ -738,7 +738,24 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     o.offsetX = c->offsetX;
     o.offsetY = c->offsetY;
     o.aspect = aspect;
+    o.hdTextures = c->hdTextures;
     h64_xenos_set_options(renderer, &o);
+    if (c->hdTextures && !c->softRenderer)
+    {
+        // The game's hi-res texture pack: <drive>:\hd_textures\<save folder name>.h64hd
+        // (made by h64hdconv).
+        // Opened the first time the setting is on; the core then tracks texture
+        // loads for its keys. Off, nothing is opened and nothing is tracked.
+        char folder[64], path[160];
+        if (!h64_rdp_hires_enabled(sys))
+        {
+            h64_save_folder_name(&sys->rom, folder, sizeof(folder));
+            _snprintf(path, sizeof(path), "%s:\\hd_textures\\%s.h64hd", s_logDrive, folder);
+            path[sizeof(path) - 1] = 0;
+            if (h64_xenos_set_hd_pack(renderer, path, c->hdBudget)) h64_rdp_hires_enable(sys, 1);
+            else H64_INFO("[hd] no pack %s", path);
+        }
+    }
 }
 
 // ---- mode=play ----
@@ -1190,17 +1207,6 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (!renderer) { MessageScreen(dev, Tr(T_RENDERER_FAILED), Tr(T_SEE_LOG), D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);
     ApplyGraphics(sys, renderer, c);
-    if (c->hdTextures && !c->softRenderer)
-    {
-        // A hi-res texture pack for this game: <drive>:\hires\<save folder name>.h64hd
-        // (made by h64hdconv). The core then tracks texture loads for its keys.
-        char folder[64], path[160];
-        h64_save_folder_name(&sys->rom, folder, sizeof(folder));
-        _snprintf(path, sizeof(path), "%s:\\hires\\%s.h64hd", s_logDrive, folder);
-        path[sizeof(path) - 1] = 0;
-        if (h64_xenos_set_hd_pack(renderer, path, c->hdBudget)) h64_rdp_hires_enable(sys, 1);
-        else H64_INFO("[hd] no pack %s", path);
-    }
     if (c->softRenderer) sys->options.rdpStateOnly = 0;
     else sys->renderer = renderer;
     H64_INFO("[main] running %s: cpu %s, RSP %s, %s renderer", rom, jit ? "recompiler" : "interpreter",

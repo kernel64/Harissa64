@@ -185,7 +185,7 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
 // shown in the same UiMenu; its Back returns to the main page.
 enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS, S_LANGUAGE };
-enum { G_PRESET = 0, G_RES, G_STRETCH, G_ZOOM, G_POSX, G_POSY, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_SMOOTH, G_SHARPEN, G_BLUR,
+enum { G_PRESET = 0, G_RES, G_STRETCH, G_ZOOM, G_POSX, G_POSY, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_HD, G_SMOOTH, G_SHARPEN, G_BLUR,
        G_SCREEN, G_BACK };
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
@@ -249,6 +249,7 @@ static void settings_values(UiMenu *m, const Config *c)
         sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? Tr(T_CUSTOM) : Tr(s_presets[pr].name));
         sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 4 ? 4 : c->resScale) - 1]);
         sprintf(m->value[G_FILTER], "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]);
+        sprintf(m->value[G_HD], "< %s >", onoff(c->hdTextures));
         sprintf(m->value[G_SMOOTH], "< %s >", onoff(c->smooth));
         sprintf(m->value[G_SHARPEN], "< %s >", lvl[c->sharpen < 0 || c->sharpen > 2 ? 0 : c->sharpen]);
         sprintf(m->value[G_BLUR], "< %s >", blr[c->blur < 0 || c->blur > 2 ? 0 : c->blur]);
@@ -317,6 +318,7 @@ static void settings_graphics(UiMenu *m, const Config *c)
     UiMenuAdd(m, Tr(T_VSYNC), "");
     UiMenuAdd(m, Tr(T_ANTIFLICKER), "");
     UiMenuAdd(m, Tr(T_TEXFILTER), "");
+    UiMenuAdd(m, Tr(T_HD_TEXTURES), "");
     UiMenuAdd(m, Tr(T_FXAA), "");
     UiMenuAdd(m, Tr(T_SHARPEN), "");
     UiMenuAdd(m, Tr(T_BLUR), "");
@@ -842,6 +844,7 @@ static int graphics_input(UiMenu *m, Config *c, WORD down)
         }
         case G_RES: c->resScale = (c->resScale - 1 + dir + 4) % 4 + 1; break;
         case G_FILTER: c->texFilter = (c->texFilter + dir + 3) % 3; break;
+        case G_HD: c->hdTextures = !c->hdTextures; break;
         case G_SMOOTH: c->smooth = !c->smooth; break;
         case G_SHARPEN: c->sharpen = (c->sharpen + dir + 3) % 3; if (c->sharpen) c->blur = 0; break;
         case G_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;

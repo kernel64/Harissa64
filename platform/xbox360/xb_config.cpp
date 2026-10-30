@@ -214,7 +214,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             c->smooth, c->showFps);
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
-    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\nrumble=%d\n", c->zoom, c->offsetX, c->offsetY, c->rumble);
+    fprintf(f, "zoom=%d\nposx=%d\nposy=%d\nrumble=%d\nhdtextures=%d\n", c->zoom, c->offsetX, c->offsetY, c->rumble, c->hdTextures);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.
