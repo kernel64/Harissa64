@@ -36,6 +36,8 @@ Factor 5's microcodes (`core/hle/h64_gfx_f5.inc`: Star Wars: Rogue Squadron's F3
 
 Behaviour learned from test ROMs is credited in comments but no code is taken from them: n64-systemtest (Lemmy, MIT; studied, never copied), angrylion-rdp-plus (MAME licence, not GPL-compatible: not studied for code), Dillonb/n64-tests (no licence stated) and PeterLemon/N64 (Unlicense). The ROMs themselves are downloaded by `tests/scripts/fetch_test_roms.py` and never committed.
 
+The texture pack converter (`platform/host/h64hdconv.cpp`, a PC tool, not part of the console build) reads PNG pictures with stb_image 2.30 and compresses them to DXT1/DXT5 with stb_dxt 1.12 (`third_party/stb/`, https://github.com/nothings/stb, commit `003501f6d7`; Sean Barrett, stb_dxt after Fabian Giesen; public domain or MIT, at the user's choice; files unchanged).
+
 ## Data downloaded at run time
 
 The ROM browser shows box art and information about the games. None of it is shipped with Harissa64 or kept in this repository: the console downloads it when it is online (`platform/xbox360/xb_art.cpp`), or the user fetches it on a PC with `tools/fetch_game_art.py`, into the `art\games\` folder next to the emulator.

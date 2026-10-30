@@ -21,6 +21,8 @@ void ConfigDefaults(Config *c)
     c->lastRom[0] = 0;
     strcpy(c->romDir, "game:\\roms\\");
     c->showFps = 0;
+    c->hdTextures = 0;
+    c->hdBudget = 96;
     c->updateCheck = 1;
     c->artDownload = 1;
     c->browserDemo = 0;
@@ -119,6 +121,8 @@ int ConfigParseFile(Config *c, const char *path)
             if (c->romDir[n - 1] != '\\') { c->romDir[n] = '\\'; c->romDir[n + 1] = 0; }
         }
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
+        else if (!strcmp(line, "hdtextures")) c->hdTextures = atoi(eq + 1);
+        else if (!strcmp(line, "hdbudget")) c->hdBudget = (u32)atoi(eq + 1);
         else if (!strcmp(line, "updatecheck")) c->updateCheck = atoi(eq + 1);
         else if (!strcmp(line, "artdownload")) c->artDownload = atoi(eq + 1);
         else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);

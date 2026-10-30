@@ -15,6 +15,7 @@ struct H64HiresKey
     u32 texCrc, palCrc;   // palCrc 0: no palette
     u8 fmt, size;         // N64 format (0 RGBA, 1 YUV, 2 CI, 3 IA, 4 I) and size (0 4-bit .. 3 32-bit)
     u8 hasPal;
+    u16 width, height;    // the original texture's size (texels), as the pack's picture covers it
 };
 
 // Starts (on) or stops (off) tracking texture loads and uses.

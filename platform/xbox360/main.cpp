@@ -28,6 +28,7 @@
 #include "../../core/system/h64_system.h"
 #include "../../core/system/h64_profile.h"
 #include "../../core/rdp/h64_rdp_state.h"
+#include "../../core/rdp/h64_rdp_hires.h"
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
@@ -1189,6 +1190,17 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     if (!renderer) { MessageScreen(dev, Tr(T_RENDERER_FAILED), Tr(T_SEE_LOG), D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);
     ApplyGraphics(sys, renderer, c);
+    if (c->hdTextures && !c->softRenderer)
+    {
+        // A hi-res texture pack for this game: <drive>:\hires\<save folder name>.h64hd
+        // (made by h64hdconv). The core then tracks texture loads for its keys.
+        char folder[64], path[160];
+        h64_save_folder_name(&sys->rom, folder, sizeof(folder));
+        _snprintf(path, sizeof(path), "%s:\\hires\\%s.h64hd", s_logDrive, folder);
+        path[sizeof(path) - 1] = 0;
+        if (h64_xenos_set_hd_pack(renderer, path, c->hdBudget)) h64_rdp_hires_enable(sys, 1);
+        else H64_INFO("[hd] no pack %s", path);
+    }
     if (c->softRenderer) sys->options.rdpStateOnly = 0;
     else sys->renderer = renderer;
     H64_INFO("[main] running %s: cpu %s, RSP %s, %s renderer", rom, jit ? "recompiler" : "interpreter",
@@ -1595,6 +1607,12 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses (%u skipped, GPU wait %.1f, longest %.1f ms), %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes, %u CPU sprite presents, %u frames from memory",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
                          xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.arenaSkips, xs.tArenaWait * k, xs.maxArenaWait * k * framesSincePerf, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads, xs.cpuSprites, xs.cimgUploads);
+                if (c->hdTextures && sys->rdpState && sys->rdpState->hires)
+                {
+                    u32 hh, hn, hs, hl, hm;
+                    h64_xenos_hd_stats(renderer, &hh, &hn, &hs, &hl, &hm);
+                    H64_INFO("[hd] textures with a picture %u, pictures loaded %u (%u MB); no key %u, other size %u", hh, hl, hm, hn, hs);
+                }
                 if (sys->rdpState && sys->rdpState->softTris)
                 {
                     H64RdpState *rs = sys->rdpState;

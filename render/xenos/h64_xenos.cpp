@@ -15,12 +15,15 @@
 #include <string.h>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "../../core/common/h64_endian.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/rdp/h64_rdp.h"
 #include "../../core/rdp/h64_rdp_state.h"
+#include "../../core/rdp/h64_rdp_hires.h"
+#include "../../core/rdp/h64_hdpack.h"
 #include "../../core/system/h64_system.h"
 
 // EDRAM layout (tiles of 5120 bytes, 80x16 pixels): the 1280x720 back
@@ -204,7 +207,18 @@ struct Xenos
     u32 staleCount;     // words set in staleTmem
     IDirect3DTexture9 *fbTex;   // set: bind_texture puts this image on unit 0 instead of decoding the tile
     float fbTexels[2];          // its N64 texels across [0, 1] (3-point filter sizes)
-    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; int chunk; } memo[8];
+    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; int chunk; u64 key; } memo[8];
+    u64 lastTexKey;     // the cache key of lookup_texture's last texture
+    // Hi-res texture pack (h64_xenos_set_hd_pack, hd_texture): the pack's index,
+    // its file, the textures loaded from it, and for each texture cache key
+    // the pack entry it uses (-1: none).
+    FILE *hdFile;
+    std::vector<H64HdEntry> hdIndex;
+    std::vector<IDirect3DTexture9 *> hdTex;
+    std::unordered_map<u64, int> hdMap;
+    u32 hdBytes, hdBudget;
+    int hdBound;        // the texture get_texture just gave is a hi-res one
+    u32 hdHits, hdNoKey, hdSize, hdLoads, hdFull;
     int lookupChunk;    // arena chunk of the texture lookup_texture returned last (-1: none)
 
     FbSlot fb[FB_SLOTS];
@@ -707,22 +721,132 @@ static s32 mask_coord(u32 mask, int mirror, s32 v)
 static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b);
 
 // The texture of a tile, from the memo while neither TMEM nor the tile changed.
+// ---------------------------------------------------------------- hi-res textures
+// A community texture pack converted by h64hdconv (core/rdp/h64_hdpack.h):
+// when a tile's texture has a picture in the pack (same Rice key, same
+// original size, the whole texture decoded), that picture is bound instead.
+// Texture coordinates stay as they are: they are normalised to the original
+// size, which the picture covers. Off (no pack) nothing here runs.
+
+static int hd_cmp(const H64HdEntry &e, u32 tex, u32 pal, u32 fmt, u32 size, u32 flags)
+{
+    if (e.texCrc != tex) return e.texCrc < tex ? -1 : 1;
+    if (e.palCrc != pal) return e.palCrc < pal ? -1 : 1;
+    if (e.fmt != fmt) return e.fmt < fmt ? -1 : 1;
+    if (e.size != size) return e.size < size ? -1 : 1;
+    if (e.flags != flags) return e.flags < flags ? -1 : 1;
+    return 0;
+}
+
+static int hd_search(const Xenos *x, u32 tex, u32 pal, u32 fmt, u32 size, u32 flags)
+{
+    int lo = 0, hi = (int)x->hdIndex.size() - 1;
+    while (lo <= hi)
+    {
+        int mid = (lo + hi) / 2, c = hd_cmp(x->hdIndex[mid], tex, pal, fmt, size, flags);
+        if (!c) return mid;
+        if (c < 0) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+}
+
+static int hd_find(const Xenos *x, const H64HiresKey *k)
+{
+    int i = hd_search(x, k->texCrc, k->palCrc, k->fmt, k->size, k->hasPal ? H64HD_HAS_PAL : 0);
+    if (i < 0 && k->hasPal)   // "#$#": any texture with this palette
+        i = hd_search(x, 0, k->palCrc, k->fmt, k->size, H64HD_HAS_PAL | H64HD_WILDCARD);
+    return i;
+}
+
+// The picture of pack entry i as a texture (read from the file the first time).
+static IDirect3DTexture9 *hd_load(Xenos *x, int i)
+{
+    const H64HdEntry &e = x->hdIndex[i];
+    IDirect3DTexture9 *tex = NULL;
+    u32 lvl, w = e.width, h = e.height, pos = 0, blockBytes = e.dxt == 1 ? 8 : 16;
+    std::vector<u8> data;
+    if (x->hdTex[i]) return x->hdTex[i];
+    if (x->hdBytes + e.bytes > x->hdBudget)
+    {
+        if (!x->hdFull) H64_WARN("[hd] texture budget of %u MB reached: the next pictures stay original", x->hdBudget >> 20);
+        x->hdFull++;
+        return NULL;
+    }
+    data.resize(e.bytes);
+    if (fseek(x->hdFile, (long)e.offset, SEEK_SET) || fread(&data[0], 1, e.bytes, x->hdFile) != e.bytes) return NULL;
+    if (FAILED(x->dev->CreateTexture(w, h, e.mips, 0, e.dxt == 1 ? D3DFMT_LIN_DXT1 : D3DFMT_LIN_DXT4, 0, &tex, NULL)) || !tex)
+        return NULL;
+    for (lvl = 0; lvl < e.mips; lvl++)
+    {
+        D3DLOCKED_RECT lr;
+        u32 rows = (h + 3) / 4, rowBytes = ((w + 3) / 4) * blockBytes, r;
+        if (pos + rows * rowBytes > e.bytes) break;
+        if (FAILED(tex->LockRect(lvl, &lr, NULL, 0))) break;
+        for (r = 0; r < rows; r++) memcpy((u8 *)lr.pBits + r * lr.Pitch, &data[pos + r * rowBytes], rowBytes);
+        tex->UnlockRect(lvl);
+        pos += rows * rowBytes;
+        w = w > 4 ? w / 2 : 4;
+        h = h > 4 ? h / 2 : 4;
+    }
+    x->hdTex[i] = tex;
+    x->hdBytes += e.bytes;
+    x->hdLoads++;
+    return tex;
+}
+
+// The hi-res picture for tile t's texture (cache key `key`, binding b), or NULL.
+static IDirect3DTexture9 *hd_texture(Xenos *x, u32 t, const TexBinding *b, u64 key)
+{
+    std::unordered_map<u64, int>::iterator it = x->hdMap.find(key);
+    int i;
+    if (it == x->hdMap.end())
+    {
+        H64HiresKey k;
+        i = -1;
+        if (b->ox || b->oy || !h64_rdp_hires_compute(x->sys, t, &k)) x->hdNoKey++;
+        else if (k.width != b->w || k.height != b->h) x->hdSize++;
+        else i = hd_find(x, &k);
+        if (x->hdMap.size() > 200000) x->hdMap.clear();
+        x->hdMap[key] = i;
+        if (i >= 0) x->hdHits++;
+    }
+    else
+        i = it->second;
+    return i >= 0 ? hd_load(x, i) : NULL;
+}
+
 static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
     u32 t = tileIndex & 7, rf = x->st->rasterFlags & (RS_TLUT | RS_TLUT_TYPE);
+    IDirect3DTexture9 *tex;
+    u64 key;
+    x->hdBound = 0;
     if (x->win.active && x->win.tile == t) return lookup_texture(x, t, b);   // (lookup_texture marks the chunk)
     if (x->memo[t].gen == x->tmemGen && x->memo[t].rasterFlags == rf && x->memo[t].tex)
     {
         *b = x->memo[t].b;
         if (x->memo[t].chunk >= 0) x->chunkUse[x->memo[t].chunk] = x->presentCount;
-        return x->memo[t].tex;
+        tex = x->memo[t].tex;
+        key = x->memo[t].key;
     }
-    x->memo[t].tex = lookup_texture(x, t, b);
-    x->memo[t].chunk = x->lookupChunk;
-    x->memo[t].b = *b;
-    x->memo[t].gen = x->tmemGen;
-    x->memo[t].rasterFlags = rf;
-    return x->memo[t].tex;
+    else
+    {
+        x->memo[t].tex = lookup_texture(x, t, b);
+        x->memo[t].chunk = x->lookupChunk;
+        x->memo[t].b = *b;
+        x->memo[t].gen = x->tmemGen;
+        x->memo[t].rasterFlags = rf;
+        x->memo[t].key = x->lastTexKey;
+        tex = x->memo[t].tex;
+        key = x->lastTexKey;
+    }
+    if (x->hdFile && tex && tex != x->dummy)
+    {
+        IDirect3DTexture9 *hd = hd_texture(x, t, b, key);
+        if (hd) { x->hdBound = 1; return hd; }
+    }
+    return tex;
 }
 
 // Whether the GPU is done with every frame that used chunk c (no wait needed).
@@ -910,6 +1034,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         else key = mem_hash(key, st->tmem + 0x800, 0x800);
     }
     it = x->textures.find(key);
+    x->lastTexKey = key;
     x->lookupChunk = -1;
     if (it != x->textures.end() && x->debug != 12)   // xenosdebug=12: every texture decoded again (diagnosis)
     {
@@ -1089,6 +1214,15 @@ static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
     x->dev->SetTexture(stage, tex ? tex : x->dummy);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, b->clampS ? D3DTADDRESS_CLAMP : b->mirrorS ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, b->clampT ? D3DTADDRESS_CLAMP : b->mirrorT ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
+    if (x->hdBound && tex)
+    {
+        // A hi-res picture: smoothed, with its mip levels (several of its
+        // texels fall on one screen pixel where the original's did not).
+        x->dev->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        x->dev->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        x->dev->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+        return;
+    }
     x->dev->SetSamplerState(stage, D3DSAMP_MINFILTER, filter);
     x->dev->SetSamplerState(stage, D3DSAMP_MAGFILTER, filter);
     x->dev->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
@@ -3353,6 +3487,57 @@ void h64_xenos_present(H64Renderer *r)
     h64_xenos_present_vi(r, X(r)->sys->vi.regs);
 }
 
+void h64_xenos_hd_stats(H64Renderer *r, u32 *hits, u32 *noKey, u32 *size, u32 *loads, u32 *mb)
+{
+    Xenos *x = X(r);
+    *hits = x->hdHits; *noKey = x->hdNoKey; *size = x->hdSize; *loads = x->hdLoads; *mb = x->hdBytes >> 20;
+}
+
+// Opens a hi-res texture pack (.h64hd): its index stays in memory, the
+// pictures are read when first used, up to budgetMB of them. Returns the
+// number of pictures (0: none, the file is not a pack, or it is unreadable).
+u32 h64_xenos_set_hd_pack(H64Renderer *r, const char *path, u32 budgetMB)
+{
+    Xenos *x = X(r);
+    u8 head[H64HD_HEADER_BYTES];
+    u32 count, indexOff, i;
+    std::vector<u8> idx;
+    if (x->hdFile) return (u32)x->hdIndex.size();
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fread(head, 1, sizeof(head), f) != sizeof(head) || memcmp(head, H64HD_MAGIC, 8) || h64_load_be32(head + 8) != H64HD_VERSION)
+    {
+        H64_WARN("[hd] %s is not a Harissa64 HD pack (version %u)", path, H64HD_VERSION);
+        fclose(f);
+        return 0;
+    }
+    count = h64_load_be32(head + 12);
+    indexOff = h64_load_be32(head + 16);
+    if (!count || count > 1000000) { fclose(f); return 0; }
+    idx.resize((size_t)count * H64HD_ENTRY_BYTES);
+    if (fseek(f, (long)indexOff, SEEK_SET) || fread(&idx[0], 1, idx.size(), f) != idx.size()) { fclose(f); return 0; }
+    x->hdIndex.resize(count);
+    for (i = 0; i < count; i++)
+    {
+        const u8 *p = &idx[(size_t)i * H64HD_ENTRY_BYTES];
+        H64HdEntry &e = x->hdIndex[i];
+        e.texCrc = h64_load_be32(p);
+        e.palCrc = h64_load_be32(p + 4);
+        e.fmt = p[8]; e.size = p[9]; e.flags = p[10]; e.dxt = p[11];
+        e.width = h64_load_be16(p + 12);
+        e.height = h64_load_be16(p + 14);
+        e.mips = p[16];
+        e.offset = h64_load_be32(p + 20);
+        e.bytes = h64_load_be32(p + 24);
+    }
+    x->hdTex.assign(count, (IDirect3DTexture9 *)NULL);
+    x->hdMap.clear();
+    x->hdBudget = (budgetMB ? budgetMB : 96) << 20;
+    x->hdFile = f;
+    H64_INFO("[hd] %s: %u pictures, budget %u MB", path, count, x->hdBudget >> 20);
+    return count;
+}
+
 void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
 {
     Xenos *x = X(r);
@@ -3631,6 +3816,12 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->stencilRef = 0;
     x->shownSlot = -1;
     x->drewFrame = 0;
+    x->lastTexKey = 0;
+    x->hdFile = NULL;
+    x->hdBytes = 0;
+    x->hdBudget = 96u << 20;
+    x->hdBound = 0;
+    x->hdHits = x->hdNoKey = x->hdSize = x->hdLoads = x->hdFull = 0;
     x->blankPresents = 0;
     x->overlay = NULL;
     x->overlayUser = NULL;
@@ -3739,6 +3930,11 @@ void h64_xenos_free(H64Renderer *r)
             for (k = 0; k < x->arenaHeaders[c].size(); k++) delete x->arenaHeaders[c][k];
         if (x->arena) XPhysicalFree(x->arena);
         x->arena = NULL;
+        for (c = 0; c < x->hdTex.size(); c++)
+            if (x->hdTex[c]) x->hdTex[c]->Release();
+        x->hdTex.clear();
+        if (x->hdFile) fclose(x->hdFile);
+        x->hdFile = NULL;
     }
     for (it = x->shaders.begin(); it != x->shaders.end(); ++it)
         if (it->second) it->second->Release();

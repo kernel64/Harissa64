@@ -49,6 +49,8 @@ struct Config
     int zoom;           // zoom=N: picture size in percent (default 100)
     int offsetX, offsetY;   // posx=, posy=: picture position in output pixels (default 0)
     int stretch;        // stretch=0|1: the picture stretched to 16:9 (any resolution; HD then stretches instead of widening)
+    int hdTextures;     // hdtextures=1: a hi-res texture pack <drive>:\hires\<game folder>.h64hd is used when there is one
+    u32 hdBudget;       // hdbudget=MB: memory for its pictures (default 96)
     int showFps;        // showfps=1: frames shown per second in a corner; 2: also CPU and RAM; 3: and the resolution
     int logCpu;         // logcpu=N: hardware thread of the log writer (5)
     int gameFlags;      // gameflags=HEX: the game's profile flags instead of the table's (checks; -1: the table)

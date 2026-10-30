@@ -234,6 +234,8 @@ int h64_rdp_hires_compute(H64System *sys, u32 tileIndex, H64HiresKey *out)
         }
     }
     memset(out, 0, sizeof(*out));
+    out->width = (u16)width;
+    out->height = (u16)height;
     out->fmt = tile->fmt;
     out->size = tile->size;
     if (tile->size < 2 && ((st->rasterFlags & RS_TLUT) || tile->fmt == 2))
