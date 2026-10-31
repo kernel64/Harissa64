@@ -742,18 +742,33 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     h64_xenos_set_options(renderer, &o);
     if (c->hdTextures && !c->softRenderer)
     {
-        // The game's hi-res texture pack: <drive>:\hd_textures\<save folder name>.h64hd
-        // (made by h64hdconv).
-        // Opened the first time the setting is on; the core then tracks texture
-        // loads for its keys. Off, nothing is opened and nothing is tracked.
-        char folder[64], path[160];
+        // The game's hi-res texture pack (made by h64hdconv), in <drive>:\hd_textures\:
+        // "<game name>.h64hd" for every region, as GLideN64 names packs by the
+        // cartridge's name only (the keys come from the textures, which the
+        // regions share), else "<game name> <game code>.h64hd" (the save folder's
+        // name) for a pack of one version. Opened the first time the setting is
+        // on; the core then tracks texture loads for its keys. Off, nothing is
+        // opened and nothing is tracked.
+        static int s_hdMissLogged;
+        char folder[64], name[64], path[2][160];
         if (!h64_rdp_hires_enabled(sys))
         {
+            int i, len, found = 0;
             h64_save_folder_name(&sys->rom, folder, sizeof(folder));
-            _snprintf(path, sizeof(path), "%s:\\hd_textures\\%s.h64hd", s_logDrive, folder);
-            path[sizeof(path) - 1] = 0;
-            if (h64_xenos_set_hd_pack(renderer, path, c->hdBudget)) h64_rdp_hires_enable(sys, 1);
-            else H64_INFO("[hd] no pack %s", path);
+            strcpy(name, folder);
+            len = (int)strlen(name);
+            if (len > 5 && name[len - 5] == ' ' && !memcmp(name + len - 4, sys->rom.gameCode, 4)) name[len - 5] = 0;
+            _snprintf(path[0], sizeof(path[0]), "%s:\\hd_textures\\%s.h64hd", s_logDrive, name);
+            _snprintf(path[1], sizeof(path[1]), "%s:\\hd_textures\\%s.h64hd", s_logDrive, folder);
+            path[0][sizeof(path[0]) - 1] = path[1][sizeof(path[1]) - 1] = 0;
+            for (i = 0; i < 2 && !found; i++)
+                if (h64_xenos_set_hd_pack(renderer, path[i], c->hdBudget)) found = 1;
+            if (found) h64_rdp_hires_enable(sys, 1);
+            else if (!s_hdMissLogged)
+            {
+                s_hdMissLogged = 1;
+                H64_INFO("[hd] no pack: %s or %s", path[0], path[1]);
+            }
         }
     }
 }
