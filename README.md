@@ -79,13 +79,27 @@ In the game list, select a game and press **RT**. The page lists the packs known
 
 The packs are made by their authors and stay on their pages; Harissa64 only keeps a [list of links](docs/texture-packs.json). To add a pack to the list, open a pull request.
 
-Other packs (or no internet on the console)? Convert them on a PC with [Python 3](https://www.python.org):
+### Adding a pack by hand
 
-```
-python tools/hd_textures.py convert "pack.zip" "SUPER MARIO 64"
-```
+For a pack that is not in the list (on Mega, Google Drive, a forum...), or a console without internet, convert the pack on a Windows PC. Everything needed is in the `tools` folder of the Harissa64 zip: `hd_textures.py` and `h64hdconv.exe`. You only need [Python 3](https://www.python.org).
 
-The second name is how the pack's pictures are named (`SUPER MARIO 64#...png`). Copy the `hd_textures` folder it makes to the console, into the Harissa64 folder. `python tools/hd_textures.py list` and `get` do the same for the packs of the list.
+1. Download the pack. A `.zip` can be used as it is; extract a `.7z` or `.rar` first.
+2. Find the game's name in the pack: its pictures are named like `SUPER MARIO 64#0A1B2C3D#0#2_all.png`. The part before the first `#` is the name.
+3. Open a command prompt in the `tools` folder and run:
+
+   ```
+   python hd_textures.py convert "C:\path\to\pack.zip" "SUPER MARIO 64"
+   ```
+
+   It makes `hd_textures\SUPER MARIO 64.h64hd`. A big pack takes a minute or two.
+4. Copy that file to the console, into the `hd_textures` folder of Harissa64 (create the folder if it is not there): `Harissa64\hd_textures\SUPER MARIO 64.h64hd`.
+5. Start the game, open the menu (short press on **BACK**), and turn on **HD textures** in **Settings > Graphics**.
+
+The file name must be the game's name as Harissa64 writes it in its `saves` folder, without the 4-letter code at the end: `saves\SUPER MARIO 64 NSME` gives `SUPER MARIO 64.h64hd`. The script names it that way already; rename it only if the game shows no HD textures. One file serves every version of the game (USA, Europe, Japan).
+
+The same script also downloads and converts the packs of the list on a PC: `python hd_textures.py list` shows them, `python hd_textures.py get sm64-reloaded` gets one.
+
+Options: `--out FOLDER` (where the `hd_textures` folder is made), `--max 2048` (keep pictures up to 2048 pixels wide; the default 1024 halves bigger ones, which saves the console's memory).
 
 ## Saves
 

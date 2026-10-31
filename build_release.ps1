@@ -4,7 +4,9 @@
 
 .DESCRIPTION
     1. Rebuilds the Release | Xbox 360 configuration with Visual Studio 2010
-       and the Xbox 360 SDK (skip with -NoBuild).
+       and the Xbox 360 SDK (skip with -NoBuild), and the PC texture pack
+       converter h64hdconv.exe with Visual Studio 2026 (static runtime: it
+       runs on any 64-bit Windows without the Visual C++ package).
     2. Checks the output (a fresh harissa64v2.xex with the title data).
     3. Assembles release\Harissa64\ and zips it to
        release\Harissa64-<version>.zip, where <version> comes from VERSION.
@@ -17,7 +19,9 @@
         roms\                 put your games here
         art\                  cover, background and icon for the dashboard
                               (art\games\ is made on the console: box art)
-        tools\                fetch_game_art.py (box art from a PC)
+        tools\                fetch_game_art.py (box art from a PC),
+                              hd_textures.py + h64hdconv.exe (HD texture
+                              packs converted on a PC)
         README.md, LICENSE, THIRD_PARTY.md, INSTALL.txt
 
     Saves and settings are created by the emulator on the console. No ROMs,
@@ -85,6 +89,28 @@ if (-not $NoBuild) {
     }
 }
 
+# ------------------------------------------------------- PC converter --
+# h64hdconv.exe turns a texture pack into the console's .h64hd file
+# (tools\hd_textures.py runs it). Built in its own folder with the static
+# runtime, so players need nothing but the exe.
+$toolsBuild = Join-Path $repo 'build-release-tools'
+$conv = Join-Path $toolsBuild 'h64hdconv.exe'
+if (-not $NoBuild -or -not (Test-Path $conv)) {
+    Step "Building h64hdconv.exe (PC texture pack converter)"
+    $vcvars64 = 'E:\tools\Microsoft Visual Studio\2026\VC\Auxiliary\Build\vcvars64.bat'
+    if (-not (Test-Path $vcvars64)) { throw "Visual Studio 2026 (vcvars64.bat) not found." }
+    if (Test-Path $toolsBuild) { Remove-Item -LiteralPath $toolsBuild -Recurse -Force }
+    cmd /c "`"$vcvars64`" >nul 2>&1 && cmake -S `"$repo`" -B `"$toolsBuild`" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded >nul && cmake --build `"$toolsBuild`" --target h64hdconv"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $conv)) { throw "h64hdconv.exe build failed." }
+}
+# The exe must not need the Visual C++ runtime DLLs.
+$dumpbin = Get-ChildItem 'E:\tools\Microsoft Visual Studio\2026\VC\Tools\MSVC' -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+if ($dumpbin) {
+    $deps = & $dumpbin.FullName /dependents $conv | Out-String
+    if ($deps -match '(?i)(vcruntime|msvcp)\d*\.dll') { throw "h64hdconv.exe depends on the Visual C++ runtime: $($Matches[0])" }
+}
+
 # ---------------------------------------------------------------- checks --
 Step "Checking build output"
 if (-not (Test-Path $xex)) { throw "Missing $xex. Build first or drop -NoBuild." }
@@ -104,6 +130,9 @@ foreach ($f in 'cover.png', 'background.png', 'icon.png') { Copy-Item (Join-Path
 # The PC script that fills art\games\ (box art, game information) for consoles without internet.
 New-Item -ItemType Directory -Force (Join-Path $stage 'tools') | Out-Null
 Copy-Item (Join-Path $repo 'tools\fetch_game_art.py') (Join-Path $stage 'tools')
+# The HD texture pack script and its converter (packs the console cannot download).
+Copy-Item (Join-Path $repo 'tools\hd_textures.py') (Join-Path $stage 'tools')
+Copy-Item $conv (Join-Path $stage 'tools')
 
 $install = @"
 Harissa64 $version - Nintendo 64 emulator for Xbox 360 (RGH/JTAG)
@@ -125,6 +154,14 @@ Box art: when the console is online, the game list downloads the box art
 and information of the games you select into Harissa64\art\games\. Without
 internet, run tools\fetch_game_art.py on a PC (Python 3) and copy the
 art\games folder it makes into Harissa64\.
+
+HD textures: in the game list, select a game and press RT to install an HD
+texture pack from the list (needs internet). Other packs: convert them on a
+Windows PC with Python 3. Open a command prompt in the tools folder and run
+    python hd_textures.py convert "C:\path\to\pack.zip" "SUPER MARIO 64"
+(the second name is how the pack's PNG files start). Copy the .h64hd file
+it makes to Harissa64\hd_textures\ on the console, then turn on HD textures
+in the game's Settings > Graphics. More in README.md.
 
 In a game: a short press on BACK opens the menu (save and load states,
 settings, back to the game list). BACK + RB saves a state, BACK + LB loads it.
