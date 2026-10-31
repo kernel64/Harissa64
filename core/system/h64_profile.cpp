@@ -235,6 +235,16 @@ static const GameProfile s_profiles[] = {
     // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
     // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
     { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
+    // Its menus draw their background every frame with an alpha test against
+    // 0 and texel alpha 0 (the RDP keeps those pixels): on the Xbox the
+    // background vanished, the title logo and old texts stayed under the
+    // menus. GitHub issue #27.
+    { "NGR", "Top Gear Rally", H64_GP_ALPHA_REF0_PASS },
+    // After its Boss Game Studios logo, loads from memory an earlier frame
+    // covered were copied back from the GPU's picture over what the game keeps
+    // there: it ended in an endless loop in its exception handler (frame 365,
+    // black screen). Same game on the hosts (no copy backs). GitHub issue #27.
+    { "NWO", "World Driver Championship", H64_GP_COPY_BACK_SAME_WIDTH },
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).

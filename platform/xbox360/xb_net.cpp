@@ -261,6 +261,59 @@ static FILE *open_sink(const char *path, const char *mode)
     return f;
 }
 
+// A chunked body decoded as it streams in (servers that do not give the
+// size first, such as n64textures.com): "<hex size>[;ext]\r\n<data>\r\n" ...
+// "0\r\n" ends it (trailers are not read).
+struct Dechunk
+{
+    int state;    // 0 size digits, 1 rest of the size line, 2 data, 3 end of the data line, 4 done
+    u32 size;     // the digits read, then the data left
+    int digits;
+};
+
+// Writes the data of p[0..n) to f. Returns the data bytes written, or -1
+// (malformed, or the file cannot be written).
+static int dechunk_feed(Dechunk *d, const u8 *p, u32 n, FILE *f)
+{
+    u32 i = 0;
+    int wrote = 0;
+    while (i < n && d->state != 4)
+    {
+        u8 c = p[i];
+        if (d->state == 0)
+        {
+            int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (v < 0)
+            {
+                if (!d->digits) return -1;
+                d->state = 1;
+                continue;
+            }
+            if (d->size > 0x07FFFFFF) return -1;
+            d->size = d->size * 16 + (u32)v;
+            d->digits++;
+            i++;
+        }
+        else if (d->state == 1 || d->state == 3)
+        {
+            i++;
+            if (c != '\n') continue;
+            if (d->state == 3) { d->state = 0; d->size = 0; d->digits = 0; }
+            else d->state = d->size ? 2 : 4;
+        }
+        else
+        {
+            u32 k = n - i < d->size ? n - i : d->size;
+            if (fwrite(p + i, 1, k, f) != k) return -1;
+            wrote += (int)k;
+            i += k;
+            d->size -= k;
+            if (!d->size) d->state = 3;
+        }
+    }
+    return wrote;
+}
+
 static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, u32 maxLen, char *location, int locSize,
                    NetSink *sink)
 {
@@ -368,7 +421,10 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
         int vn;
         const char *cl = header(head, "content-length", &vn), *te = header(head, "transfer-encoding", &vn);
         u32 want = cl ? (u32)strtoul(cl, NULL, 10) : 0, got = 0;
-        if (te && !_strnicmp(te, "chunked", 7)) { H64_INFO("[net] %s: chunked download not supported", host); goto done; }
+        int chunked = te && !_strnicmp(te, "chunked", 7);
+        Dechunk dc;
+        memset(&dc, 0, sizeof(dc));
+        if (chunked) want = 0;
         if (status == 200 && sink->from)
         {
             // The range was ignored: the whole file comes again.
@@ -386,8 +442,10 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
         }
         if (n > hlen)
         {
-            if (fwrite(head + hlen, 1, n - hlen, sink->f) != (size_t)(n - hlen)) goto done;
-            got = (u32)(n - hlen);
+            int w = chunked ? dechunk_feed(&dc, (const u8 *)head + hlen, (u32)(n - hlen), sink->f)
+                            : fwrite(head + hlen, 1, n - hlen, sink->f) == (size_t)(n - hlen) ? n - hlen : -1;
+            if (w < 0) { H64_INFO("[net] %s: bad chunked answer, or the file cannot be written", host); goto done; }
+            got = (u32)w;
             sink->done += got;
         }
         buf = (u8 *)malloc(64 * 1024);
@@ -406,12 +464,17 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
             for (;;)
             {
                 u64 tw;
-                if (want && got >= want) break;
+                if ((want && got >= want) || dc.state == 4) break;
                 if (sink->progress && sink->progress(sink->user, sink->done, sink->expected)) { sink->stopped = 1; break; }
                 r = br_sslio_read(&t->ioc, buf, 64 * 1024);
                 if (r <= 0) break;
                 tw = qpc();
-                if (fwrite(buf, 1, (size_t)r, sink->f) != (size_t)r) { r = -2; break; }
+                if (chunked)
+                {
+                    r = dechunk_feed(&dc, buf, (u32)r, sink->f);
+                    if (r < 0) { r = -2; break; }
+                }
+                else if (fwrite(buf, 1, (size_t)r, sink->f) != (size_t)r) { r = -2; break; }
                 diskTicks += qpc() - tw;
                 got += (u32)r;
                 sink->done += (u32)r;
@@ -430,6 +493,7 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
         }
         fflush(sink->f);
         if (want && got < want) { H64_INFO("[net] %s: cut at %u of %u bytes", host, got, want); goto done; }
+        if (chunked && dc.state != 4) { H64_INFO("[net] %s: chunked answer cut at %u bytes", host, got); goto done; }
         ok = 1;
         goto done;
     }
