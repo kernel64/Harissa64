@@ -87,6 +87,12 @@ void h64_xenos_set_smooth(H64Renderer *r, int on);
 u32 h64_xenos_set_hd_pack(H64Renderer *r, const char *path, u32 budgetMB);
 // Hi-res statistics since the pack was opened: textures found, keys not computed, sizes not matching, pictures loaded, MB.
 void h64_xenos_hd_stats(H64Renderer *r, u32 *hits, u32 *noKey, u32 *size, u32 *loads, u32 *mb);
+// Time spent loading pictures since the pack was opened, the longest load since the last call
+// (sys->profClock ticks), and the pictures left out because the budget was full.
+void h64_xenos_hd_times(H64Renderer *r, u64 *total, u64 *longest, u32 *overBudget);
+// Time the loader thread spent reading pictures (profClock ticks), pictures released for the budget,
+// and pictures asked for but not shown yet.
+void h64_xenos_hd_more(H64Renderer *r, u64 *readTicks, u32 *evicted, u32 *waiting);
 // Graphics settings (the menu's Graphics page).
 struct H64XenosOptions
 {

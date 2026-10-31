@@ -1630,9 +1630,17 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                          xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.arenaSkips, xs.tArenaWait * k, xs.maxArenaWait * k * framesSincePerf, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads, xs.cpuSprites, xs.cimgUploads);
                 if (c->hdTextures && sys->rdpState && sys->rdpState->hires)
                 {
-                    u32 hh, hn, hs, hl, hm;
+                    u32 hh, hn, hs, hl, hm, hf;
+                    u64 ht, hx;
+                    double ms = 1000.0 / (double)freq.QuadPart;
                     h64_xenos_hd_stats(renderer, &hh, &hn, &hs, &hl, &hm);
-                    H64_INFO("[hd] textures with a picture %u, pictures loaded %u (%u MB); no key %u, other size %u", hh, hl, hm, hn, hs);
+                    u64 hr;
+                    u32 he, hw;
+                    h64_xenos_hd_times(renderer, &ht, &hx, &hf);
+                    h64_xenos_hd_more(renderer, &hr, &he, &hw);
+                    H64_INFO("[hd] textures with a picture %u, pictures loaded %u, in memory %u MB, released %u, waiting %u, refused %u; "
+                             "read %.0f ms, upload %.0f ms (longest %.1f ms lately); no key %u, other size %u",
+                             hh, hl, hm, he, hw, hf, hr * ms, ht * ms, hx * ms, hn, hs);
                 }
                 if (sys->rdpState && sys->rdpState->softTris)
                 {
