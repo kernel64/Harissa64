@@ -49,7 +49,9 @@ struct Config
     int zoom;           // zoom=N: picture size in percent (default 100)
     int offsetX, offsetY;   // posx=, posy=: picture position in output pixels (default 0)
     int stretch;        // stretch=0|1: the picture stretched to 16:9 (any resolution; HD then stretches instead of widening)
-    int hdTextures;     // hdtextures=1: a hi-res texture pack <drive>:\hd_textures\<game name>.h64hd is used when there is one
+    int hdTextures;     // hdtextures=1: the game's hi-res texture pack is used when one is installed (xb_hd.h HdResolve)
+    char hdPack[48];    // hdpack=ID: which one (a game's profile; set by the HD textures page): a pack of
+                        // <drive>:\hd_textures\packs\, "file" for the game's own file, empty: the first one found
     u32 hdBudget;       // hdbudget=MB: memory for its pictures (default 96)
     char hdCatalog[256];   // hdcatalog=URL: the texture pack catalogue (default: docs/texture-packs.json on GitHub)
     int showFps;        // showfps=1: frames shown per second in a corner; 2: also CPU and RAM; 3: and the resolution
@@ -102,5 +104,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom);
 // Sets lang= in the menu's settings file (the other lines stay; the file is
 // made when missing). Returns 0 on failure.
 int ConfigWriteLang(const char *path, const char *code);
+// Sets key=value in a settings file the same way (the other lines stay).
+int ConfigWriteKey(const char *path, const char *key, const char *value);
 
 #endif

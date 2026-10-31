@@ -14,6 +14,7 @@
 #define HD_CATALOG_URL "https://raw.githubusercontent.com/kernel64/Harissa64/master/docs/texture-packs.json"
 #define HD_WORKERS 4
 #define HD_MAX_SIDE 1024
+#define HD_FILE_ID_MAX 36       // FATX names: 42 characters, ".h64hd" included
 
 static CRITICAL_SECTION s_lock;
 static HANDLE s_thread, s_wake;
@@ -25,7 +26,6 @@ static volatile LONG s_catWanted;           // 1: read the catalogue
 static volatile LONG s_jobWanted;           // 1: s_job is waiting
 static volatile LONG s_stop, s_paused;
 static H64HdPack s_job;
-static char s_jobFolder[64];
 
 // ---- helpers ----
 
@@ -66,6 +66,35 @@ static int progress(void *user, u32 done, u32 total)
     return wait_or_stop();
 }
 
+static u64 file_size(const char *path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &a)) return 0;
+    return ((u64)a.nFileSizeHigh << 32) | a.nFileSizeLow;
+}
+
+static u32 size_mb(u64 n) { return n ? (u32)((n + (1 << 20) - 1) >> 20) : 0; }
+
+// A pack id as a file name: letters, digits, '-' and '_', at most HD_FILE_ID_MAX.
+static void file_id(const char *id, char *out, int size)
+{
+    int n = 0;
+    for (; *id && n < size - 1 && n < HD_FILE_ID_MAX; id++)
+    {
+        char c = *id;
+        out[n++] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ? c : '_';
+    }
+    out[n] = 0;
+}
+
+static void pack_path(const char *drive, const char *id, const char *ext, char *out, int size)
+{
+    char fid[48];
+    file_id(id, fid, sizeof(fid));
+    _snprintf(out, size - 1, "%s:\\hd_textures\\packs\\%s%s", drive, fid, ext);
+    out[size - 1] = 0;
+}
+
 static void name_of(const char *folder, char *out, int size)
 {
     // "SUPER MARIO 64 NSME" -> "SUPER MARIO 64" (the code is the last word, 4 characters).
@@ -76,35 +105,161 @@ static void name_of(const char *folder, char *out, int size)
     if (n > 5 && out[n - 5] == ' ') out[n - 5] = 0;
 }
 
-void HdPackFile(const char *folderName, char *out, int size)
+const char *HdDrive(void) { return s_drive; }
+
+// ---- installed packs ----
+
+// <id>.txt: key=value lines (name, author, version, games, rom, page).
+static int write_info(const char *path, const H64HdPack *p)
+{
+    FILE *f = fopen(path, "wb");
+    int ok;
+    if (!f) return 0;
+    fprintf(f, "id=%s\nname=%s\nauthor=%s\nversion=%s\ngames=%s\nrom=%s\npage=%s\n", p->id.c_str(), p->name.c_str(), p->author.c_str(),
+            p->version.c_str(), p->games.c_str(), p->rom.c_str(), p->page.c_str());
+    ok = !ferror(f);
+    fclose(f);
+    return ok;
+}
+
+static int read_info(const char *path, HdInstalled *p)
+{
+    char line[512];
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    while (fgets(line, sizeof(line), f))
+    {
+        char *eq = strchr(line, '='), *e;
+        if (!eq) continue;
+        *eq = 0;
+        for (e = eq + 1; *e && *e != '\r' && *e != '\n'; e++) ;
+        *e = 0;
+        if (!strcmp(line, "id")) p->id = eq + 1;
+        else if (!strcmp(line, "name")) p->name = eq + 1;
+        else if (!strcmp(line, "author")) p->author = eq + 1;
+        else if (!strcmp(line, "version")) p->version = eq + 1;
+        else if (!strcmp(line, "games")) p->games = eq + 1;
+        else if (!strcmp(line, "rom")) p->rom = eq + 1;
+    }
+    fclose(f);
+    return !p->id.empty() && !p->rom.empty();
+}
+
+void HdListInstalled(const char *drive, std::vector<HdInstalled> *out)
+{
+    char pattern[96], path[160];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    out->clear();
+    _snprintf(pattern, sizeof(pattern) - 1, "%s:\\hd_textures\\packs\\*.txt", drive);
+    pattern[sizeof(pattern) - 1] = 0;
+    h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do
+    {
+        HdInstalled p;
+        size_t n = strlen(fd.cFileName);
+        u64 bytes;
+        if (n < 5 || (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        _snprintf(path, sizeof(path) - 1, "%s:\\hd_textures\\packs\\%s", drive, fd.cFileName);
+        path[sizeof(path) - 1] = 0;
+        if (!read_info(path, &p)) continue;
+        pack_path(drive, p.id.c_str(), ".h64hd", path, sizeof(path));
+        bytes = file_size(path);
+        if (!bytes) continue;   // a pack being made, or its pictures removed
+        p.mb = size_mb(bytes);
+        out->push_back(p);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+int HdInstalledFits(const HdInstalled *p, const char *gameCode, const char *romName)
+{
+    H64HdPack q;
+    q.games = p->games;
+    q.rom = p->rom;
+    q.size = 0;
+    return h64_hdcat_fits_rom(&q, gameCode, romName);
+}
+
+int HdOwnFile(const char *drive, const char *folderName, char *path, int size, u32 *mb)
 {
     char name[64];
+    const char *names[2];
+    int i;
     name_of(folderName, name, sizeof(name));
-    _snprintf(out, size - 1, "%s:\\hd_textures\\%s.h64hd", s_drive, name);
-    out[size - 1] = 0;
+    names[0] = name;
+    names[1] = folderName;
+    for (i = 0; i < 2; i++)
+    {
+        u64 n;
+        _snprintf(path, size - 1, "%s:\\hd_textures\\%s.h64hd", drive, names[i]);
+        path[size - 1] = 0;
+        n = file_size(path);
+        if (n)
+        {
+            if (mb) *mb = size_mb(n);
+            return 1;
+        }
+    }
+    path[0] = 0;
+    if (mb) *mb = 0;
+    return 0;
 }
 
-static u64 file_size(const char *path)
+int HdResolve(const char *drive, const char *folderName, const char *gameCode, const char *romName, const char *choice,
+              char *path, int size, char *id, int idSize)
 {
-    WIN32_FILE_ATTRIBUTE_DATA a;
-    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &a)) return 0;
-    return ((u64)a.nFileSizeHigh << 32) | a.nFileSizeLow;
+    std::vector<HdInstalled> all;
+    size_t i;
+    id[0] = 0;
+    path[0] = 0;
+    if (!choice) choice = "";
+    if (choice[0] && strcmp(choice, HD_CHOICE_FILE))
+    {
+        pack_path(drive, choice, ".h64hd", path, size);
+        if (file_size(path))
+        {
+            strncpy(id, choice, idSize - 1);
+            id[idSize - 1] = 0;
+            return HD_USE_PACK;
+        }
+    }
+    if (HdOwnFile(drive, folderName, path, size, NULL))
+    {
+        strncpy(id, HD_CHOICE_FILE, idSize - 1);
+        id[idSize - 1] = 0;
+        return HD_USE_FILE;
+    }
+    HdListInstalled(drive, &all);
+    for (i = 0; i < all.size(); i++)
+        if (HdInstalledFits(&all[i], gameCode, romName))
+        {
+            pack_path(drive, all[i].id.c_str(), ".h64hd", path, size);
+            strncpy(id, all[i].id.c_str(), idSize - 1);
+            id[idSize - 1] = 0;
+            return HD_USE_PACK;
+        }
+    path[0] = 0;
+    return HD_USE_NONE;
 }
 
-u32 HdInstalledMB(const char *folderName)
+int HdRemovePack(const char *id)
 {
     char path[160];
-    u64 n;
-    HdPackFile(folderName, path, sizeof(path));
-    n = file_size(path);
-    return n ? (u32)((n + (1 << 20) - 1) >> 20) : 0;
+    int ok;
+    pack_path(s_drive, id, ".h64hd", path, sizeof(path));
+    ok = DeleteFileA(path) != 0;
+    pack_path(s_drive, id, ".txt", path, sizeof(path));
+    DeleteFileA(path);
+    if (ok) H64_INFO("[hd] removed pack %s", id);
+    return ok;
 }
 
-int HdRemove(const char *folderName)
+int HdRemoveOwn(const char *folderName)
 {
     char path[160];
-    HdPackFile(folderName, path, sizeof(path));
-    if (!DeleteFileA(path)) return 0;
+    if (!HdOwnFile(s_drive, folderName, path, sizeof(path), NULL) || !DeleteFileA(path)) return 0;
     H64_INFO("[hd] removed %s", path);
     return 1;
 }
@@ -174,13 +329,13 @@ void HdCatalogRequest(int refresh)
     }
 }
 
-void HdCatalogFor(const char *gameCode, std::vector<H64HdPack> *out)
+void HdCatalogFor(const char *gameCode, const char *romName, std::vector<H64HdPack> *out)
 {
     size_t i;
     out->clear();
     EnterCriticalSection(&s_lock);
     for (i = 0; i < s_cat.size(); i++)
-        if (h64_hdcat_fits(&s_cat[i], gameCode)) out->push_back(s_cat[i]);
+        if (h64_hdcat_fits_rom(&s_cat[i], gameCode, romName)) out->push_back(s_cat[i]);
     LeaveCriticalSection(&s_lock);
 }
 
@@ -338,19 +493,21 @@ out:
 
 static void run_job(void)
 {
-    char dir[64], name[64], zip[160], tmp[160], out[160];
+    char dir[64], zip[160], tmp[160], out[160], info[160];
     ULARGE_INTEGER freeBytes, total, totalFree;
     u64 have, need;
     int r;
-    name_of(s_jobFolder, name, sizeof(name));
     _snprintf(dir, sizeof(dir) - 1, "%s:\\hd_textures", s_drive);
     dir[sizeof(dir) - 1] = 0;
-    _snprintf(zip, sizeof(zip) - 1, "%s\\%s.zip", dir, name);
-    _snprintf(tmp, sizeof(tmp) - 1, "%s\\%s.tmp", dir, name);
-    _snprintf(out, sizeof(out) - 1, "%s\\%s.h64hd", dir, name);
-    zip[sizeof(zip) - 1] = tmp[sizeof(tmp) - 1] = out[sizeof(out) - 1] = 0;
     CreateDirectoryA(dir, NULL);
-    H64_INFO("[hd] installing %s %s for %s", s_job.name.c_str(), s_job.version.c_str(), name);
+    _snprintf(dir, sizeof(dir) - 1, "%s:\\hd_textures\\packs", s_drive);
+    dir[sizeof(dir) - 1] = 0;
+    CreateDirectoryA(dir, NULL);
+    pack_path(s_drive, s_job.id.c_str(), ".zip", zip, sizeof(zip));
+    pack_path(s_drive, s_job.id.c_str(), ".tmp", tmp, sizeof(tmp));
+    pack_path(s_drive, s_job.id.c_str(), ".h64hd", out, sizeof(out));
+    pack_path(s_drive, s_job.id.c_str(), ".txt", info, sizeof(info));
+    H64_INFO("[hd] installing %s %s (%s)", s_job.name.c_str(), s_job.version.c_str(), s_job.id.c_str());
 
     // Room for the rest of the download and the converted pack (about as big).
     have = file_size(zip);
@@ -398,8 +555,11 @@ static void run_job(void)
         }
     }
 
-    // Conversion; the archive goes once the pack is made.
+    // The pack's description first (the list shows a pack once both files are there),
+    // then the conversion; the archive goes once the pack is made.
+    if (!write_info(info, &s_job)) { fail(HD_ERR_WRITE, "cannot write the pack's description"); return; }
     if (convert(zip, tmp, out) == HD_DONE) DeleteFileA(zip);
+    else if (!file_size(out)) DeleteFileA(info);
 }
 
 static DWORD WINAPI hd_thread(LPVOID)
@@ -433,19 +593,18 @@ void HdStart(const char *drive, const char *catalogUrl)
     ResumeThread(s_thread);
 }
 
-int HdInstall(const H64HdPack *p, const char *folderName)
+int HdInstall(const H64HdPack *p)
 {
-    if (!s_thread || InterlockedCompareExchange(&s_jobWanted, 1, 0) != 0) return 0;
+    if (!s_thread || p->id.empty() || InterlockedCompareExchange(&s_jobWanted, 1, 0) != 0) return 0;
     s_job = *p;
-    strncpy(s_jobFolder, folderName, sizeof(s_jobFolder) - 1);
-    s_jobFolder[sizeof(s_jobFolder) - 1] = 0;
     EnterCriticalSection(&s_lock);
     s_st.step = HD_DOWNLOAD;
     s_st.done = 0;
     s_st.total = p->size;
     s_st.errorCode = 0;
     s_st.error[0] = 0;
-    name_of(folderName, s_st.game, sizeof(s_st.game));
+    strncpy(s_st.id, p->id.c_str(), sizeof(s_st.id) - 1);
+    s_st.id[sizeof(s_st.id) - 1] = 0;
     strncpy(s_st.pack, p->name.c_str(), sizeof(s_st.pack) - 1);
     s_st.pack[sizeof(s_st.pack) - 1] = 0;
     LeaveCriticalSection(&s_lock);

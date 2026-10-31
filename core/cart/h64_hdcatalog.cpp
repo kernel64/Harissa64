@@ -76,6 +76,32 @@ int h64_hdcat_parse(const char *json, u32 len, std::vector<H64HdPack> *out)
     return (int)out->size();
 }
 
+int h64_hdcat_fits_rom(const H64HdPack *p, const char *gameCode, const char *romName)
+{
+    const char *a, *b;
+    size_t na, nb;
+    if (gameCode && strlen(gameCode) >= 3 && h64_hdcat_fits(p, gameCode)) return 1;
+    if (!romName || p->rom.empty()) return 0;
+    // Both trimmed of spaces, compared without case.
+    a = romName;
+    b = p->rom.c_str();
+    while (*a == ' ') a++;
+    while (*b == ' ') b++;
+    na = strlen(a);
+    nb = strlen(b);
+    while (na && a[na - 1] == ' ') na--;
+    while (nb && b[nb - 1] == ' ') nb--;
+    if (!na || na != nb) return 0;
+    while (na--)
+    {
+        char ca = *a++, cb = *b++;
+        if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 32);
+        if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 32);
+        if (ca != cb) return 0;
+    }
+    return 1;
+}
+
 int h64_hdcat_fits(const H64HdPack *p, const char *gameCode)
 {
     const char *s = p->games.c_str();

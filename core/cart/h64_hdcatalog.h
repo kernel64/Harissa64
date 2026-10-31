@@ -31,5 +31,8 @@ int h64_hdcat_parse(const char *json, u32 len, std::vector<H64HdPack> *out);
 // Whether the pack is made for the game code (4 characters, the region letter
 // is not compared).
 int h64_hdcat_fits(const H64HdPack *p, const char *gameCode);
+// The same, or the cartridge's name (header, trimmed) is the one the pack's
+// pictures carry, case aside: a hack keeps the name or the code of its game.
+int h64_hdcat_fits_rom(const H64HdPack *p, const char *gameCode, const char *romName);
 
 #endif

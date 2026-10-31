@@ -24,6 +24,7 @@ void ConfigDefaults(Config *c)
     c->hdTextures = 0;
     c->hdBudget = 96;
     c->hdCatalog[0] = 0;
+    c->hdPack[0] = 0;
     c->updateCheck = 1;
     c->artDownload = 1;
     c->browserDemo = 0;
@@ -125,6 +126,11 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
         else if (!strcmp(line, "hdtextures")) c->hdTextures = atoi(eq + 1);
         else if (!strcmp(line, "hdbudget")) c->hdBudget = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "hdpack"))
+        {
+            strncpy(c->hdPack, eq + 1, sizeof(c->hdPack) - 1);
+            c->hdPack[sizeof(c->hdPack) - 1] = 0;
+        }
         else if (!strcmp(line, "hdcatalog"))
         {
             strncpy(c->hdCatalog, eq + 1, sizeof(c->hdCatalog) - 1);
@@ -224,6 +230,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
     fprintf(f, "zoom=%d\nposx=%d\nposy=%d\nrumble=%d\nhdtextures=%d\n", c->zoom, c->offsetX, c->offsetY, c->rumble, c->hdTextures);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
+    if (!withLastRom && c->hdPack[0]) fprintf(f, "hdpack=%s\n", c->hdPack);   // a game's own: the HD textures page's choice
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.
     for (i = 0; i < 4; i++)
@@ -255,9 +262,15 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
 
 int ConfigWriteLang(const char *path, const char *code)
 {
-    static char in[16384], out[16384 + 64];
-    size_t len = 0, used = 0, pos = 0;
+    return ConfigWriteKey(path, "lang", code);
+}
+
+int ConfigWriteKey(const char *path, const char *key, const char *value)
+{
+    static char in[16384], out[16384 + 320];
+    size_t len = 0, used = 0, pos = 0, kl = strlen(key);
     int found = 0;
+    if (kl > 32 || strlen(value) > 256) return 0;
     FILE *f = fopen(path, "rb");
     if (f)
     {
@@ -271,9 +284,9 @@ int ConfigWriteLang(const char *path, const char *code)
         size_t end = pos;
         while (end < len && in[end] != '\n') end++;
         if (end < len) end++;
-        if (end - pos >= 5 && !memcmp(in + pos, "lang=", 5))
+        if (end - pos >= kl + 1 && !memcmp(in + pos, key, kl) && in[pos + kl] == '=')
         {
-            if (!found) used += sprintf(out + used, "lang=%s\n", code);
+            if (!found) used += sprintf(out + used, "%s=%s\n", key, value);
             found = 1;
         }
         else
@@ -284,7 +297,7 @@ int ConfigWriteLang(const char *path, const char *code)
         }
         pos = end;
     }
-    if (!found) used += sprintf(out + used, "lang=%s\n", code);
+    if (!found) used += sprintf(out + used, "%s=%s\n", key, value);
     f = fopen(path, "wb");
     if (!f) return 0;
     if (fwrite(out, 1, used, f) != used) { fclose(f); return 0; }

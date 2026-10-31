@@ -98,7 +98,7 @@ How textures look up close.
 - *Nearest*: no smoothing at all, sharp square pixels.
 
 **HD textures**
-Uses the game's HD texture pack, if one is installed (RT in the game list, see the README). *Off* shows the game's own textures. Best saved for that game only.
+Uses the game's HD texture pack, if one is installed (RT in the game list, see the README). *Off* shows the game's own textures. The change shows at once. The HD textures page (RT) also turns it on or off for one game, and chooses the pack when there are several.
 
 **Edge smoothing (FXAA)**
 Softens the jagged edges of 3D objects. On by default.

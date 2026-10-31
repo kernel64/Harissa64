@@ -41,6 +41,7 @@
 #include "xb_ui.h"
 #include "xb_menu.h"
 #include "xb_audio.h"
+#include "xb_hd.h"
 
 // ---- Recompiler code memory (M0.3 result: only an image section linked
 // writable + executable runs generated code; /SECTION:.jitc,ERW in the project) ----
@@ -742,32 +743,29 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     h64_xenos_set_options(renderer, &o);
     if (c->hdTextures && !c->softRenderer)
     {
-        // The game's hi-res texture pack (made by h64hdconv), in <drive>:\hd_textures\:
-        // "<game name>.h64hd" for every region, as GLideN64 names packs by the
-        // cartridge's name only (the keys come from the textures, which the
-        // regions share), else "<game name> <game code>.h64hd" (the save folder's
-        // name) for a pack of one version. Opened the first time the setting is
-        // on; the core then tracks texture loads for its keys. Off, nothing is
+        // The game's hi-res texture pack (xb_hd.h HdResolve): the one hdpack=
+        // names (the HD textures page's choice), else the game's own file
+        // (<drive>:\hd_textures\<game name>.h64hd, made on a PC), else the first
+        // installed pack that suits the game (its code or its cartridge name).
+        // Opened the first time the setting is on, also in the middle of a
+        // game; the core then tracks texture loads for its keys. Off, nothing is
         // opened and nothing is tracked.
         static int s_hdMissLogged;
-        char folder[64], name[64], path[2][160];
         if (!h64_rdp_hires_enabled(sys))
         {
-            int i, len, found = 0;
+            char folder[64], path[160], id[48];
+            int use;
             h64_save_folder_name(&sys->rom, folder, sizeof(folder));
-            strcpy(name, folder);
-            len = (int)strlen(name);
-            if (len > 5 && name[len - 5] == ' ' && !memcmp(name + len - 4, sys->rom.gameCode, 4)) name[len - 5] = 0;
-            _snprintf(path[0], sizeof(path[0]), "%s:\\hd_textures\\%s.h64hd", s_logDrive, name);
-            _snprintf(path[1], sizeof(path[1]), "%s:\\hd_textures\\%s.h64hd", s_logDrive, folder);
-            path[0][sizeof(path[0]) - 1] = path[1][sizeof(path[1]) - 1] = 0;
-            for (i = 0; i < 2 && !found; i++)
-                if (h64_xenos_set_hd_pack(renderer, path[i], c->hdBudget)) found = 1;
-            if (found) h64_rdp_hires_enable(sys, 1);
+            use = HdResolve(s_logDrive, folder, sys->rom.gameCode, sys->rom.name, c->hdPack, path, sizeof(path), id, sizeof(id));
+            if (use != HD_USE_NONE && h64_xenos_set_hd_pack(renderer, path, c->hdBudget))
+            {
+                H64_INFO("[hd] %s (%s)", path, id);
+                h64_rdp_hires_enable(sys, 1);
+            }
             else if (!s_hdMissLogged)
             {
                 s_hdMissLogged = 1;
-                H64_INFO("[hd] no pack: %s or %s", path[0], path[1]);
+                H64_INFO("[hd] no pack for %s (hdpack=%s)", folder, c->hdPack);
             }
         }
     }

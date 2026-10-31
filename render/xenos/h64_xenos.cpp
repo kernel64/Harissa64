@@ -931,17 +931,29 @@ static void hd_pump(Xenos *x)
     }
 }
 
+// hdMap: a picture's index, -1 (none in the pack, for good), or a texture
+// that had no key (its load was not tracked: made before the pack was opened
+// in the middle of a game, or not a plain load), as -2 - the present it was
+// seen at: asked again HD_RETRY_PRESENTS later, as the game may load it again.
+#define HD_RETRY_PRESENTS 30u
+#define HD_NO_KEY(present) (-2 - (int)((present) & 0x3FFFFFFFu))
+
 // The hi-res picture for tile t's texture (cache key `key`, binding b), or
 // NULL: no picture in the pack, or not loaded yet (then it is asked for).
 static IDirect3DTexture9 *hd_texture(Xenos *x, u32 t, const TexBinding *b, u64 key)
 {
     std::unordered_map<u64, int>::iterator it = x->hdMap.find(key);
     int i;
-    if (it == x->hdMap.end())
+    if (it == x->hdMap.end() ||
+        (it->second <= -2 && ((x->presentCount - (u32)(-2 - it->second)) & 0x3FFFFFFFu) >= HD_RETRY_PRESENTS))
     {
         H64HiresKey k;
         i = -1;
-        if (b->ox || b->oy || !h64_rdp_hires_compute(x->sys, t, &k)) x->hdNoKey++;
+        if (b->ox || b->oy || !h64_rdp_hires_compute(x->sys, t, &k))
+        {
+            x->hdNoKey++;
+            i = HD_NO_KEY(x->presentCount);
+        }
         else if (k.width != b->w || k.height != b->h) x->hdSize++;
         else i = hd_find(x, &k);
         if (x->hdMap.size() > 200000) x->hdMap.clear();
@@ -4299,6 +4311,11 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     if (o->texFilter != x->texFilter)
     {
         x->texFilter = o->texFilter < 0 || o->texFilter > 2 ? 1 : o->texFilter;
+        x->stateDirty = 1;
+    }
+    if ((o->hdTextures != 0) != x->hdOn)
+    {
+        // On or off at once: the next texture bound is the pack's picture or the game's.
         x->hdOn = o->hdTextures != 0;
         x->stateDirty = 1;
     }

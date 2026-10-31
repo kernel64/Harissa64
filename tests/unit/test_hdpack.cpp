@@ -93,6 +93,11 @@ void test_hdpack(H64TestContext *ctx)
         H64_CHECK(ctx, h64_hdcat_fits(&packs[0], "NKTE") == 0);
         H64_CHECK(ctx, h64_hdcat_fits(&packs[1], "NCDJ") == 1);
         H64_CHECK(ctx, h64_hdcat_fits(&packs[1], "NABE") == 1);
+        // A hack: another code, the same cartridge name (any case, spaces around).
+        H64_CHECK(ctx, h64_hdcat_fits_rom(&packs[0], "NXYE", "super mario 64 ") == 1);
+        H64_CHECK(ctx, h64_hdcat_fits_rom(&packs[0], "NSME", "SM64 HACK") == 1);
+        H64_CHECK(ctx, h64_hdcat_fits_rom(&packs[0], "NXYE", "SUPER MARIO 6") == 0);
+        H64_CHECK(ctx, h64_hdcat_fits_rom(&packs[0], NULL, "") == 0);
     }
     H64_CHECK_EQ(ctx, h64_hdcat_parse("{\"a\": 1}", 8, &packs), -1);
 }

@@ -75,7 +75,17 @@ The pictures and the text come from [libretro-thumbnails](https://github.com/lib
 
 Fans have redrawn the textures of some games in high resolution. Harissa64 can use these packs: the game looks sharper, and plays the same.
 
-In the game list, select a game and press **RT**. The page lists the packs known for it, with their authors and size. Press **A** to install one: Harissa64 downloads it from its author's page, checks it and prepares it for the console. A big pack takes several minutes. You can play meanwhile; it waits and goes on afterwards. Then turn on **HD textures** in the game's **Settings > Graphics**. **X** removes a pack.
+In the game list, select a game and press **RT**. The page lists the packs for that game, with their author and size, and shows where each one stands:
+
+- **Active** (green): the game uses this pack. The line at the top says so too.
+- **Installed**: on the console, not in use.
+- **Not downloaded**: press **A** to install it. Harissa64 downloads it from its author's page, checks it and prepares it for the console. A big pack takes several minutes; you can play meanwhile, it waits and goes on afterwards.
+
+On an installed pack, **A** turns it on for this game, or off if it is the active one. **X** removes it, **Y** stops an install.
+
+A pack is downloaded once and serves every game it suits: the other versions of the game (USA, Europe, Japan) and hacks that keep its name or its code.
+
+In a game, **HD textures** in **Settings > Graphics** turns the pack on or off at once.
 
 The packs are made by their authors and stay on their pages; Harissa64 only keeps a [list of links](docs/texture-packs.json). To add a pack to the list, open a pull request.
 
