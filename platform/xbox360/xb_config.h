@@ -51,6 +51,7 @@ struct Config
     int stretch;        // stretch=0|1: the picture stretched to 16:9 (any resolution; HD then stretches instead of widening)
     int hdTextures;     // hdtextures=1: a hi-res texture pack <drive>:\hd_textures\<game name>.h64hd is used when there is one
     u32 hdBudget;       // hdbudget=MB: memory for its pictures (default 96)
+    char hdCatalog[256];   // hdcatalog=URL: the texture pack catalogue (default: docs/texture-packs.json on GitHub)
     int showFps;        // showfps=1: frames shown per second in a corner; 2: also CPU and RAM; 3: and the resolution
     int logCpu;         // logcpu=N: hardware thread of the log writer (5)
     int gameFlags;      // gameflags=HEX: the game's profile flags instead of the table's (checks; -1: the table)
@@ -75,6 +76,7 @@ struct Config
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
     u32 menuAt;         // menuat=N: open the in-game menu at VI N (remote checks; does not skip the ROM browser)
     u32 aboutAt;        // aboutat=N: the same, showing the About panel
+    int hdPage;         // hdpage=1: the ROM browser opens the HD textures page of its selection (checks); 2: and installs the first pack
     int controlsTest;   // controlstest=N: the ROM list opens Settings > Controls on item N; 100+N: also
                         // waiting for an input, again and again; 200+N: the Settings page on item N
                         // (remote checks of the drawing; -1: off)

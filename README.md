@@ -71,6 +71,22 @@ It fills an `art\games` folder: copy it to the console, into the Harissa64 folde
 
 The pictures and the text come from [libretro-thumbnails](https://github.com/libretro-thumbnails/Nintendo_-_Nintendo_64), [libretro-database](https://github.com/libretro/libretro-database), [GameDB-N64](https://github.com/niemasd/GameDB-N64) and Wikipedia. They are not part of Harissa64.
 
+## HD textures
+
+Fans have redrawn the textures of some games in high resolution. Harissa64 can use these packs: the game looks sharper, and plays the same.
+
+In the game list, select a game and press **RT**. The page lists the packs known for it, with their authors and size. Press **A** to install one: Harissa64 downloads it from its author's page, checks it and prepares it for the console. A big pack takes several minutes. You can play meanwhile; it waits and goes on afterwards. Then turn on **HD textures** in the game's **Settings > Graphics**. **X** removes a pack.
+
+The packs are made by their authors and stay on their pages; Harissa64 only keeps a [list of links](docs/texture-packs.json). To add a pack to the list, open a pull request.
+
+Other packs (or no internet on the console)? Convert them on a PC with [Python 3](https://www.python.org):
+
+```
+python tools/hd_textures.py convert "pack.zip" "SUPER MARIO 64"
+```
+
+The second name is how the pack's pictures are named (`SUPER MARIO 64#...png`). Copy the `hd_textures` folder it makes to the console, into the Harissa64 folder. `python tools/hd_textures.py list` and `get` do the same for the packs of the list.
+
 ## Saves
 
 Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. Copy that folder somewhere if you want a backup.

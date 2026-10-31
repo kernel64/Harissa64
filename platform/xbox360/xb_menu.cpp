@@ -20,6 +20,7 @@
 #include "xb_art.h"
 #include "xb_drives.h"
 #include "xb_flags.h"
+#include "xb_hd.h"
 #include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_update.h"
@@ -1607,6 +1608,19 @@ static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, in
         }
     }
 
+    // ---- RT opens the HD textures page (top right of the picture).
+    if (ri->ok)
+    {
+        char hint[96];
+        float fw;
+        _snprintf(hint, sizeof(hint) - 1, "RT:%s", Tr(T_HD_TITLE));
+        hint[sizeof(hint) - 1] = 0;
+        fw = UiFooterWidth(hint);
+        UiRoundRect(sx + sw - fw - 30, sy + 10, fw + 20, 38, 19, UiAlpha(D3DCOLOR_ARGB(170, 10, 11, 15), a),
+                    UiAlpha(D3DCOLOR_ARGB(170, 10, 11, 15), a));
+        UiFooter(sx + sw - fw - 20, sy + 29, hint);
+    }
+
     // ---- What the emulator knows from the file.
     UiRect(ix, divY, iw, 1, UI_COL_LINE);
     if (!ri->ok)
@@ -1616,6 +1630,165 @@ static void card_draw(const char *shown, const RomInfo *ri, const ArtView *v, in
         detail(ix, divY + 22, 110, Tr(T_GAME_CODE), ri->code, 1.0f);
         detail(ix + 128, divY + 22, 90, Tr(T_SIZE), ri->size, 1.0f);
         detail(ix + 236, divY + 22, iw - 236, Tr(T_SAVE), ri->save, 1.0f);
+    }
+}
+
+// ---- HD textures page (RT in the ROM list) ----
+// The catalogue's packs for the selected game, the one installed, and the
+// install job's progress. The job goes on when the page is left.
+static void hd_status_text(const HdStatus *st, char *out, int size)
+{
+    static const int errs[] = { T_HD_ERR_NETWORK, T_HD_ERR_NETWORK, T_HD_ERR_SPACE, T_HD_ERR_CHECKSUM, T_HD_ERR_ZIP, T_HD_ERR_WRITE, T_HD_ERR_EMPTY };
+    out[0] = 0;
+    switch (st->step)
+    {
+    case HD_DOWNLOAD: _snprintf(out, size - 1, Tr(T_HD_DOWNLOADING), st->done >> 20, st->total >> 20); break;
+    case HD_CHECK: _snprintf(out, size - 1, Tr(T_HD_CHECKING), st->total ? (u32)((u64)st->done * 100 / st->total) : 0u); break;
+    case HD_CONVERT: _snprintf(out, size - 1, Tr(T_HD_CONVERTING), st->done, st->total); break;
+    case HD_DONE: strncpy(out, Tr(T_HD_DONE), size - 1); break;
+    case HD_STOPPED: strncpy(out, Tr(T_HD_STOPPED), size - 1); break;
+    case HD_FAILED:
+        strncpy(out, Tr(errs[st->errorCode >= 0 && st->errorCode <= HD_ERR_EMPTY ? st->errorCode : 1]), size - 1);
+        break;
+    }
+    out[size - 1] = 0;
+}
+
+static void HdScreen(IDirect3DDevice9 *dev, const RomInfo *ri, const char *shown, int autoInstall)
+{
+    const float x = 150, y = 46, w = 980, h = 628, cx = x + 52, iw = w - 104;
+    UiInput in;
+    std::vector<H64HdPack> packs;
+    int sel = 0, catState = -1;
+    char name[64], msg[160];
+    DWORD msgAt = 0;
+    name[0] = msg[0] = 0;
+    {
+        // The pack's name for this game ("SUPER MARIO 64 NSME" -> "SUPER MARIO 64").
+        int n;
+        strncpy(name, ri->folder, sizeof(name) - 1);
+        name[sizeof(name) - 1] = 0;
+        n = (int)strlen(name);
+        if (n > 5 && name[n - 5] == ' ') name[n - 5] = 0;
+    }
+    HdCatalogRequest(0);
+    UiInputInit(&in);
+    H64_INFO("[hd] page for %s (%s)", name, ri->code);
+    for (;;)
+    {
+        WORD down = UiInputPoll(&in);
+        HdStatus st;
+        int mine, running, n;
+        u32 installedMB = HdInstalledMB(ri->folder);
+        char line[256];
+        float ty;
+        HdGetStatus(&st);
+        if (st.catalogState != catState)
+        {
+            catState = st.catalogState;
+            if (catState == 2) HdCatalogFor(ri->code, &packs);
+            if (catState == 2 && autoInstall && !packs.empty())
+            {
+                H64_INFO("[hd] hdpage=2: installing %s", packs[0].name.c_str());
+                HdInstall(&packs[0], ri->folder);
+                autoInstall = 0;
+            }
+        }
+        n = (int)packs.size();
+        mine = !strcmp(st.game, name);
+        running = st.step == HD_DOWNLOAD || st.step == HD_CHECK || st.step == HD_CONVERT;
+        if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK)) return;
+        if (n && (down & XINPUT_GAMEPAD_DPAD_UP)) sel = (sel + n - 1) % n;
+        if (n && (down & XINPUT_GAMEPAD_DPAD_DOWN)) sel = (sel + 1) % n;
+        if ((down & XINPUT_GAMEPAD_A) && n)
+        {
+            if (running) { strncpy(msg, Tr(T_HD_BUSY), sizeof(msg) - 1); msgAt = GetTickCount(); }
+            else HdInstall(&packs[sel], ri->folder);
+        }
+        if ((down & XINPUT_GAMEPAD_X) && installedMB && !(running && mine))
+        {
+            if (HdRemove(ri->folder)) { strncpy(msg, Tr(T_HD_REMOVED), sizeof(msg) - 1); msgAt = GetTickCount(); }
+        }
+        if ((down & XINPUT_GAMEPAD_Y) && running) HdStop();
+
+        dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+        UiBegin(dev);
+        UiBackdrop();
+        UiDim();
+        UiPanel(x, y, w, h, 24);
+        UiText(UI_BOLD, 34, cx, y + 62, UI_COL_TEXT, Tr(T_HD_TITLE), UI_LEFT);
+        UiTextFit(UI_REGULAR, 20, iw * 0.55f, shown, line, sizeof(line));
+        UiText(UI_REGULAR, 20, x + w - 52, y + 62, UI_COL_TEXT2, line, UI_RIGHT);
+        if (installedMB) _snprintf(line, sizeof(line) - 1, Tr(T_HD_INSTALLED), installedMB);
+        else strncpy(line, Tr(T_HD_NOT_INSTALLED), sizeof(line) - 1);
+        line[sizeof(line) - 1] = 0;
+        UiText(UI_REGULAR, 19, cx, y + 104, installedMB ? UI_COL_ACCENT_HI : UI_COL_TEXT3, line, UI_LEFT);
+        UiRect(x + 32, y + 132, w - 64, 1, UI_COL_LINE);
+
+        // The packs.
+        ty = y + 150;
+        if (catState == 1 || catState == 0) UiText(UI_REGULAR, 20, cx, ty + 30, UI_COL_TEXT2, Tr(T_HD_LOADING), UI_LEFT);
+        else if (catState == 3) UiText(UI_REGULAR, 20, cx, ty + 30, UI_COL_ACCENT_HI, Tr(T_HD_LIST_FAILED), UI_LEFT);
+        else if (!n) UiText(UI_REGULAR, 20, cx, ty + 30, UI_COL_TEXT2, Tr(T_HD_NONE), UI_LEFT);
+        else
+        {
+            int i;
+            for (i = 0; i < n && i < 4; i++)
+            {
+                const H64HdPack &p = packs[i];
+                float ry = ty + i * 70;
+                if (i == sel) selection_bar(x + 30, ry, w - 60, 62);
+                _snprintf(line, sizeof(line) - 1, "%s  %s", p.name.c_str(), p.version.c_str());
+                line[sizeof(line) - 1] = 0;
+                UiText(UI_BOLD, 22, cx, ry + 20, UI_COL_TEXT, line, UI_LEFT);
+                _snprintf(line, sizeof(line) - 1, Tr(T_HD_BY), p.author.c_str());
+                line[sizeof(line) - 1] = 0;
+                {
+                    char fit[256];
+                    UiTextFit(UI_REGULAR, 17, iw - 160, line, fit, sizeof(fit));
+                    UiText(UI_REGULAR, 17, cx, ry + 45, UI_COL_TEXT2, fit, UI_LEFT);
+                }
+                _snprintf(line, sizeof(line) - 1, Tr(T_HD_SIZE), (p.size + (1u << 20) - 1) >> 20);
+                line[sizeof(line) - 1] = 0;
+                UiText(UI_REGULAR, 19, x + w - 52, ry + 31, UI_COL_TEXT2, line, UI_RIGHT);
+            }
+        }
+
+        // The job: this game's, or another game's.
+        ty = y + 450;
+        if (st.step != HD_IDLE)
+        {
+            if (mine || !running)
+            {
+                if (mine) hd_status_text(&st, line, sizeof(line));
+                else line[0] = 0;
+            }
+            else
+            {
+                _snprintf(line, sizeof(line) - 1, Tr(T_HD_OTHER_JOB), st.pack, st.game);
+                line[sizeof(line) - 1] = 0;
+            }
+            if (line[0])
+            {
+                char fit[256];
+                UiTextFit(UI_REGULAR, 19, iw, line, fit, sizeof(fit));
+                UiText(UI_REGULAR, 19, cx, ty, st.step == HD_FAILED ? UI_COL_ACCENT_HI : UI_COL_TEXT, fit, UI_LEFT);
+            }
+            if (running && st.total)
+            {
+                float f = (float)st.done / (float)st.total;
+                if (f > 1) f = 1;
+                UiRoundRect(cx, ty + 22, iw, 10, 5, D3DCOLOR_ARGB(40, 255, 255, 255), D3DCOLOR_ARGB(40, 255, 255, 255));
+                UiRoundRect(cx, ty + 22, iw * f < 10 ? 10 : iw * f, 10, 5, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+            }
+        }
+        if (msg[0] && GetTickCount() - msgAt < 4000) UiText(UI_REGULAR, 19, cx, ty + 52, UI_COL_ACCENT_HI, msg, UI_LEFT);
+        paragraph(UI_REGULAR, 16, cx, y + 520, iw, 3, UI_COL_TEXT3, Tr(T_HD_NOTE));
+        UiRect(x + 32, y + h - 72, w - 64, 1, UI_COL_LINE);
+        UiFooter(cx, y + h - 36, Tr(T_FOOT_HD));
+        UiEnd();
+        dev->Present(NULL, NULL, NULL, NULL);
+        Sleep(16);
     }
 }
 
@@ -1918,6 +2091,16 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     ArtStart(drive);
     ArtSetNetwork(c->artDownload && art_net_possible(c));
     ArtPause(0);
+    HdStart(drive, c->hdCatalog);
+    HdPause(0);
+    if (c->hdPage && !roms.empty())
+    {
+        // hdpage=1|2 (checks): the selection's HD textures page, at once.
+        RomInfo ri;
+        rom_details(roms[sel].file.c_str(), &ri);
+        if (ri.ok) HdScreen(dev, &ri, roms[sel].shown.c_str(), c->hdPage == 2);
+        c->hdPage = 0;
+    }
 
     UiInputInit(&in);
     memset(&details, 0, sizeof(details));
@@ -1965,9 +2148,10 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
                 path[pathSize - 1] = 0;
                 strncpy(c->lastRom, path, sizeof(c->lastRom) - 1);
                 ConfigWriteMenuKeys(c, settingsPath, 1);
-                // The game needs the memory and the GPU: the pictures go, the worker waits.
+                // The game needs the memory and the GPU: the pictures go, the workers wait.
                 views_clear(dev);
                 ArtPause(1);
+                HdPause(1);
                 return 1;
             }
             if (sel < top) top = sel;
@@ -2007,6 +2191,11 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             AboutScreen(dev);
             UiInputInit(&in);
         }
+        if ((down & UI_BTN_RT) && n && details.ok)
+        {
+            HdScreen(dev, &details, roms[sel].shown.c_str(), 0);
+            UiInputInit(&in);
+        }
         if (down & XINPUT_GAMEPAD_START)
         {
             int r = file_browser(dev, c, settingsPath, path, pathSize);
@@ -2014,6 +2203,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             {
                 views_clear(dev);
                 ArtPause(1);
+                HdPause(1);
                 return 1;
             }
             if (r == 2)

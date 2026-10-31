@@ -31,4 +31,13 @@ int NetStart(int retry);
 // reached (no DNS answer, no connection, TLS failure, time-out).
 int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, u32 maxLen, char *location, int locSize);
 
+// Downloads https://... to `file`, following redirects. Bytes already in the
+// file (an interrupted download) are kept and the rest is asked for (Range);
+// a dropped connection is tried again a few times. `expected`: the whole
+// size (0: unknown). progress(user, done, total) runs between blocks; non-zero
+// stops. Returns 1 when the file is complete, 0 on failure, -1 when stopped.
+int NetDownload(const char *url, const char *file, u32 expected, int (*progress)(void *user, u32 done, u32 total), void *user);
+// The SHA-256 of a file as 64 lowercase hex digits. Returns 1, 0 (unreadable), -1 (stopped).
+int NetSha256File(const char *file, char hex[65], int (*progress)(void *user, u32 done, u32 total), void *user);
+
 #endif

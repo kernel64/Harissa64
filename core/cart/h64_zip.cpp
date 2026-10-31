@@ -93,11 +93,12 @@ int h64_zip_extract(const H64ZipReader *r, const H64ZipEntry *e, u8 *out, u32 le
     return 0;
 }
 
-int h64_zip_find_rom(const H64ZipReader *r, H64ZipEntry *e)
+// The central directory (malloc'd) and its entry count. Returns 0 or -1.
+static int read_cd(const H64ZipReader *r, u8 **cdOut, u32 *cdSizeOut, u32 *countOut)
 {
     u8 *tail, *cd;
     u32 tailLen = r->size < 65557 ? r->size : 65557, tailOff = r->size - tailLen, i, eocd = 0, found = 0;
-    u32 count, cdSize, cdOff, pos, pass;
+    u32 count, cdSize, cdOff;
     if (r->size < 22) return -1;
     tail = (u8 *)malloc(tailLen);
     if (!tail) return -1;
@@ -109,30 +110,73 @@ int h64_zip_find_rom(const H64ZipReader *r, H64ZipEntry *e)
     cdSize = le32(tail + eocd + 12);
     cdOff = le32(tail + eocd + 16);
     free(tail);
-    if (cdOff > r->size || cdSize > r->size - cdOff || cdSize > 16u * 1024 * 1024) return -1;
+    if (cdOff > r->size || cdSize > r->size - cdOff || cdSize > 64u * 1024 * 1024) return -1;
     cd = (u8 *)malloc(cdSize ? cdSize : 1);
     if (!cd) return -1;
     if (r->read(r->user, cdOff, cd, cdSize) != cdSize) { free(cd); return -1; }
+    *cdOut = cd;
+    *cdSizeOut = cdSize;
+    *countOut = count;
+    return 0;
+}
+
+// The central directory entry at *pos (moved past it). Returns 0, or -1 at the end.
+static int next_entry(const u8 *cd, u32 cdSize, u32 *pos, H64ZipEntry *c, u32 *flags)
+{
+    u32 p = *pos, nameLen, extraLen, commentLen;
+    if (p + 46 > cdSize || le32(cd + p) != 0x02014B50u) return -1;
+    nameLen = le16(cd + p + 28);
+    extraLen = le16(cd + p + 30);
+    commentLen = le16(cd + p + 32);
+    if (p + 46 + nameLen > cdSize) return -1;
+    memset(c, 0, sizeof(*c));
+    memcpy(c->name, cd + p + 46, nameLen < sizeof(c->name) - 1 ? nameLen : sizeof(c->name) - 1);
+    *flags = le16(cd + p + 8);
+    c->method = le16(cd + p + 10);
+    c->crc = le32(cd + p + 16);
+    c->compSize = le32(cd + p + 20);
+    c->size = le32(cd + p + 24);
+    c->localOffset = le32(cd + p + 42);
+    *pos = p + 46 + nameLen + extraLen + commentLen;
+    return 0;
+}
+
+int h64_zip_each(const H64ZipReader *r, int (*fn)(void *user, const H64ZipEntry *e), void *user)
+{
+    u8 *cd;
+    u32 cdSize, count, pos = 0, i, flags;
+    int seen = 0;
+    H64ZipEntry c;
+    if (read_cd(r, &cd, &cdSize, &count)) return -1;
+    // (count is 16 bits in the end record: an archive of more than 65535 entries
+    // wraps it, so the walk goes by the directory's size.)
+    for (i = 0; next_entry(cd, cdSize, &pos, &c, &flags) == 0; i++)
+    {
+        seen++;
+        if (flags & 1) continue;   // encrypted
+        if (fn(user, &c)) break;
+    }
+    (void)count;
+    free(cd);
+    return seen;
+}
+
+int h64_zip_find_rom(const H64ZipReader *r, H64ZipEntry *e)
+{
+    u8 *cd;
+    u32 count, cdSize, pos, pass, i;
+    if (read_cd(r, &cd, &cdSize, &count)) return -1;
     // Pass 0: entries named like ROMs; pass 1: any entry. Each candidate's
     // first word must be an N64 ROM's (any dump order).
     for (pass = 0; pass < 2; pass++)
     {
         pos = 0;
-        for (i = 0; i < count && pos + 46 <= cdSize && le32(cd + pos) == 0x02014B50u; i++)
+        for (i = 0; i < count; i++)
         {
-            u32 nameLen = le16(cd + pos + 28), extraLen = le16(cd + pos + 30), commentLen = le16(cd + pos + 32);
-            u32 flags = le16(cd + pos + 8);
+            u32 flags;
             H64ZipEntry c;
             u8 head[4];
-            if (pos + 46 + nameLen > cdSize) break;
-            memset(&c, 0, sizeof(c));
-            memcpy(c.name, cd + pos + 46, nameLen < sizeof(c.name) - 1 ? nameLen : sizeof(c.name) - 1);
-            c.method = le16(cd + pos + 10);
-            c.crc = le32(cd + pos + 16);
-            c.compSize = le32(cd + pos + 20);
-            c.size = le32(cd + pos + 24);
-            c.localOffset = le32(cd + pos + 42);
-            pos += 46 + nameLen + extraLen + commentLen;
+            if (next_entry(cd, cdSize, &pos, &c, &flags)) break;
             if ((flags & 1) || c.size < 0x1000 || (c.method != 0 && c.method != 8)) continue;   // encrypted, too small
             if (pass == 0 && !has_rom_extension(c.name)) continue;
             if (h64_zip_extract(r, &c, head, 4) == 0 && is_rom_word(head))

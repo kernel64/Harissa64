@@ -2,219 +2,175 @@
 // PNG names: NAME#TEXCRC#FMT#SIZE[#PALCRC]_suffix.png) into a Harissa64 HD
 // file (core/rdp/h64_hdpack.h) the Xbox 360 front end reads.
 //
-//   h64hdconv PACK_DIR ROM_NAME OUT.h64hd [--max N] [--skip TEXT]...
+//   h64hdconv PACK ROM_NAME OUT.h64hd [--max N] [--threads N]
 //
-// PACK_DIR: the pack's extracted folder (searched recursively). ROM_NAME: the
-// ROM's internal name as the PNG names start ("SUPER MARIO 64"; the case is
-// ignored). --max N: textures larger than N pixels on a side are halved until
-// they fit (default 1024). --skip TEXT: ignore paths containing TEXT (several
-// allowed; default "Hacks/", "iQue/", "Ports/": other ROMs and other emulators).
+// PACK: the pack's .zip as downloaded, or its extracted folder (searched
+// recursively). ROM_NAME: the ROM's internal name as the PNG names start
+// ("SUPER MARIO 64"; the case is ignored). --max N: textures larger than N
+// pixels on a side are halved until they fit (default 1024). Pictures in
+// "Hacks/", "iQue/", "Ports/" and "rt64/" folders (other ROMs, other
+// emulators) are left out. The work is shared by --threads threads (default:
+// every processor).
 //
-// PNG decoding: stb_image; DXT compression: stb_dxt (third_party/stb, public domain).
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_ONLY_PNG
-#include "../../third_party/stb/stb_image.h"
-#define STB_DXT_IMPLEMENTATION
-#include "../../third_party/stb/stb_dxt.h"
-#include "../../core/rdp/h64_hdpack.h"
+// The conversion itself is core/rdp/h64_hdbuild.cpp, which the console uses too.
+#include "../../core/cart/h64_zip.h"
+#include "../../core/rdp/h64_hdbuild.h"
 
-#include <algorithm>
-#include <cctype>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
 
-struct Item
+struct Source
 {
-    H64HdEntry e;
-    std::vector<unsigned char> data;
+    std::string path;     // a file of the folder, or the entry's name in the zip
+    H64ZipEntry entry;    // (zip)
+    H64HdEntry key;
 };
 
-static std::string upper(std::string s)
+struct ZipFile { FILE *f; std::mutex lock; };
+
+static u32 zip_read(void *user, u32 offset, void *buf, u32 len)
 {
-    for (size_t i = 0; i < s.size(); i++) s[i] = (char)toupper((unsigned char)s[i]);
-    return s;
+    ZipFile *z = (ZipFile *)user;
+    std::lock_guard<std::mutex> g(z->lock);
+#ifdef _WIN32
+    if (_fseeki64(z->f, (long long)offset, SEEK_SET)) return 0;
+#else
+    if (fseeko(z->f, (off_t)offset, SEEK_SET)) return 0;
+#endif
+    return (u32)fread(buf, 1, len, z->f);
 }
 
-// NAME#TEX#FMT#SIZE[#PAL]_suffix -> key; 0 if the name is not a Rice name for this ROM.
-static int parse_name(const std::string &file, const std::string &romUpper, H64HdEntry *e)
+struct ListCtx { std::vector<Source> *out; const char *rom; };
+
+static int zip_list(void *user, const H64ZipEntry *e)
 {
-    std::string base = file;
-    size_t dot = base.rfind('.');
-    if (dot != std::string::npos) base = base.substr(0, dot);
-    size_t us = base.rfind('_');
-    if (us != std::string::npos && base.find('#', us) == std::string::npos) base = base.substr(0, us);
-    std::vector<std::string> p;
-    size_t s = 0, h;
-    while ((h = base.find('#', s)) != std::string::npos) { p.push_back(base.substr(s, h - s)); s = h + 1; }
-    p.push_back(base.substr(s));
-    if (p.size() < 4 || upper(p[0]) != romUpper) return 0;
-    memset(e, 0, sizeof(*e));
-    if (p[1] == "$") e->flags |= H64HD_WILDCARD;
-    else e->texCrc = (u32)strtoul(p[1].c_str(), 0, 16);
-    e->fmt = (u8)atoi(p[2].c_str());
-    e->size = (u8)atoi(p[3].c_str());
-    if (p.size() > 4 && !p[4].empty()) { e->palCrc = (u32)strtoul(p[4].c_str(), 0, 16); e->flags |= H64HD_HAS_PAL; }
-    if ((e->flags & H64HD_WILDCARD) && !(e->flags & H64HD_HAS_PAL)) return 0;
-    return 1;
+    ListCtx *c = (ListCtx *)user;
+    const char *slash = strrchr(e->name, '/'), *file = slash ? slash + 1 : e->name;
+    size_t n = strlen(file);
+    Source s;
+    if (n < 4 || (strcmp(file + n - 4, ".png") && strcmp(file + n - 4, ".PNG"))) return 0;
+    if (h64_hdbuild_skip(e->name) || !h64_hdbuild_parse(file, c->rom, &s.key)) return 0;
+    s.path = e->name;
+    s.entry = *e;
+    c->out->push_back(s);
+    return 0;
 }
 
-static bool key_less(const H64HdEntry &a, const H64HdEntry &b)
+static bool read_file(const std::string &path, std::vector<u8> &data)
 {
-    if (a.texCrc != b.texCrc) return a.texCrc < b.texCrc;
-    if (a.palCrc != b.palCrc) return a.palCrc < b.palCrc;
-    if (a.fmt != b.fmt) return a.fmt < b.fmt;
-    if (a.size != b.size) return a.size < b.size;
-    return a.flags < b.flags;
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    data.resize(n > 0 ? (size_t)n : 0);
+    bool ok = n > 0 && fread(data.data(), 1, data.size(), f) == data.size();
+    fclose(f);
+    return ok;
 }
-
-static bool key_eq(const H64HdEntry &a, const H64HdEntry &b)
-{
-    return a.texCrc == b.texCrc && a.palCrc == b.palCrc && a.fmt == b.fmt && a.size == b.size && a.flags == b.flags;
-}
-
-// Half size (box filter); w, h even.
-static std::vector<unsigned char> half(const std::vector<unsigned char> &src, int w, int h)
-{
-    std::vector<unsigned char> d((size_t)(w / 2) * (h / 2) * 4);
-    for (int y = 0; y < h / 2; y++)
-        for (int x = 0; x < w / 2; x++)
-            for (int c = 0; c < 4; c++)
-            {
-                int s = src[((2 * y) * w + 2 * x) * 4 + c] + src[((2 * y) * w + 2 * x + 1) * 4 + c] +
-                        src[((2 * y + 1) * w + 2 * x) * 4 + c] + src[((2 * y + 1) * w + 2 * x + 1) * 4 + c];
-                d[(y * (w / 2) + x) * 4 + c] = (unsigned char)((s + 2) / 4);
-            }
-    return d;
-}
-
-// One mip level's DXT blocks, 16-bit words byte-swapped for the console.
-static void compress(const std::vector<unsigned char> &rgba, int w, int h, int dxt5, std::vector<unsigned char> &out)
-{
-    unsigned char block[64], dst[16];
-    for (int by = 0; by < h; by += 4)
-        for (int bx = 0; bx < w; bx += 4)
-        {
-            for (int y = 0; y < 4; y++)
-                for (int x = 0; x < 4; x++)
-                    memcpy(block + (y * 4 + x) * 4, &rgba[((by + y) * w + bx + x) * 4], 4);
-            stb_compress_dxt_block(dst, block, dxt5, STB_DXT_HIGHQUAL);
-            int n = dxt5 ? 16 : 8;
-            for (int i = 0; i < n; i += 2) { out.push_back(dst[i + 1]); out.push_back(dst[i]); }
-        }
-}
-
-static void put32(std::vector<unsigned char> &b, u32 v) { b.push_back((unsigned char)(v >> 24)); b.push_back((unsigned char)(v >> 16)); b.push_back((unsigned char)(v >> 8)); b.push_back((unsigned char)v); }
-static void put16(std::vector<unsigned char> &b, u32 v) { b.push_back((unsigned char)(v >> 8)); b.push_back((unsigned char)v); }
 
 int main(int argc, char **argv)
 {
     if (argc < 4)
     {
-        fprintf(stderr, "usage: h64hdconv PACK_DIR ROM_NAME OUT.h64hd [--max N] [--skip TEXT]...\n");
+        fprintf(stderr, "usage: h64hdconv PACK(.zip or folder) ROM_NAME OUT.h64hd [--max N] [--threads N]\n");
         return 2;
     }
-    std::string dir = argv[1], romUpper = upper(argv[2]), outPath = argv[3];
-    int maxSide = 1024;
-    std::vector<std::string> skips;
+    std::string pack = argv[1], rom = argv[2], outPath = argv[3];
+    int maxSide = 1024, threads = (int)std::thread::hardware_concurrency();
     for (int i = 4; i < argc; i++)
     {
         if (!strcmp(argv[i], "--max") && i + 1 < argc) maxSide = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--skip") && i + 1 < argc) skips.push_back(argv[++i]);
+        else if (!strcmp(argv[i], "--threads") && i + 1 < argc) threads = atoi(argv[++i]);
     }
-    if (skips.empty()) { skips.push_back("Hacks/"); skips.push_back("iQue/"); skips.push_back("Ports/"); }
+    if (threads < 1) threads = 1;
 
-    std::vector<Item> items;
-    size_t seen = 0, failed = 0, dup = 0;
-    for (const fs::directory_entry &de : fs::recursive_directory_iterator(dir))
+    // The pictures of this ROM in the pack.
+    std::vector<Source> list;
+    ZipFile zf;
+    H64ZipReader zr;
+    bool isZip = fs::is_regular_file(pack);
+    if (isZip)
     {
-        if (!de.is_regular_file()) continue;
-        std::string path = de.path().generic_string(), name = de.path().filename().string();
-        if (upper(de.path().extension().string()) != ".PNG") continue;
-        bool skip = false;
-        for (size_t k = 0; k < skips.size(); k++) if (path.find(skips[k]) != std::string::npos) skip = true;
-        if (skip) continue;
-        Item it;
-        if (!parse_name(name, romUpper, &it.e)) continue;
-        seen++;
-        int w, h, n;
-        unsigned char *px = stbi_load(path.c_str(), &w, &h, &n, 4);
-        if (!px) { failed++; fprintf(stderr, "cannot read %s\n", path.c_str()); continue; }
-        std::vector<unsigned char> img(px, px + (size_t)w * h * 4);
-        stbi_image_free(px);
-        // Fit the size limit (halving keeps the aspect), then pad to a multiple of 4 by repeating the edge.
-        while ((w > maxSide || h > maxSide) && w % 2 == 0 && h % 2 == 0) { img = half(img, w, h); w /= 2; h /= 2; }
-        int pw = (w + 3) & ~3, ph = (h + 3) & ~3;
-        if (pw != w || ph != h)
+        zf.f = fopen(pack.c_str(), "rb");
+        if (!zf.f) { fprintf(stderr, "cannot open %s\n", pack.c_str()); return 1; }
+        u64 size = fs::file_size(pack);
+        if (size >= 0xFFFFFFFFull) { fprintf(stderr, "%s: archives of 4 GB or more are not supported\n", pack.c_str()); return 1; }
+        zr.user = &zf;
+        zr.size = (u32)size;
+        zr.read = zip_read;
+        ListCtx c = { &list, rom.c_str() };
+        if (h64_zip_each(&zr, zip_list, &c) < 0) { fprintf(stderr, "%s is not a zip archive\n", pack.c_str()); return 1; }
+    }
+    else
+    {
+        for (const fs::directory_entry &de : fs::recursive_directory_iterator(pack))
         {
-            std::vector<unsigned char> p((size_t)pw * ph * 4);
-            for (int y = 0; y < ph; y++)
-                for (int x = 0; x < pw; x++)
-                    memcpy(&p[((size_t)y * pw + x) * 4], &img[((size_t)std::min(y, h - 1) * w + std::min(x, w - 1)) * 4], 4);
-            img.swap(p);
-            w = pw; h = ph;
+            if (!de.is_regular_file()) continue;
+            std::string path = de.path().generic_string(), name = de.path().filename().string();
+            if (name.size() < 4 || (name.compare(name.size() - 4, 4, ".png") && name.compare(name.size() - 4, 4, ".PNG"))) continue;
+            Source s;
+            if (h64_hdbuild_skip(path.c_str()) || !h64_hdbuild_parse(name.c_str(), rom.c_str(), &s.key)) continue;
+            s.path = path;
+            list.push_back(s);
         }
-        int alpha = 0;
-        for (size_t i = 3; i < img.size(); i += 4) if (img[i] < 250) { alpha = 1; break; }
-        it.e.dxt = alpha ? 5 : 1;
-        it.e.width = (u16)w;
-        it.e.height = (u16)h;
-        // Mip levels while both sides stay even multiples of 4.
-        int levels = 0, lw = w, lh = h;
-        std::vector<unsigned char> lv = img;
+    }
+    if (list.empty()) { fprintf(stderr, "no picture of \"%s\" in %s\n", rom.c_str(), pack.c_str()); return 1; }
+
+    H64HdBuilder *b = h64_hdbuild_begin(outPath.c_str(), (u32)list.size());
+    if (!b) { fprintf(stderr, "cannot write %s\n", outPath.c_str()); return 1; }
+    std::atomic<size_t> next(0), done(0), failed(0);
+    std::atomic<bool> writeError(false);
+    std::mutex outLock;
+    auto work = [&]() {
+        std::vector<u8> png;
         for (;;)
         {
-            compress(lv, lw, lh, alpha, it.data);
-            levels++;
-            if (lw % 8 || lh % 8 || levels >= 12) break;
-            lv = half(lv, lw, lh);
-            lw /= 2; lh /= 2;
+            size_t i = next++;
+            if (i >= list.size()) break;
+            const Source &s = list[i];
+            bool ok;
+            if (isZip)
+            {
+                png.resize(s.entry.size);
+                ok = s.entry.size && h64_zip_extract(&zr, &s.entry, png.data(), s.entry.size) == 0;
+            }
+            else
+                ok = read_file(s.path, png);
+            H64HdItem item;
+            item.e = s.key;
+            item.e.pad2 = (u32)i;   // ties between repeated keys: the first in the pack's order
+            if (!ok || h64_hdbuild_make(png.data(), (u32)png.size(), maxSide, &item))
+            {
+                failed++;
+                fprintf(stderr, "cannot read %s\n", s.path.c_str());
+                continue;
+            }
+            {
+                std::lock_guard<std::mutex> g(outLock);
+                if (h64_hdbuild_add(b, &item)) writeError = true;
+            }
+            size_t d = ++done;
+            if (d % 500 == 0) fprintf(stderr, "%zu / %zu textures...\n", d, list.size());
         }
-        it.e.mips = (u8)levels;
-        items.push_back(it);
-        if (items.size() % 200 == 0) fprintf(stderr, "%zu textures...\n", items.size());
-    }
-    std::sort(items.begin(), items.end(), [](const Item &a, const Item &b) { return key_less(a.e, b.e); });
-    std::vector<Item> uniq;
-    for (size_t i = 0; i < items.size(); i++)
-    {
-        if (!uniq.empty() && key_eq(uniq.back().e, items[i].e)) { dup++; continue; }
-        uniq.push_back(items[i]);
-    }
-
-    u32 count = (u32)uniq.size(), dataOff = H64HD_HEADER_BYTES + count * H64HD_ENTRY_BYTES, off = dataOff;
-    std::vector<unsigned char> head;
-    head.insert(head.end(), H64HD_MAGIC, H64HD_MAGIC + 8);
-    put32(head, H64HD_VERSION); put32(head, count); put32(head, H64HD_HEADER_BYTES); put32(head, dataOff); put32(head, 0); put32(head, 0);
-    for (size_t i = 0; i < uniq.size(); i++)
-    {
-        H64HdEntry &e = uniq[i].e;
-        e.offset = off;
-        e.bytes = (u32)uniq[i].data.size();
-        off += (e.bytes + 127) & ~127u;   // 128-byte aligned data
-        put32(head, e.texCrc); put32(head, e.palCrc);
-        head.push_back(e.fmt); head.push_back(e.size); head.push_back(e.flags); head.push_back(e.dxt);
-        put16(head, e.width); put16(head, e.height);
-        head.push_back(e.mips); head.push_back(0); put16(head, 0);
-        put32(head, e.offset); put32(head, e.bytes); put32(head, 0);
-    }
-    FILE *f = fopen(outPath.c_str(), "wb");
-    if (!f) { fprintf(stderr, "cannot write %s\n", outPath.c_str()); return 1; }
-    fwrite(head.data(), 1, head.size(), f);
-    static const unsigned char zeros[128] = { 0 };
-    for (size_t i = 0; i < uniq.size(); i++)
-    {
-        fwrite(uniq[i].data.data(), 1, uniq[i].data.size(), f);
-        size_t pad = ((uniq[i].data.size() + 127) & ~(size_t)127) - uniq[i].data.size();
-        if (pad) fwrite(zeros, 1, pad, f);
-    }
-    fclose(f);
-    printf("%s: %u textures (%zu PNG names, %zu duplicates, %zu unreadable), %.1f MB\n", outPath.c_str(), count, seen, dup, failed,
-           off / 1048576.0);
+    };
+    std::vector<std::thread> pool;
+    for (int t = 0; t < threads; t++) pool.push_back(std::thread(work));
+    for (size_t t = 0; t < pool.size(); t++) pool[t].join();
+    if (isZip) fclose(zf.f);
+    if (writeError) { h64_hdbuild_abort(b); fprintf(stderr, "cannot write %s (disk full, or over 2 GB)\n", outPath.c_str()); return 1; }
+    u32 count, repeated, bytes;
+    if (h64_hdbuild_end(b, &count, &repeated, &bytes)) { fprintf(stderr, "cannot write %s\n", outPath.c_str()); return 1; }
+    printf("%s: %u textures (%zu PNG names, %u repeated, %zu unreadable), %.1f MB\n", outPath.c_str(), count, list.size(), repeated,
+           (size_t)failed, bytes / 1048576.0);
     return 0;
 }

@@ -1,0 +1,92 @@
+{
+  "format": "1",
+  "about": "Hi-res texture packs Harissa64 can download and convert. Only links: the packs stay on their authors' pages. Licences are not stated by the authors; each pack is credited to them. To add a pack: a .zip of PNG pictures with GLideN64 (Rice) names, hosted with a direct link (GitHub releases), with its size and SHA-256.",
+  "sm64-reloaded": {
+    "name": "SM64 Reloaded",
+    "games": "NSM",
+    "rom": "SUPER MARIO 64",
+    "author": "GhostlyDark and contributors",
+    "version": "2.6.0",
+    "page": "https://github.com/GhostlyDark/SM64-Reloaded",
+    "url": "https://github.com/GhostlyDark/SM64-Reloaded/releases/download/v2.6.0/sm64-reloaded-v2.6.0-gliden64-png-hd.zip",
+    "size": "280611003",
+    "sha256": "e4aeb971e01cce94ed0ecc1e1e9c79c71c3ed69c9c2225e96567b5c0dd120974"
+  },
+  "mk64-reloaded": {
+    "name": "MK64 Reloaded",
+    "games": "NKT",
+    "rom": "MARIOKART64",
+    "author": "GhostlyDark and contributors",
+    "version": "2026.04.03",
+    "page": "https://github.com/GhostlyDark/MK64-Reloaded",
+    "url": "https://github.com/GhostlyDark/MK64-Reloaded/releases/download/v2026.04.03/mk64-reloaded-v2026.04.03-gliden64-png-hd.zip",
+    "size": "1497045942",
+    "sha256": "46388b0e82ceb7983d08b36757e67efc92b4820080bd6d91d5bc6c08c42d9101"
+  },
+  "ssb-reloaded": {
+    "name": "SSB Reloaded",
+    "games": "NAL",
+    "rom": "SMASH BROTHERS",
+    "author": "GhostlyDark and contributors",
+    "version": "2.0.1",
+    "page": "https://github.com/GhostlyDark/SSB-Reloaded",
+    "url": "https://github.com/GhostlyDark/SSB-Reloaded/releases/download/v2.0.1/ssb-reloaded-v2.0.1-gliden64-png.zip",
+    "size": "226173280",
+    "sha256": "3e33528a5b9bbca5373ced10dffe7db84c13c9394d62c30088c01add45c509d5"
+  },
+  "bk-reloaded": {
+    "name": "BK Reloaded",
+    "games": "NBK",
+    "rom": "Banjo-Kazooie",
+    "author": "GhostlyDark and contributors",
+    "version": "0.2.1",
+    "page": "https://github.com/GhostlyDark/BK-Reloaded",
+    "url": "https://github.com/GhostlyDark/BK-Reloaded/releases/download/v0.2.1/bk-reloaded-v0.2.1-gliden64-png-hd.zip",
+    "size": "58679381",
+    "sha256": "a18aeac9405ba85159e94331b0716f4dedb2f8ad0213721712eac101aa08c760"
+  },
+  "bt-reloaded": {
+    "name": "BT Reloaded",
+    "games": "NB7",
+    "rom": "BANJO TOOIE",
+    "author": "GhostlyDark and contributors",
+    "version": "0.1.1",
+    "page": "https://github.com/GhostlyDark/BT-Reloaded",
+    "url": "https://github.com/GhostlyDark/BT-Reloaded/releases/download/v0.1.1/bt-reloaded-v0.1.1-gliden64-png-hd.zip",
+    "size": "31181588",
+    "sha256": "455f67d2642d2a3892a8028c8134256a90b753402bad91ae170af0cbc12b5688"
+  },
+  "ge007-hd": {
+    "name": "GoldenEye 007 HD",
+    "games": "NGE",
+    "rom": "GOLDENEYE",
+    "author": "intermissionfb (fonts: GhostlyDark)",
+    "version": "2025-12-30",
+    "page": "https://github.com/GhostlyDark/GoldenEye-007-HD",
+    "url": "https://github.com/GhostlyDark/GoldenEye-007-HD/releases/download/v2025-12-30/ge007-hd-v2025.12.30-gliden64-png-hd.zip",
+    "size": "135256079",
+    "sha256": "a72d082e23b516f28f4868b0b32cbb676a5b0ce7f00e7eb79badf89f71ab90ba"
+  },
+  "mm-reloaded": {
+    "name": "MM Reloaded",
+    "games": "NZS",
+    "rom": "ZELDA MAJORA'S MASK",
+    "author": "GhostlyDark and contributors, after Nerrel's MMHD",
+    "version": "11.0.2",
+    "page": "https://github.com/GhostlyDark/MM-Reloaded",
+    "url": "https://github.com/GhostlyDark/MM-Reloaded/releases/download/v11.0.2/mm-reloaded-v11.0.2-gliden64-png-hd.zip",
+    "size": "1136800844",
+    "sha256": "23ad61b8ac15de0dd428b3dad555f844b16e369319adc75e6f3f683a8b679481"
+  },
+  "re2-reloaded": {
+    "name": "RE2 Reloaded",
+    "games": "NRE",
+    "rom": "Resident Evil II",
+    "author": "GhostlyDark and contributors",
+    "version": "2.0.0",
+    "page": "https://github.com/GhostlyDark/RE2-Reloaded",
+    "url": "https://github.com/GhostlyDark/RE2-Reloaded/releases/download/v2.0.0/re2-reloaded-v2.0.0-png-hd.zip",
+    "size": "1314183761",
+    "sha256": ""
+  }
+}

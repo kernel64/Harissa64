@@ -23,6 +23,7 @@ void ConfigDefaults(Config *c)
     c->showFps = 0;
     c->hdTextures = 0;
     c->hdBudget = 96;
+    c->hdCatalog[0] = 0;
     c->updateCheck = 1;
     c->artDownload = 1;
     c->browserDemo = 0;
@@ -33,6 +34,7 @@ void ConfigDefaults(Config *c)
     c->logCpu = 5;
     c->menuAt = 0;
     c->aboutAt = 0;
+    c->hdPage = 0;
     c->controlsTest = -1;
     c->autoStart = 0;
     c->autoIndex = 0;
@@ -123,6 +125,11 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "showfps")) c->showFps = atoi(eq + 1);
         else if (!strcmp(line, "hdtextures")) c->hdTextures = atoi(eq + 1);
         else if (!strcmp(line, "hdbudget")) c->hdBudget = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "hdcatalog"))
+        {
+            strncpy(c->hdCatalog, eq + 1, sizeof(c->hdCatalog) - 1);
+            c->hdCatalog[sizeof(c->hdCatalog) - 1] = 0;
+        }
         else if (!strcmp(line, "updatecheck")) c->updateCheck = atoi(eq + 1);
         else if (!strcmp(line, "artdownload")) c->artDownload = atoi(eq + 1);
         else if (!strcmp(line, "browserdemo")) c->browserDemo = atoi(eq + 1);
@@ -133,6 +140,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "aboutat")) c->aboutAt = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "hdpage")) c->hdPage = atoi(eq + 1);
         else if (!strcmp(line, "controlstest")) c->controlsTest = atoi(eq + 1);
         else if (!strcmp(line, "autostart")) c->autoStart = atoi(eq + 1);
         else if (!strcmp(line, "browserat")) c->browserAt = (u32)atoi(eq + 1);
