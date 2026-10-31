@@ -16,6 +16,9 @@ extern "C" VOID XeCryptRandom(PBYTE pb, DWORD cb);   // xboxkrnl export
 #define NET_TIMEOUT_MS 10000
 #define NET_HEAD_MAX 16384
 #define NET_URL_MAX 4096        // signed storage URLs of GitHub release assets run near 1 KB
+// Receive buffer of a download's socket. XNet's default is 16 KB: with ~25 ms
+// to GitHub's servers that kept downloads near 0.6 MB/s.
+#define NET_RCVBUF (1024 * 1024)
 
 // ---- Network stack ----
 // 0: not started, 1: starting (another thread waits), 2: online, 3: offline.
@@ -116,14 +119,28 @@ static const br_x509_class s_noAnchorVtable = {
 };
 
 // ---- socket callbacks for br_sslio
+struct NetIo
+{
+    SOCKET s;
+    u64 recvTicks;   // time spent waiting in recv (QPC)
+};
+static u64 qpc(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (u64)t.QuadPart;
+}
 static int sock_read(void *ctx, unsigned char *buf, size_t len)
 {
-    int n = recv(*(SOCKET *)ctx, (char *)buf, (int)len, 0);
+    NetIo *io = (NetIo *)ctx;
+    u64 t0 = qpc();
+    int n = recv(io->s, (char *)buf, (int)len, 0);
+    io->recvTicks += qpc() - t0;
     return n > 0 ? n : -1;
 }
 static int sock_write(void *ctx, const unsigned char *buf, size_t len)
 {
-    int n = send(*(SOCKET *)ctx, (const char *)buf, (int)len, 0);
+    int n = send(((NetIo *)ctx)->s, (const char *)buf, (int)len, 0);
     return n > 0 ? n : -1;
 }
 
@@ -235,6 +252,15 @@ struct NetSink
     int stopped;         // progress asked to stop
 };
 
+// The download's file, written in 1 MB pieces (TLS hands over 16 KB at a
+// time; written as such they cost as much time as the decryption).
+static FILE *open_sink(const char *path, const char *mode)
+{
+    FILE *f = fopen(path, mode);
+    if (f) setvbuf(f, NULL, _IOFBF, 1 << 20);
+    return f;
+}
+
 static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, u32 maxLen, char *location, int locSize,
                    NetSink *sink)
 {
@@ -242,6 +268,7 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
     IN_ADDR ip;
     SOCKADDR_IN sa;
     SOCKET s;
+    NetIo io;
     BOOL one = TRUE;
     DWORD timeout = NET_TIMEOUT_MS;
     unsigned char seed[32];
@@ -259,6 +286,12 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
     setsockopt(s, SOL_SOCKET, SO_MARKINSECURE, (const char *)&one, sizeof(one));
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
+    if (sink)
+    {
+        int rb = NET_RCVBUF;
+        if (setsockopt(s, SOL_SOCKET, SO_RCVBUF, (const char *)&rb, sizeof(rb)) != 0)
+            H64_INFO("[net] receive buffer of %d bytes refused (%d)", rb, WSAGetLastError());
+    }
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons(443);
@@ -284,7 +317,9 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
     br_ssl_engine_inject_entropy(&t->sc.eng, seed, sizeof(seed));
     br_ssl_engine_set_buffer(&t->sc.eng, t->iobuf, sizeof(t->iobuf), 1);
     br_ssl_client_reset(&t->sc, host, 0);
-    br_sslio_init(&t->ioc, &t->sc.eng, sock_read, &s, sock_write, &s);
+    io.s = s;
+    io.recvTicks = 0;
+    br_sslio_init(&t->ioc, &t->sc.eng, sock_read, &io, sock_write, &io);
 
     {
         char range[48];
@@ -338,7 +373,7 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
         {
             // The range was ignored: the whole file comes again.
             fclose(sink->f);
-            sink->f = fopen(sink->path, "wb");
+            sink->f = open_sink(sink->path, "wb");
             if (!sink->f) goto done;
             sink->from = 0;
             sink->restarted = 1;
@@ -357,15 +392,41 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
         }
         buf = (u8 *)malloc(64 * 1024);
         if (!buf) goto done;
-        for (;;)
         {
-            if (want && got >= want) break;
-            if (sink->progress && sink->progress(sink->user, sink->done, sink->expected)) { sink->stopped = 1; goto done; }
-            r = br_sslio_read(&t->ioc, buf, 64 * 1024);
-            if (r <= 0) break;
-            if (fwrite(buf, 1, (size_t)r, sink->f) != (size_t)r) goto done;
-            got += (u32)r;
-            sink->done += (u32)r;
+            // Where the time goes, logged every 32 MB and at the end: waiting for
+            // the network, writing the file, the rest (decryption).
+            LARGE_INTEGER fq;
+            u64 t0 = qpc(), diskTicks = 0, recv0 = io.recvTicks;
+            u32 logged = 0;
+            int rb = 0, rbl = sizeof(rb);
+            br_ssl_session_parameters sp;
+            QueryPerformanceFrequency(&fq);
+            getsockopt(s, SOL_SOCKET, SO_RCVBUF, (char *)&rb, &rbl);
+            br_ssl_engine_get_session_parameters(&t->sc.eng, &sp);
+            for (;;)
+            {
+                u64 tw;
+                if (want && got >= want) break;
+                if (sink->progress && sink->progress(sink->user, sink->done, sink->expected)) { sink->stopped = 1; break; }
+                r = br_sslio_read(&t->ioc, buf, 64 * 1024);
+                if (r <= 0) break;
+                tw = qpc();
+                if (fwrite(buf, 1, (size_t)r, sink->f) != (size_t)r) { r = -2; break; }
+                diskTicks += qpc() - tw;
+                got += (u32)r;
+                sink->done += (u32)r;
+                if (got - logged >= (32u << 20) || (want && got >= want))
+                {
+                    double all = (double)(qpc() - t0) / (double)fq.QuadPart;
+                    double net = (double)(io.recvTicks - recv0) / (double)fq.QuadPart;
+                    double disk = (double)diskTicks / (double)fq.QuadPart;
+                    logged = got;
+                    H64_INFO("[net] %u MB in %.1f s (%.2f MB/s): network %.1f s, disk %.1f s, decryption %.1f s; "
+                             "suite 0x%04X, receive buffer %d KB", got >> 20, all, all > 0 ? (double)got / 1048576.0 / all : 0.0,
+                             net, disk, all - net - disk, sp.cipher_suite, rb >> 10);
+                }
+            }
+            if (sink->stopped || r == -2) goto done;
         }
         fflush(sink->f);
         if (want && got < want) { H64_INFO("[net] %s: cut at %u of %u bytes", host, got, want); goto done; }
@@ -504,7 +565,7 @@ int NetDownload(const char *url, const char *file, u32 expected, int (*progress)
     for (tries = 0; tries < 6; tries++)
     {
         long have;
-        sink.f = fopen(file, "ab");
+        sink.f = open_sink(file, "ab");
         if (!sink.f) return 0;
         fseek(sink.f, 0, SEEK_END);
         have = ftell(sink.f);
@@ -513,7 +574,7 @@ int NetDownload(const char *url, const char *file, u32 expected, int (*progress)
         {
             // Longer than the file should be: start again.
             fclose(sink.f);
-            sink.f = fopen(file, "wb");
+            sink.f = open_sink(file, "wb");
             if (!sink.f) return 0;
             sink.from = 0;
         }
