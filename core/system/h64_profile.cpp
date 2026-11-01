@@ -286,7 +286,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_VI_LINE0 = 32,          // options.viIntrLine0
        H64_GX_VI_LINE_START = 64,     // options.gfxViLineStart
        H64_GX_SKIP_ZIMAGE = 128,      // options.gfxSkipZImage
-       H64_GX_DECAL_STENCIL = 256 };  // options.gfxDecalStencil
+       H64_GX_DECAL_STENCIL = 256,    // options.gfxDecalStencil
+       H64_GX_ALPHA_DITHER = 512 };   // options.gfxAlphaDither
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -337,6 +338,10 @@ static const GameExtra s_extras[] = {
     // in). The VI took the slot starting closest to its origin, the right-hand
     // frame's, and showed its empty half: a black frame every other frame.
     { "NWZ", H64_GX_VI_LINE_START },
+    // Its dust is a texture rectangle with the dithered alpha compare (a
+    // grainy cloud); the GPU renderer took it as a plain alpha test against 0
+    // and drew solid beige squares. GitHub issue #27.
+    { "NGR", H64_GX_ALPHA_DITHER },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -372,6 +377,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxViLineStart = (extra & H64_GX_VI_LINE_START) != 0;
     sys->options.gfxSkipZImage = (extra & H64_GX_SKIP_ZIMAGE) != 0;
     sys->options.gfxDecalStencil = (extra & H64_GX_DECAL_STENCIL) != 0;
+    sys->options.gfxAlphaDither = (extra & H64_GX_ALPHA_DITHER) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

@@ -453,7 +453,7 @@ static const char *a_c(u32 s)
     return t[s & 7];
 }
 
-enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8 };
+enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16 };
 #define TRI_ZOUT 0x100   // batch flag beside H64_TRI_*: a vertex Z outside the RDP range
 
 // In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
@@ -546,7 +546,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "  float4 t1 = %s;\n"
               "  float4 noise = frac(sin(dot(vpos, float2(12.9898, 78.233))) * 43758.5453);\n"
               "  float4 comb = float4(0.0, 0.0, 0.0, 0.0);\n"
-              "%s%s%s"
+              "%s%s%s%s"
               "  o.c = comb;\n"
               "%s%s"
               "  return o;\n"
@@ -556,6 +556,9 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               (flags & KEY_3POINT) ? "tex3p(s0, tc.xy, tsize0)" : "tex2D(s0, tc.xy)",
               (flags & KEY_3POINT) ? "tex3p(s1, tc.zw, tsize1)" : "tex2D(s1, tc.zw)",
               c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
+              // Dithered alpha compare: the RDP keeps a pixel whose alpha is at
+              // least a random threshold (pixel noise): a grainy translucency.
+              (flags & KEY_ADITHER) ? "  clip(comb.a - noise.x);\n" : "",
               // Xenos computes ddx/ddy with a texture unit: a shader whose
               // combiner reads no texture had no sampler left and failed to
               // compile (X3602, Banjo-Kazooie); t0 * zbias.w (always 0) keeps s0.
@@ -2550,7 +2553,9 @@ static void set_depth(Xenos *x, int hasDepth)
 static void set_alpha_test(Xenos *x)
 {
     const H64RdpState *st = x->st;
-    if (st->rasterFlags & RS_ALPHA_TEST)
+    if (x->sys->options.gfxAlphaDither && (st->rasterFlags & (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER)) == (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER))
+        x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);   // the shader's clip() does it (KEY_ADITHER)
+    else if (st->rasterFlags & RS_ALPHA_TEST)
     {
         // The RDP drops a pixel whose alpha is below the blend colour's
         // alpha. Against 0 nothing is dropped; dropping alpha 0 there is the
@@ -2611,6 +2616,8 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     if (!two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     if (zOut && hasDepth && (st->depthBlendFlags & (DB_DEPTH_TEST | DB_DEPTH_UPDATE))) flags |= KEY_DEPTH;
     if (x->texFilter == 0 && (st->rasterFlags & RS_SAMPLE_QUAD) && !(st->rasterFlags & RS_COPY)) flags |= KEY_3POINT;
+    if (x->sys->options.gfxAlphaDither && (st->rasterFlags & (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER)) == (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER))
+        flags |= KEY_ADITHER;
     ps = combiner_shader(x, flags);
     x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);

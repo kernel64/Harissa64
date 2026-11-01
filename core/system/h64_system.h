@@ -130,6 +130,7 @@ struct H64Options
     int gfxDepthFillToRdram; // GPU renderer (game profile): depth clears also fill the depth image in RDRAM
     int gfxCopyBackAlpha;   // GPU renderer (game profile): 16-bit fills write their alpha bit and copy-backs keep the
                             // GPU's alpha (else always 1): images drawn to be used as cut-out textures
+    int gfxAlphaDither;     // GPU renderer (game profile): the dithered alpha compare as the RDP does it (noise threshold per pixel)
     int gfxDecalStencil;    // GPU renderer (game profile): decals (Z mode 3) tested on both sides of the stored depth
                             // through the stencil (International Superstar Soccer 64's player shadows)
     int gfxSkipZImage;      // GPU renderer (game profile): rectangles and triangles drawn into a colour image at the depth

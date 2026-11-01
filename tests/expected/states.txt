@@ -39,4 +39,4 @@ tennis_replay|render=F47C22F4 cpu=68B2FEBF ram=5168994D
 v8_logo|render=138777E5 cpu=3B48A461 ram=1B403A16
 v8_quest|render=376573BD cpu=338DFF6A ram=D3FB9B93
 v8_race|render=C91C376D cpu=BBAEF152 ram=03206453
-yoshi_level|render=70E2442C cpu=B53E3086 ram=AB8219E6
+yoshi_level|render=147D3A4C cpu=B53E3086 ram=AB8219E6
