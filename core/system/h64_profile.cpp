@@ -244,7 +244,9 @@ static const GameProfile s_profiles[] = {
     // covered were copied back from the GPU's picture over what the game keeps
     // there: it ended in an endless loop in its exception handler (frame 365,
     // black screen). Same game on the hosts (no copy backs). GitHub issue #27.
-    { "NWO", "World Driver Championship", H64_GP_COPY_BACK_SAME_WIDTH },
+    // Its title screen is a 320x474 frame: the GPU renderer took the height
+    // from the scissor and showed it moved down, half cut off.
+    { "NWO", "World Driver Championship", H64_GP_COPY_BACK_SAME_WIDTH | H64_GP_TALL_FRAME },
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
