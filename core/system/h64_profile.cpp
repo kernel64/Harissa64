@@ -235,6 +235,12 @@ static const GameProfile s_profiles[] = {
     // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
     // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
     { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
+    // Its pause messages (PRESS START) are drawn once into the last frame,
+    // then the game keeps flipping the VI between its two buffers (with the
+    // graphics worker's timing; the other one still holds the race without
+    // the message): on the Xbox the message blinked, one line apart. The
+    // older frame is not shown again. GitHub issue #27, the user's report.
+    { "NL2", "Top Gear Rally 2", H64_GP_NO_OLD_FRAME },
     // Its menus draw their background every frame with an alpha test against
     // 0 and texel alpha 0 (the RDP keeps those pixels): on the Xbox the
     // background vanished, the title logo and old texts stayed under the
