@@ -3150,6 +3150,31 @@ static int rdram_copy_rect(Xenos *x, const u32 *w)
     return 1;
 }
 
+// Point-sampled rectangles: the N64 takes texel floor(c) of each pixel's
+// coordinate c = start + n * step; the GPU samples c + 0.5 at the centre of a
+// native pixel (tex_coord's half texel) and up to half a native pixel's step
+// either side of it at a higher resolution. With whole-texel coordinates that
+// lands mid-texel. World Driver Championship draws its timer text upside
+// down from t = 31.94 (its tile's last row, 31): c + 0.5 read row 32, past
+// the clamp, black (a black line over each line of text). Returns the texels to add so that the fractional parts of the
+// rectangle's coordinates sit around the middle of their texels (0 when they
+// are all whole: unchanged).
+static float point_rect_shift(float start, float step, float count)
+{
+    double fmin = 1.0, fmax = 0.0;
+    int n, num = (int)count;
+    if (num > 256) num = 256;
+    for (n = 0; n < num; n++)
+    {
+        double v = (double)start + (double)n * step + 1e-6;
+        double f = v - floor(v);
+        if (f < fmin) fmin = f;
+        if (f > fmax) fmax = f;
+    }
+    if (num <= 0 || fmax < 2e-6) return 0.0f;
+    return (float)(-(fmin + fmax) * 0.5);
+}
+
 static void tex_rect(Xenos *x, const u32 *w, int flip)
 {
     int fullWidth = 0;   // set below: a rectangle across the whole image (a background) stays full width
@@ -3254,6 +3279,21 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         }
     }
     fullWidth = ws_wide(xh - xl, (float)(st->colorWidth ? st->colorWidth : 320));
+    {
+        // Point sampled (as bind_texture decides): keep each pixel on the N64's texel.
+        int linear = !copy && (st->rasterFlags & RS_SAMPLE_QUAD) && x->texFilter != 2 && t0->fmt != 1 &&
+                     !(x->sys->options.gfxRectPoint && (dsdx == 1.0f || dsdx == -1.0f) && (dtdy == 1.0f || dtdy == -1.0f));
+        if (!linear && !fbSrc && !x->hdBound)
+        {
+            // In the tile's texels (its shift scales the coordinates: World
+            // Driver Championship's font has shift 15, x2).
+            float spanS = flip ? yh - yl : xh - xl, spanT = flip ? xh - xl : yh - yl;
+            float kS = t0->shiftS > 10 ? (float)(1 << (16 - t0->shiftS)) : t0->shiftS ? 1.0f / (float)(1 << t0->shiftS) : 1.0f;
+            float kT = t0->shiftT > 10 ? (float)(1 << (16 - t0->shiftT)) : t0->shiftT ? 1.0f / (float)(1 << t0->shiftT) : 1.0f;
+            s += 32.0f * point_rect_shift(s / 32.0f * kS, dsdx * kS, spanS) / kS;
+            t += 32.0f * point_rect_shift(t / 32.0f * kT, dtdy * kT, spanT) / kT;
+        }
+    }
     for (i = 0; i < 4; i++)
     {
         // Texture coordinates half a pixel back: the N64 samples a pixel at its
