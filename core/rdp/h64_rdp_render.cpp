@@ -1016,7 +1016,14 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         if (f & RS_ALPHA_TEST)
         {
             s32 threshold = (f & RS_ALPHA_TEST_DITHER) ? (s32)(st->noise & 0xFF) : (s32)(st->blendColor & 0xFF);
-            if (alphaRef < threshold) return;
+            if (alphaRef < threshold)
+            {
+                if (st->probeOn && (u32)x == st->probeX && (u32)y == st->probeY)
+                    H64_INFO("[probe] prim %u at %d,%d: dropped by the alpha compare (alpha %d < %d), raster %08X combined %d %d %d %d tile fmt %u size %u",
+                             st->primitives, x, y, alphaRef, threshold, f, combined[0], combined[1], combined[2], combined[3],
+                             st->tiles[0].fmt, st->tiles[0].size);
+                return;
+            }
         }
         shadeAlpha = (u8)(shade[3] + alphaDith < 0xFF ? shade[3] + alphaDith : 0xFF);
         load_pixel(sys, st, (u32)x, (u32)y, &p);

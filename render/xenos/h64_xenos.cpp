@@ -2564,10 +2564,15 @@ static void set_alpha_test(Xenos *x)
         // alpha. Against 0 nothing is dropped; dropping alpha 0 there is the
         // default, profile gfxAlphaRef0Pass keeps it (Hot Wheels Turbo Racing
         // draws with alpha = texel alpha * fog factor: unfogged surfaces vanished).
+        // With coverage times alpha as well, a pixel whose alpha leaves it no
+        // coverage is still dropped (below): Top Gear Rally's wheel rims are
+        // squares whose corner texels have alpha 0, kept as black corners by
+        // gfxAlphaRef0Pass before.
         u32 ref = st->blendColor & 0xFF;
+        int cvgDrop = (st->rasterFlags & RS_CVG_TIMES_ALPHA) && ref < 0x20;
         x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref || x->sys->options.gfxAlphaRef0Pass ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
-        x->dev->SetRenderState(D3DRS_ALPHAREF, ref);
+        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref || cvgDrop || x->sys->options.gfxAlphaRef0Pass ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
+        x->dev->SetRenderState(D3DRS_ALPHAREF, cvgDrop ? 0x20 : ref);
     }
     else if (st->rasterFlags & RS_CVG_TIMES_ALPHA)
     {
