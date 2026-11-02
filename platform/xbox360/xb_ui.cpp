@@ -854,6 +854,7 @@ WORD UiInputPoll(UiInput *in)
         if (st.Gamepad.sThumbLY < -20000) b |= XINPUT_GAMEPAD_DPAD_DOWN;
         if (st.Gamepad.sThumbLX < -20000) b |= XINPUT_GAMEPAD_DPAD_LEFT;
         if (st.Gamepad.sThumbLX > 20000) b |= XINPUT_GAMEPAD_DPAD_RIGHT;
+        if (st.Gamepad.bRightTrigger > 128) b |= UI_BTN_RT;
     }
     down = b & ~in->prev;
     if (down & REPEATS)

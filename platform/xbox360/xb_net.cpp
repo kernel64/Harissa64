@@ -16,6 +16,9 @@ extern "C" VOID XeCryptRandom(PBYTE pb, DWORD cb);   // xboxkrnl export
 #define NET_TIMEOUT_MS 10000
 #define NET_HEAD_MAX 16384
 #define NET_URL_MAX 4096        // signed storage URLs of GitHub release assets run near 1 KB
+// Receive buffer of a download's socket. XNet's default is 16 KB: with ~25 ms
+// to GitHub's servers that kept downloads near 0.6 MB/s.
+#define NET_RCVBUF (1024 * 1024)
 
 // ---- Network stack ----
 // 0: not started, 1: starting (another thread waits), 2: online, 3: offline.
@@ -116,14 +119,28 @@ static const br_x509_class s_noAnchorVtable = {
 };
 
 // ---- socket callbacks for br_sslio
+struct NetIo
+{
+    SOCKET s;
+    u64 recvTicks;   // time spent waiting in recv (QPC)
+};
+static u64 qpc(void)
+{
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (u64)t.QuadPart;
+}
 static int sock_read(void *ctx, unsigned char *buf, size_t len)
 {
-    int n = recv(*(SOCKET *)ctx, (char *)buf, (int)len, 0);
+    NetIo *io = (NetIo *)ctx;
+    u64 t0 = qpc();
+    int n = recv(io->s, (char *)buf, (int)len, 0);
+    io->recvTicks += qpc() - t0;
     return n > 0 ? n : -1;
 }
 static int sock_write(void *ctx, const unsigned char *buf, size_t len)
 {
-    int n = send(*(SOCKET *)ctx, (const char *)buf, (int)len, 0);
+    int n = send(((NetIo *)ctx)->s, (const char *)buf, (int)len, 0);
     return n > 0 ? n : -1;
 }
 
@@ -221,12 +238,90 @@ static int dechunk(u8 *buf, u32 len)
 }
 
 // One GET (no redirects). Returns the status or 0; see NetGet.
-static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, u32 maxLen, char *location, int locSize)
+// Where NetDownload's body goes: a file opened for appending, from byte `from`.
+struct NetSink
+{
+    FILE *f;
+    const char *path;
+    u32 from;            // bytes already in the file (asked for with a Range)
+    u32 expected;        // the whole file's size (0: unknown)
+    u32 done;            // bytes in the file now
+    int restarted;       // the server sent the whole file instead of the rest: the file was emptied
+    int (*progress)(void *user, u32 done, u32 total);
+    void *user;
+    int stopped;         // progress asked to stop
+};
+
+// The download's file, written in 1 MB pieces (TLS hands over 16 KB at a
+// time; written as such they cost as much time as the decryption).
+static FILE *open_sink(const char *path, const char *mode)
+{
+    FILE *f = fopen(path, mode);
+    if (f) setvbuf(f, NULL, _IOFBF, 1 << 20);
+    return f;
+}
+
+// A chunked body decoded as it streams in (servers that do not give the
+// size first, such as n64textures.com): "<hex size>[;ext]\r\n<data>\r\n" ...
+// "0\r\n" ends it (trailers are not read).
+struct Dechunk
+{
+    int state;    // 0 size digits, 1 rest of the size line, 2 data, 3 end of the data line, 4 done
+    u32 size;     // the digits read, then the data left
+    int digits;
+};
+
+// Writes the data of p[0..n) to f. Returns the data bytes written, or -1
+// (malformed, or the file cannot be written).
+static int dechunk_feed(Dechunk *d, const u8 *p, u32 n, FILE *f)
+{
+    u32 i = 0;
+    int wrote = 0;
+    while (i < n && d->state != 4)
+    {
+        u8 c = p[i];
+        if (d->state == 0)
+        {
+            int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (v < 0)
+            {
+                if (!d->digits) return -1;
+                d->state = 1;
+                continue;
+            }
+            if (d->size > 0x07FFFFFF) return -1;
+            d->size = d->size * 16 + (u32)v;
+            d->digits++;
+            i++;
+        }
+        else if (d->state == 1 || d->state == 3)
+        {
+            i++;
+            if (c != '\n') continue;
+            if (d->state == 3) { d->state = 0; d->size = 0; d->digits = 0; }
+            else d->state = d->size ? 2 : 4;
+        }
+        else
+        {
+            u32 k = n - i < d->size ? n - i : d->size;
+            if (fwrite(p + i, 1, k, f) != k) return -1;
+            wrote += (int)k;
+            i += k;
+            d->size -= k;
+            if (!d->size) d->state = 3;
+        }
+    }
+    return wrote;
+}
+
+static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, u32 maxLen, char *location, int locSize,
+                   NetSink *sink)
 {
     NetTls *t;
     IN_ADDR ip;
     SOCKADDR_IN sa;
     SOCKET s;
+    NetIo io;
     BOOL one = TRUE;
     DWORD timeout = NET_TIMEOUT_MS;
     unsigned char seed[32];
@@ -244,6 +339,12 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
     setsockopt(s, SOL_SOCKET, SO_MARKINSECURE, (const char *)&one, sizeof(one));
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&timeout, sizeof(timeout));
+    if (sink)
+    {
+        int rb = NET_RCVBUF;
+        if (setsockopt(s, SOL_SOCKET, SO_RCVBUF, (const char *)&rb, sizeof(rb)) != 0)
+            H64_INFO("[net] receive buffer of %d bytes refused (%d)", rb, WSAGetLastError());
+    }
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons(443);
@@ -269,12 +370,20 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
     br_ssl_engine_inject_entropy(&t->sc.eng, seed, sizeof(seed));
     br_ssl_engine_set_buffer(&t->sc.eng, t->iobuf, sizeof(t->iobuf), 1);
     br_ssl_client_reset(&t->sc, host, 0);
-    br_sslio_init(&t->ioc, &t->sc.eng, sock_read, &s, sock_write, &s);
+    io.s = s;
+    io.recvTicks = 0;
+    br_sslio_init(&t->ioc, &t->sc.eng, sock_read, &io, sock_write, &io);
 
-    _snprintf(req, NET_URL_MAX + 511,
-              "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Harissa64/" H64_VERSION_STRING
-              " (Xbox 360; https://github.com/kernel64/Harissa64)\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-              path, host);
+    {
+        char range[48];
+        range[0] = 0;
+        if (sink && sink->from) _snprintf(range, sizeof(range) - 1, "Range: bytes=%u-\r\n", sink->from);
+        range[sizeof(range) - 1] = 0;
+        _snprintf(req, NET_URL_MAX + 511,
+                  "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Harissa64/" H64_VERSION_STRING
+                  " (Xbox 360; https://github.com/kernel64/Harissa64)\r\nAccept: */*\r\n%sConnection: close\r\n\r\n",
+                  path, host, range);
+    }
     req[NET_URL_MAX + 511] = 0;
     if (br_sslio_write_all(&t->ioc, req, strlen(req)) != 0 || br_sslio_flush(&t->ioc) != 0) goto done;
 
@@ -305,6 +414,88 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
             memcpy(location, v, vn);
             location[vn] = 0;
         }
+    }
+    if (sink && status >= 200 && status < 300)
+    {
+        // Streamed to the file: 206 continues it, 200 starts it again.
+        int vn;
+        const char *cl = header(head, "content-length", &vn), *te = header(head, "transfer-encoding", &vn);
+        u32 want = cl ? (u32)strtoul(cl, NULL, 10) : 0, got = 0;
+        int chunked = te && !_strnicmp(te, "chunked", 7);
+        Dechunk dc;
+        memset(&dc, 0, sizeof(dc));
+        if (chunked) want = 0;
+        if (status == 200 && sink->from)
+        {
+            // The range was ignored: the whole file comes again.
+            fclose(sink->f);
+            sink->f = open_sink(sink->path, "wb");
+            if (!sink->f) goto done;
+            sink->from = 0;
+            sink->restarted = 1;
+        }
+        sink->done = sink->from;
+        if (want && sink->expected && sink->from + want != sink->expected)
+        {
+            H64_INFO("[net] %s: %u + %u bytes, %u expected", host, sink->from, want, sink->expected);
+            goto done;
+        }
+        if (n > hlen)
+        {
+            int w = chunked ? dechunk_feed(&dc, (const u8 *)head + hlen, (u32)(n - hlen), sink->f)
+                            : fwrite(head + hlen, 1, n - hlen, sink->f) == (size_t)(n - hlen) ? n - hlen : -1;
+            if (w < 0) { H64_INFO("[net] %s: bad chunked answer, or the file cannot be written", host); goto done; }
+            got = (u32)w;
+            sink->done += got;
+        }
+        buf = (u8 *)malloc(64 * 1024);
+        if (!buf) goto done;
+        {
+            // Where the time goes, logged every 32 MB and at the end: waiting for
+            // the network, writing the file, the rest (decryption).
+            LARGE_INTEGER fq;
+            u64 t0 = qpc(), diskTicks = 0, recv0 = io.recvTicks;
+            u32 logged = 0;
+            int rb = 0, rbl = sizeof(rb);
+            br_ssl_session_parameters sp;
+            QueryPerformanceFrequency(&fq);
+            getsockopt(s, SOL_SOCKET, SO_RCVBUF, (char *)&rb, &rbl);
+            br_ssl_engine_get_session_parameters(&t->sc.eng, &sp);
+            for (;;)
+            {
+                u64 tw;
+                if ((want && got >= want) || dc.state == 4) break;
+                if (sink->progress && sink->progress(sink->user, sink->done, sink->expected)) { sink->stopped = 1; break; }
+                r = br_sslio_read(&t->ioc, buf, 64 * 1024);
+                if (r <= 0) break;
+                tw = qpc();
+                if (chunked)
+                {
+                    r = dechunk_feed(&dc, buf, (u32)r, sink->f);
+                    if (r < 0) { r = -2; break; }
+                }
+                else if (fwrite(buf, 1, (size_t)r, sink->f) != (size_t)r) { r = -2; break; }
+                diskTicks += qpc() - tw;
+                got += (u32)r;
+                sink->done += (u32)r;
+                if (got - logged >= (32u << 20) || (want && got >= want))
+                {
+                    double all = (double)(qpc() - t0) / (double)fq.QuadPart;
+                    double net = (double)(io.recvTicks - recv0) / (double)fq.QuadPart;
+                    double disk = (double)diskTicks / (double)fq.QuadPart;
+                    logged = got;
+                    H64_INFO("[net] %u MB in %.1f s (%.2f MB/s): network %.1f s, disk %.1f s, decryption %.1f s; "
+                             "suite 0x%04X, receive buffer %d KB", got >> 20, all, all > 0 ? (double)got / 1048576.0 / all : 0.0,
+                             net, disk, all - net - disk, sp.cipher_suite, rb >> 10);
+                }
+            }
+            if (sink->stopped || r == -2) goto done;
+        }
+        fflush(sink->f);
+        if (want && got < want) { H64_INFO("[net] %s: cut at %u of %u bytes", host, got, want); goto done; }
+        if (chunked && dc.state != 4) { H64_INFO("[net] %s: chunked answer cut at %u bytes", host, got); goto done; }
+        ok = 1;
+        goto done;
     }
     if (!body || status < 200 || status >= 300) { ok = 1; goto done; }
 
@@ -363,7 +554,8 @@ done:
     return ok ? status : 0;
 }
 
-int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, u32 maxLen, char *location, int locSize)
+static int fetch(const char *host, const char *path, int follow, u8 **body, u32 *len, u32 maxLen, char *location, int locSize,
+                 NetSink *sink)
 {
     char curHost[128], *curPath = (char *)malloc(NET_URL_MAX + 1), *loc = (char *)malloc(NET_URL_MAX + 1);
     int hop, status = 0, done = 0;
@@ -376,7 +568,7 @@ int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, 
     curPath[NET_URL_MAX] = 0;
     for (hop = 0; hop < 5 && !done; hop++)
     {
-        status = request(curHost, curPath, body, len, maxLen, loc, NET_URL_MAX + 1);
+        status = request(curHost, curPath, body, len, maxLen, loc, NET_URL_MAX + 1, sink);
         if (location && locSize > 0)
         {
             strncpy(location, loc, locSize - 1);
@@ -406,4 +598,86 @@ int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, 
     free(curPath);
     free(loc);
     return status;
+}
+
+int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, u32 maxLen, char *location, int locSize)
+{
+    return fetch(host, path, follow, body, len, maxLen, location, locSize, NULL);
+}
+
+int NetDownload(const char *url, const char *file, u32 expected, int (*progress)(void *user, u32 done, u32 total), void *user)
+{
+    NetSink sink;
+    char host[128];
+    const char *h, *slash;
+    size_t hl;
+    int status, tries;
+    if (strncmp(url, "https://", 8)) return 0;
+    h = url + 8;
+    slash = strchr(h, '/');
+    hl = slash ? (size_t)(slash - h) : strlen(h);
+    if (!slash || hl >= sizeof(host)) return 0;
+    memcpy(host, h, hl);
+    host[hl] = 0;
+    memset(&sink, 0, sizeof(sink));
+    sink.expected = expected;
+    sink.path = file;
+    sink.progress = progress;
+    sink.user = user;
+    // Appended to what an earlier try left (resumed with a Range); a few tries
+    // when the connection drops in the middle.
+    for (tries = 0; tries < 6; tries++)
+    {
+        long have;
+        sink.f = open_sink(file, "ab");
+        if (!sink.f) return 0;
+        fseek(sink.f, 0, SEEK_END);
+        have = ftell(sink.f);
+        sink.from = have > 0 ? (u32)have : 0;
+        if (expected && sink.from > expected)
+        {
+            // Longer than the file should be: start again.
+            fclose(sink.f);
+            sink.f = open_sink(file, "wb");
+            if (!sink.f) return 0;
+            sink.from = 0;
+        }
+        if (expected && sink.from == expected) { fclose(sink.f); return 1; }
+        status = fetch(host, slash, 1, NULL, NULL, 0, NULL, 0, &sink);
+        if (sink.f) fclose(sink.f);
+        if (sink.stopped) return -1;
+        if (status >= 200 && status < 300 && (!expected || sink.done == expected)) return 1;
+        if (status >= 400) { H64_INFO("[net] %s: HTTP %d", url, status); return 0; }
+        H64_INFO("[net] download interrupted at %u bytes, trying again", sink.done);
+        Sleep(2000);
+    }
+    return 0;
+}
+
+int NetSha256File(const char *file, char hex[65], int (*progress)(void *user, u32 done, u32 total), void *user)
+{
+    br_sha256_context c;
+    unsigned char out[32];
+    u8 *buf = (u8 *)malloc(1 << 20);
+    FILE *f = fopen(file, "rb");
+    u32 done = 0, total;
+    size_t n;
+    int i;
+    if (!buf || !f) { free(buf); if (f) fclose(f); return 0; }
+    fseek(f, 0, SEEK_END);
+    total = (u32)ftell(f);
+    fseek(f, 0, SEEK_SET);
+    br_sha256_init(&c);
+    while ((n = fread(buf, 1, 1 << 20, f)) > 0)
+    {
+        br_sha256_update(&c, buf, n);
+        done += (u32)n;
+        if (progress && progress(user, done, total)) { fclose(f); free(buf); return -1; }
+    }
+    fclose(f);
+    free(buf);
+    br_sha256_out(&c, out);
+    for (i = 0; i < 32; i++) sprintf(hex + i * 2, "%02x", out[i]);
+    hex[64] = 0;
+    return 1;
 }

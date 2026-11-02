@@ -42,6 +42,13 @@ void h64_xenos_set_overlay(H64Renderer *r, void (*fn)(void *user, IDirect3DDevic
 // GPU). Returns 0 on success.
 int h64_xenos_save_frame(H64Renderer *r, const char *path);
 
+// For a save state: the picture on screen exists only on the GPU, its RDRAM
+// is stale. Writes it into RDRAM (the caller restores those bytes after the
+// state is taken, so the running game sees no change). Returns the RDRAM
+// range written in *addr / *bytes, 0 when nothing was written. The graphics
+// worker must be idle and the device this thread's.
+int h64_xenos_shown_frame_to_rdram(H64Renderer *r, u32 *addr, u32 *bytes, u8 *before, u32 beforeSize);
+
 // Debug output of combined primitives: 0 normal, 1 solid red, 2 shade
 // colour only, 3 texture 0 only.
 void h64_xenos_set_debug(H64Renderer *r, int mode);
@@ -80,6 +87,19 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *viRegs);
 void h64_xenos_set_worker(H64Renderer *r, int on);
 // Edge smoothing (FXAA) when the frame is shown, in place of the VI's anti-aliasing (on by default).
 void h64_xenos_set_smooth(H64Renderer *r, int on);
+// Hi-res texture pack (a .h64hd file, see core/rdp/h64_hdpack.h): pictures shown instead of the
+// textures they replace (while H64XenosOptions.hdTextures is on), read on first use up to budgetMB.
+// Returns the number of pictures (0: none).
+// The core must track texture loads (h64_rdp_hires_enable).
+u32 h64_xenos_set_hd_pack(H64Renderer *r, const char *path, u32 budgetMB);
+// Hi-res statistics since the pack was opened: textures found, keys not computed, sizes not matching, pictures loaded, MB.
+void h64_xenos_hd_stats(H64Renderer *r, u32 *hits, u32 *noKey, u32 *size, u32 *loads, u32 *mb);
+// Time spent loading pictures since the pack was opened, the longest load since the last call
+// (sys->profClock ticks), and the pictures left out because the budget was full.
+void h64_xenos_hd_times(H64Renderer *r, u64 *total, u64 *longest, u32 *overBudget);
+// Time the loader thread spent reading pictures (profClock ticks), pictures released for the budget,
+// and pictures asked for but not shown yet.
+void h64_xenos_hd_more(H64Renderer *r, u64 *readTicks, u32 *evicted, u32 *waiting);
 // Graphics settings (the menu's Graphics page).
 struct H64XenosOptions
 {
@@ -95,6 +115,7 @@ struct H64XenosOptions
     int deflicker;   // 1: each picture shown is mixed half and half with the previous one
     int zoom;        // picture size in percent (100: as the aspect gives; more crops the border)
     int offsetX, offsetY;   // picture position on the 1280x720 output, in pixels
+    int hdTextures;  // 1: a hi-res pack opened with h64_xenos_set_hd_pack is used, 0: the game's own textures
 };
 void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o);
 void h64_xenos_stats(H64Renderer *r, H64XenosStats *out, int reset);

@@ -46,5 +46,12 @@ file(GLOB H64_UNIT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/unit/*.c
 add_executable(h64test platform/host/h64test.cpp platform/host/png_write.cpp ${H64_UNIT_SOURCES})
 target_link_libraries(h64test PRIVATE h64core)
 
+# ---- Hi-res texture pack converter (PC tool, C++17 for <filesystem>) ----
+add_executable(h64hdconv platform/host/h64hdconv.cpp)
+set_target_properties(h64hdconv PROPERTIES CXX_STANDARD 17)
+target_link_libraries(h64hdconv PRIVATE h64core)
+find_package(Threads REQUIRED)
+target_link_libraries(h64hdconv PRIVATE Threads::Threads)
+
 enable_testing()
 add_test(NAME unit COMMAND h64test --unit)

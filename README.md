@@ -71,6 +71,46 @@ It fills an `art\games` folder: copy it to the console, into the Harissa64 folde
 
 The pictures and the text come from [libretro-thumbnails](https://github.com/libretro-thumbnails/Nintendo_-_Nintendo_64), [libretro-database](https://github.com/libretro/libretro-database), [GameDB-N64](https://github.com/niemasd/GameDB-N64) and Wikipedia. They are not part of Harissa64.
 
+## HD textures
+
+Fans have redrawn the textures of some games in high resolution. Harissa64 can use these packs: the game looks sharper, and plays the same.
+
+In the game list, select a game and press **RT**. The page lists the packs for that game, with their author and size, and shows where each one stands:
+
+- **Active** (green): the game uses this pack. The line at the top says so too.
+- **Installed**: on the console, not in use.
+- **Not downloaded**: press **A** to install it. Harissa64 downloads it from its author's page, checks it and prepares it for the console. A big pack takes several minutes; you can play meanwhile, it waits and goes on afterwards.
+
+On an installed pack, **A** turns it on for this game, or off if it is the active one. **X** removes it, **Y** stops an install.
+
+A pack is downloaded once and serves every game it suits: the other versions of the game (USA, Europe, Japan) and hacks that keep its name or its code.
+
+In a game, **HD textures** in **Settings > Graphics** turns the pack on or off at once.
+
+The packs are made by their authors and stay on their pages; Harissa64 only keeps a [list of links](docs/texture-packs.json). To add a pack to the list, open a pull request.
+
+### Adding a pack by hand
+
+For a pack that is not in the list (on Mega, Google Drive, a forum...), or a console without internet, convert the pack on a Windows PC. Everything needed is in the `tools` folder of the Harissa64 zip: `hd_textures.py` and `h64hdconv.exe`. You only need [Python 3](https://www.python.org).
+
+1. Download the pack. A `.zip` can be used as it is; extract a `.7z` or `.rar` first.
+2. Find the game's name in the pack: its pictures are named like `SUPER MARIO 64#0A1B2C3D#0#2_all.png`. The part before the first `#` is the name.
+3. Open a command prompt in the `tools` folder and run:
+
+   ```
+   python hd_textures.py convert "C:\path\to\pack.zip" "SUPER MARIO 64"
+   ```
+
+   It makes `hd_textures\SUPER MARIO 64.h64hd`. A big pack takes a minute or two.
+4. Copy that file to the console, into the `hd_textures` folder of Harissa64 (create the folder if it is not there): `Harissa64\hd_textures\SUPER MARIO 64.h64hd`.
+5. Start the game, open the menu (short press on **BACK**), and turn on **HD textures** in **Settings > Graphics**.
+
+The file name must be the game's name as Harissa64 writes it in its `saves` folder, without the 4-letter code at the end: `saves\SUPER MARIO 64 NSME` gives `SUPER MARIO 64.h64hd`. The script names it that way already; rename it only if the game shows no HD textures. One file serves every version of the game (USA, Europe, Japan).
+
+The same script also downloads and converts the packs of the list on a PC: `python hd_textures.py list` shows them, `python hd_textures.py get sm64-reloaded` gets one.
+
+Options: `--out FOLDER` (where the `hd_textures` folder is made), `--max 2048` (keep pictures up to 2048 pixels wide; the default 1024 halves bigger ones, which saves the console's memory).
+
 ## Saves
 
 Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. Copy that folder somewhere if you want a backup.

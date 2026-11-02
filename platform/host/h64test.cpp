@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../core/rdp/h64_rdp_hires.h"
 #include "../../core/common/h64_types.h"
 #include "../../core/common/h64_endian.h"
 #include "../../core/cart/h64_zip.h"
@@ -459,7 +460,23 @@ static void null_triangle(void *user, const H64RenderVertex *a, const H64RenderV
 }
 static H64Renderer s_nullRenderer;
 
-static void apply_input(H64System *sys) { h64_input_script_apply(&s_script, sys); }
+// --pad-plug P:FIRST-LAST: port P (2-4) plugged in only during VI frames
+// FIRST..LAST (a controller connected or removed while the game runs).
+static int s_plugPort, s_plugFirst, s_plugLast = -1;
+
+static const char *hiresKeysPath;   // --hires-keys FILE: the Rice texture keys seen (h64_rdp_hires.cpp)
+
+static void apply_input(H64System *sys)
+{
+    h64_input_script_apply(&s_script, sys);
+    if (s_plugPort >= 2 && s_plugPort <= 4)
+    {
+        u32 bit = 1u << (s_plugPort - 1);
+        int f = (int)sys->vi.frames;
+        if (f >= s_plugFirst && (s_plugLast < 0 || f <= s_plugLast)) sys->padMask |= bit;
+        else sys->padMask &= ~bit;
+    }
+}
 
 // ---- Audio capture to WAV ----
 struct WavCapture { u8 *data; u32 size, cap, rate; };
@@ -609,6 +626,15 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         }
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) { if (parse_input(argv[++i])) return 2; }
         else if (!strcmp(argv[i], "--pads") && i + 1 < argc) padCount = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--hires-keys") && i + 1 < argc) hiresKeysPath = argv[++i];
+        else if (!strcmp(argv[i], "--pad-plug") && i + 1 < argc)
+        {
+            // P:FIRST-LAST (LAST omitted: to the end)
+            const char *a = argv[++i];
+            s_plugPort = atoi(a);
+            a = strchr(a, ':');
+            if (a) { s_plugFirst = atoi(a + 1); a = strchr(a, '-'); s_plugLast = a && a[1] ? atoi(a + 1) : -1; }
+        }
         else if ((!strcmp(argv[i], "--shot") || !strcmp(argv[i], "--raw-shot")) && i + 1 < argc && shotCount < 128)
         {
             char *colon;
@@ -734,6 +760,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.strictCpu = strictCpu;   // --strict: no ROM hack tolerance (test ROMs)
     if (!noProfile) h64_apply_game_profile(sys);   // --no-profile: none of the per-game settings
     else if (noProfile == 2) h64_apply_profile_flags(sys, gameFlags);   // --gameflags HEX: these instead (as the ini's gameflags=)
+    if (hiresKeysPath) h64_rdp_hires_enable(sys, 1);
     if (profileInfo)
     {
         // --profile-info: the options the per-game profile leaves, as 32-bit
@@ -917,6 +944,20 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         u32 ch, rh;
         h64_system_state_hash(sys, &ch, &rh);
         printf("[run] state hash cpu=%08X ram=%08X\n", ch, rh);
+        if (hiresKeysPath)
+        {
+            // One line per texture, as a pack names it: NAME#TEXCRC#FMT#SIZE[#PALCRC]
+            FILE *kf = fopen(hiresKeysPath, "w");
+            u32 n = h64_rdp_hires_count(sys), k;
+            for (k = 0; kf && k < n; k++)
+            {
+                const H64HiresKey *hk = h64_rdp_hires_key(sys, k);
+                if (hk->hasPal) fprintf(kf, "%s#%08X#%d#%d#%08X\n", sys->rom.name, hk->texCrc, hk->fmt, hk->size, hk->palCrc);
+                else fprintf(kf, "%s#%08X#%d#%d\n", sys->rom.name, hk->texCrc, hk->fmt, hk->size);
+            }
+            if (kf) fclose(kf);
+            printf("[hires] %u texture keys -> %s\n", n, hiresKeysPath);
+        }
 #ifdef H64_BENCH8
         { extern unsigned long long g_bench8, g_bench8n, g_b8px, g_b8lines; printf("[bench8] %llu triangles, %.1f Mcycles, %llu lines, %llu span pixels\n", g_bench8n, g_bench8 / 1e6, g_b8lines, g_b8px); }
 #endif

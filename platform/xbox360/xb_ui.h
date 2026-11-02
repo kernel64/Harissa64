@@ -17,6 +17,8 @@
 
 #include <xtl.h>
 
+// The right trigger pressed, as a button bit of UiInputPoll (XInput leaves 0x0400 unused).
+#define UI_BTN_RT 0x0400
 #define UI_WIDTH 1280
 #define UI_HEIGHT 720
 // Title-safe area (5 % margins at 720p).

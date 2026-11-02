@@ -298,6 +298,24 @@ def main():
         for key in ("COPY_ROMS", "INTO_ROMS"):
             check(code, key, width(t[key], 21, False), 540)
         check(code, "WIKI_TEXT", width(t["WIKI_TEXT"], 13, False), 520)
+        # HD textures page (xb_menu.cpp HdScreen): a 876-pixel column; the
+        # footer at its longest, the status pills at most 260 pixels.
+        for a_key in ("FOOT_HD_ON", "FOOT_HD_OFF", "FOOT_HD_GET"):
+            check(code, "%s|FOOT_HD_REMOVE|FOOT_HD_STOP|FOOT_HD_BACK" % a_key,
+                  footer_width("|".join([t[a_key], t["FOOT_HD_REMOVE"], t["FOOT_HD_STOP"], t["FOOT_HD_BACK"]])), 876)
+        # HD_NOTE: two lines at most (16 pixels, wrapped by words as UiTextWrap does).
+        lines, cur = 1, ""
+        for word in t["HD_NOTE"].split(" "):
+            trial = (cur + " " + word) if cur else word
+            if cur and width(trial, 16, False) > 876:
+                lines, cur = lines + 1, word
+            else:
+                cur = trial
+        if lines > 2:
+            fail("%s: HD_NOTE takes %d lines, 2 at most" % (code, lines))
+        for key in ("HD_CHIP_ACTIVE", "HD_CHIP_INSTALLED", "HD_CHIP_GET", "HD_CHIP_DOWNLOAD", "HD_CHIP_CHECK", "HD_CHIP_CONVERT",
+                    "HD_CHIP_FAILED"):
+            check(code, "pill " + key, width(t[key].replace("%u", "100").replace("%%", "%"), 15, True) + 30 + 16, 260)
         for key in ("UPDATE_AVAILABLE", "NO_DOWNLOADS", "GETTING_ART", "ART_DONE_LOST", "STATE_SAVED", "STATE_WRITE_FAILED", "NO_STATE",
                     "STATE_LOAD_FAILED", "STATE_LOADED", "KEEP_HOLDING", "NOT_SAVED_SCRIPT", "SAVED_ALL", "SAVED_GAME",
                     "SETTINGS_WRITE_FAILED", "GAME_RESET"):

@@ -28,6 +28,7 @@
 #include "../../core/system/h64_system.h"
 #include "../../core/system/h64_profile.h"
 #include "../../core/rdp/h64_rdp_state.h"
+#include "../../core/rdp/h64_rdp_hires.h"
 #include "../../core/dynarec/h64_lockstep.h"
 #include "../../core/hle/h64_hle.h"
 #include "../../core/pif/h64_input_script.h"
@@ -40,6 +41,7 @@
 #include "xb_ui.h"
 #include "xb_menu.h"
 #include "xb_audio.h"
+#include "xb_hd.h"
 
 // ---- Recompiler code memory (M0.3 result: only an image section linked
 // writable + executable runs generated code; /SECTION:.jitc,ERW in the project) ----
@@ -737,7 +739,36 @@ static void ApplyGraphics(H64System *sys, H64Renderer *renderer, const Config *c
     o.offsetX = c->offsetX;
     o.offsetY = c->offsetY;
     o.aspect = aspect;
+    o.hdTextures = c->hdTextures;
     h64_xenos_set_options(renderer, &o);
+    if (c->hdTextures && !c->softRenderer)
+    {
+        // The game's hi-res texture pack (xb_hd.h HdResolve): the one hdpack=
+        // names (the HD textures page's choice), else the game's own file
+        // (<drive>:\hd_textures\<game name>.h64hd, made on a PC), else the first
+        // installed pack that suits the game (its code or its cartridge name).
+        // Opened the first time the setting is on, also in the middle of a
+        // game; the core then tracks texture loads for its keys. Off, nothing is
+        // opened and nothing is tracked.
+        static int s_hdMissLogged;
+        if (!h64_rdp_hires_enabled(sys))
+        {
+            char folder[64], path[160], id[48];
+            int use;
+            h64_save_folder_name(&sys->rom, folder, sizeof(folder));
+            use = HdResolve(s_logDrive, folder, sys->rom.gameCode, sys->rom.name, c->hdPack, path, sizeof(path), id, sizeof(id));
+            if (use != HD_USE_NONE && h64_xenos_set_hd_pack(renderer, path, c->hdBudget))
+            {
+                H64_INFO("[hd] %s (%s)", path, id);
+                h64_rdp_hires_enable(sys, 1);
+            }
+            else if (!s_hdMissLogged)
+            {
+                s_hdMissLogged = 1;
+                H64_INFO("[hd] no pack for %s (hdpack=%s)", folder, c->hdPack);
+            }
+        }
+    }
 }
 
 // ---- mode=play ----
@@ -942,14 +973,25 @@ static void StatePath(char *out, size_t size)
 }
 
 // Returns 1 when done (saved or failed), 0 when the machine is not quiet yet.
-static int SaveStateNow(H64System *sys)
+static int SaveStateNow(H64System *sys, H64Renderer *renderer)
 {
     std::vector<u8> st;
     char path[160];
     FILE *f;
-    int ok;
+    int ok, framed = 0;
+    u32 frameAddr = 0, frameBytes = 0;
+    static u8 s_frameKeep[1280 * 960 * 4];   // the RDRAM bytes under the picture, put back after the save
     if (!h64_state_quiet(sys)) return 0;
+    if (renderer)
+    {
+        // The picture on screen goes into the state (it is only on the GPU):
+        // a game saved on a still picture loads back with it, not black.
+        h64_hle_async_wait(sys);
+        if (s_gfxQ.thread) WorkWaitAll(NULL);
+        framed = h64_xenos_shown_frame_to_rdram(renderer, &frameAddr, &frameBytes, s_frameKeep, sizeof(s_frameKeep));
+    }
     h64_state_save(sys, &st);
+    if (framed) memcpy(sys->rdram + frameAddr, s_frameKeep, frameBytes);
     StatePath(path, sizeof(path));
     f = fopen(path, "wb");
     ok = f && fwrite(&st[0], 1, st.size(), f) == st.size();
@@ -1264,6 +1306,18 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         {
             int k;
             for (k = 0; k < 3; k++) s_padsMoreValid[k] = XInputGetState(k + 1, &s_padsMore[k]) == ERROR_SUCCESS;
+            {
+                // Each controller connected or removed while a game runs (XInput
+                // user = the console's quadrant - 1 = N64 port - 1).
+                static int seen = -1;
+                int now = s_padValid | (s_padsMoreValid[0] << 1) | (s_padsMoreValid[1] << 2) | (s_padsMoreValid[2] << 3);
+                if (seen >= 0 && now != seen)
+                    for (k = 0; k < 4; k++)
+                        if (((now ^ seen) >> k) & 1)
+                            H64_INFO("[pad] VI %u: controller %d (XInput user %d, N64 port %d) %s", presented, k + 1, k, k + 1,
+                                     (now >> k) & 1 ? "connected" : "removed");
+                seen = now;
+            }
             // The plugged ports, for the games' controller probes (osContInit).
             sys->padMask = 1;
             if (!s_script)
@@ -1335,7 +1389,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             result = RG_BROWSER;
             break;
         }
-        if (s_statePending && SaveStateNow(sys)) s_statePending = 0;
+        if (s_statePending && SaveStateNow(sys, renderer)) s_statePending = 0;
         if (menuRequest)
         {
             menuRequest = 0;
@@ -1583,6 +1637,20 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
                 H64_INFO("[xprof] ms/frame: rdp commands %.1f (state %.1f, textures %.1f: keys %.1f, decode %.1f [create %.1f lock %.1f decode %.1f], %u texels/frame, %u cache resets, arena %u textures %u chunk reuses (%u skipped, GPU wait %.1f, longest %.1f ms), %u rectangles from GPU frames) draw calls %.1f (%u a frame), copy-backs %.1f (GPU wait %.1f), TMEM loads %.1f, %u resolves (%u copy backs), %u loads over CPU writes, %u CPU sprite presents, %u frames from memory",
                          xs.tRdp * k, xs.tState * k, xs.tTexture * k, xs.tHash * k, xs.tDecode * k, xs.tCreate * k, xs.tLock * k,
                          xs.tFill * k, xs.texelsDecoded / framesSincePerf, xs.retires, xs.arenaTextures, xs.arenaEvictions, xs.arenaSkips, xs.tArenaWait * k, xs.maxArenaWait * k * framesSincePerf, xs.fbTexRects, xs.tDraw * k, xs.draws / (framesSincePerf ? framesSincePerf : 1), xs.tCopyBack * k, xs.tCopyBackWait * k, xs.tLoads * k, xs.loadResolves, xs.resolveCopyBacks, xs.cpuWrittenLoads, xs.cpuSprites, xs.cimgUploads);
+                if (c->hdTextures && sys->rdpState && sys->rdpState->hires)
+                {
+                    u32 hh, hn, hs, hl, hm, hf;
+                    u64 ht, hx;
+                    double ms = 1000.0 / (double)freq.QuadPart;
+                    h64_xenos_hd_stats(renderer, &hh, &hn, &hs, &hl, &hm);
+                    u64 hr;
+                    u32 he, hw;
+                    h64_xenos_hd_times(renderer, &ht, &hx, &hf);
+                    h64_xenos_hd_more(renderer, &hr, &he, &hw);
+                    H64_INFO("[hd] textures with a picture %u, pictures loaded %u, in memory %u MB, released %u, waiting %u, refused %u; "
+                             "read %.0f ms, upload %.0f ms (longest %.1f ms lately); no key %u, other size %u",
+                             hh, hl, hm, he, hw, hf, hr * ms, ht * ms, hx * ms, hn, hs);
+                }
                 if (sys->rdpState && sys->rdpState->softTris)
                 {
                     H64RdpState *rs = sys->rdpState;

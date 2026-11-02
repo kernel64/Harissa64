@@ -1715,9 +1715,14 @@ static void set_texture(H64Gfx *g, u32 w1, u32 level, u32 tile, u32 on)
 
 static void set_othermode(H64Gfx *g, int high, u32 shift, u32 len, u32 data)
 {
+    // The microcodes clear the field and OR the data in without masking it
+    // (GLideN64 gSPSetOtherMode_L/H does the same): bits of the data outside
+    // the field are set too. Top Gear Rally sets its render mode (shift 3,
+    // 29 bits) with 3 in bits 0-1, the dithered alpha compare: its dust is a
+    // dithered cloud; masked, it came out as solid beige rectangles.
     u32 mask = (len >= 32 ? 0xFFFFFFFFu : ((1u << len) - 1)) << shift;
-    if (high) g->omH = (g->omH & ~mask) | (data & mask);
-    else g->omL = (g->omL & ~mask) | (data & mask);
+    if (high) g->omH = (g->omH & ~mask) | data;
+    else g->omL = (g->omL & ~mask) | data;
     out_othermode(g);
 }
 

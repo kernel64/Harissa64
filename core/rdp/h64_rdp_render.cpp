@@ -11,6 +11,7 @@
 #include "h64_rdp.h"
 #include "h64_rdp_state.h"
 #include "h64_rdp_luts.h"
+#include "h64_rdp_hires.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -1015,7 +1016,14 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
         if (f & RS_ALPHA_TEST)
         {
             s32 threshold = (f & RS_ALPHA_TEST_DITHER) ? (s32)(st->noise & 0xFF) : (s32)(st->blendColor & 0xFF);
-            if (alphaRef < threshold) return;
+            if (alphaRef < threshold)
+            {
+                if (st->probeOn && (u32)x == st->probeX && (u32)y == st->probeY)
+                    H64_INFO("[probe] prim %u at %d,%d: dropped by the alpha compare (alpha %d < %d), raster %08X combined %d %d %d %d tile fmt %u size %u",
+                             st->primitives, x, y, alphaRef, threshold, f, combined[0], combined[1], combined[2], combined[3],
+                             st->tiles[0].fmt, st->tiles[0].size);
+                return;
+            }
         }
         shadeAlpha = (u8)(shade[3] + alphaDith < 0xFF ? shade[3] + alphaDith : 0xFF);
         load_pixel(sys, st, (u32)x, (u32)y, &p);
@@ -1140,6 +1148,12 @@ static void draw(H64System *sys, H64RdpState *st, TriSetup *ts, AttrSetup *a)
     pc.ts = *ts;
     pc.a = *a;
     derive(st, a, &pc.d);
+    if (st->hires)
+    {
+        // Hi-res texture keys of the tiles this primitive samples (h64_rdp_hires.cpp).
+        if (pc.d.usesTexel0 || (st->rasterFlags & RS_COPY)) h64_rdp_hires_on_use(sys, ts->tile & 7);
+        if (pc.d.usesTexel1) h64_rdp_hires_on_use(sys, (ts->tile + 1) & 7);
+    }
     st->primitives++;
 
     minLine = (ts->yh > (s32)st->scissorYlo ? ts->yh : (s32)st->scissorYlo) >> 2;

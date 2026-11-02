@@ -111,6 +111,9 @@ static int rumble_command(H64System *sys, int channel, const u8 *tx, int txLen, 
 static void joybus_command(H64System *sys, int channel, const u8 *tx, int txLen, u8 *rx, int rxLen, u8 *rxLenByte)
 {
     u32 mask = sys->padMask ? sys->padMask : 1u;
+#ifdef H64_PIFTRACE
+    if (channel == 1 && txLen >= 1) H64_INFO("[piftrace] f%u port2 cmd %02X present %d", sys->vi.frames, tx[0], (mask >> 1) & 1);
+#endif
     if (channel < 4 && (mask & (1u << channel)) && txLen >= 1)
     {
         const H64Pad *p = &sys->pad[channel];

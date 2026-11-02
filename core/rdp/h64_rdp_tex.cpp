@@ -13,6 +13,7 @@
 // lower (RG / UV) and upper (BA / Y) halves of TMEM; TLUT entries are
 // written four times (one per bank) in the upper half.
 #include "h64_rdp_state.h"
+#include "h64_rdp_hires.h"
 
 #include <string.h>
 
@@ -47,6 +48,7 @@ static void load_body(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32
 void h64_rdp_load(H64System *sys, u32 tileIndex, u32 sl, u32 tl, u32 sh, u32 th, int mode)
 {
     u64 t0 = h64_prof_now(sys);
+    if (sys->rdpState->hires) h64_rdp_hires_on_load(sys, tileIndex, sl, tl, sh, th, mode);
     load_body(sys, tileIndex, sl, tl, sh, th, mode);
     if (mode == 1)
     {

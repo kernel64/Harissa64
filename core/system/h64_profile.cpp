@@ -235,6 +235,24 @@ static const GameProfile s_profiles[] = {
     // Alpha test against 0 with alpha = texel alpha * fog factor: the cars,
     // the road and near scenery (no fog) vanished on the Xbox. GitHub issue #7.
     { "NHW", "Hot Wheels Turbo Racing", H64_GP_ALPHA_REF0_PASS },
+    // Its pause messages (PRESS START) are drawn once into the last frame,
+    // then the game keeps flipping the VI between its two buffers (with the
+    // graphics worker's timing; the other one still holds the race without
+    // the message): on the Xbox the message blinked, one line apart. The
+    // older frame is not shown again. GitHub issue #27, the user's report.
+    { "NL2", "Top Gear Rally 2", H64_GP_NO_OLD_FRAME },
+    // Its menus draw their background every frame with an alpha test against
+    // 0 and texel alpha 0 (the RDP keeps those pixels): on the Xbox the
+    // background vanished, the title logo and old texts stayed under the
+    // menus. GitHub issue #27.
+    { "NGR", "Top Gear Rally", H64_GP_ALPHA_REF0_PASS },
+    // After its Boss Game Studios logo, loads from memory an earlier frame
+    // covered were copied back from the GPU's picture over what the game keeps
+    // there: it ended in an endless loop in its exception handler (frame 365,
+    // black screen). Same game on the hosts (no copy backs). GitHub issue #27.
+    // Its title screen is a 320x474 frame: the GPU renderer took the height
+    // from the scissor and showed it moved down, half cut off.
+    { "NWO", "World Driver Championship", H64_GP_COPY_BACK_SAME_WIDTH | H64_GP_TALL_FRAME },
     // Stopped after its first logo with the graphics worker: a task that
     // keeps the RSP busy 200000 cycles or more (the worker's 400000) and the
     // game never starts another one (host: h64test --async 200000).
@@ -274,7 +292,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_VI_LINE0 = 32,          // options.viIntrLine0
        H64_GX_VI_LINE_START = 64,     // options.gfxViLineStart
        H64_GX_SKIP_ZIMAGE = 128,      // options.gfxSkipZImage
-       H64_GX_DECAL_STENCIL = 256 };  // options.gfxDecalStencil
+       H64_GX_DECAL_STENCIL = 256,    // options.gfxDecalStencil
+       H64_GX_ALPHA_DITHER = 512 };   // options.gfxAlphaDither
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -325,6 +344,10 @@ static const GameExtra s_extras[] = {
     // in). The VI took the slot starting closest to its origin, the right-hand
     // frame's, and showed its empty half: a black frame every other frame.
     { "NWZ", H64_GX_VI_LINE_START },
+    // Its dust is a texture rectangle with the dithered alpha compare (a
+    // grainy cloud); the GPU renderer took it as a plain alpha test against 0
+    // and drew solid beige squares. GitHub issue #27.
+    { "NGR", H64_GX_ALPHA_DITHER },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -360,6 +383,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxViLineStart = (extra & H64_GX_VI_LINE_START) != 0;
     sys->options.gfxSkipZImage = (extra & H64_GX_SKIP_ZIMAGE) != 0;
     sys->options.gfxDecalStencil = (extra & H64_GX_DECAL_STENCIL) != 0;
+    sys->options.gfxAlphaDither = (extra & H64_GX_ALPHA_DITHER) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

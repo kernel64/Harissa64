@@ -122,6 +122,7 @@
       <AdditionalIncludeDirectories>..\..\third_party\bearssl\inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="xb_update.cpp" />
+    <ClCompile Include="xb_hd.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\core\**\*.h" />

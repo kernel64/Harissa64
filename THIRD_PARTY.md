@@ -30,13 +30,17 @@ The graphics HLE (`core/hle/h64_gfx.cpp`: microcode detection (including the CRC
 
 The same applies to the line microcodes (L3DEX, L3DEX2: `uCodes/L3DEX.cpp`, `uCodes/L3DEX2.cpp`, line width and quad from `gSPLine3D` and `GraphicsDrawer::_drawThickLine`), F3D's 2D sprites (`gSPSprite2DBase`) and the F3DLX.Rej culling rule (`GBI.cpp`), followed from the same GLideN64 sources. So are F3DAM's texture coordinate matrix (`uCodes/F3DAM.cpp`, `calcF3DAMTexCoords` in `gSP.cpp`), S2DEX 1.03's rounding table and object placement, and how G_BG_1CYC cuts its frame to the picture and spaces its lines (`S2DEXCoordCorrector`, `ObjCoordinates`, `BgRect1CycStripped` in `uCodes/S2DEX.cpp`). F3DBETA (Wave Race 64 (U), Shadows of the Empire: vertex offsets in units of 5, G_TRI2 at 0xB1, the RDPHALF and PERSPNORM numbers, the two CRCs) follows `uCodes/F3DBETA.cpp` and `GBI.cpp` in the same way. Turbo3D (`core/hle/h64_gfx_turbo3d.inc`: the 16-byte display list entries, global and object states, raw RDP lists, screen-space vertices, the microcode's CRC) follows `uCodes/Turbo3D.cpp` and `GBI.cpp` in the same way.
 
+Hi-res texture keys (`core/rdp/h64_rdp_hires.cpp`: the "Rice" checksums community texture packs are named by) are ported from GLideN64 (https://github.com/gonetz/GLideN64, GPL v2): `TxUtil::RiceCRC32`, `RiceCRC32_CI4`/`CI8`, `checksum64` and `CalculateMaxCI4b`/`8b` (`src/GLideNHQ/TxUtil.cpp`), the size and row-stride rules of `TextureCache::_loadHiresTexture` and `ReverseDXT` (`src/Textures.cpp`, the latter after Rice Video), and the load bookkeeping of `gDPLoadTile`/`gDPLoadBlock`/`gDPLoadTLUT` (`src/gDP.cpp`).
+
 Factor 5's microcodes (`core/hle/h64_gfx_f5.inc`: Star Wars: Rogue Squadron's F3DSWRS commands, terrain generation, sprite rectangles; the microcode of Star Wars Episode I: Battle for Naboo and Indiana Jones and the Infernal Machine: DMEM lighting, generated terrain, particles, sprites) follow GLideN64's `uCodes/F5Rogue.cpp` and `uCodes/F5Indi_Naboo.cpp` (Lemmy's LemNemu port, microcode decoding by olivieryuyu; same commit, GPL v2): studied and rewritten.
 
 Behaviour learned from test ROMs is credited in comments but no code is taken from them: n64-systemtest (Lemmy, MIT; studied, never copied), angrylion-rdp-plus (MAME licence, not GPL-compatible: not studied for code), Dillonb/n64-tests (no licence stated) and PeterLemon/N64 (Unlicense). The ROMs themselves are downloaded by `tests/scripts/fetch_test_roms.py` and never committed.
 
+The texture pack conversion (`core/rdp/h64_hdbuild.cpp`, used by the PC tool `platform/host/h64hdconv.cpp` and by the console) reads PNG pictures with stb_image 2.30 and compresses them to DXT1/DXT5 with stb_dxt 1.12 (`third_party/stb/`, https://github.com/nothings/stb, commit `003501f6d7`; Sean Barrett, stb_dxt after Fabian Giesen; public domain or MIT, at the user's choice; files unchanged).
+
 ## Data downloaded at run time
 
-The ROM browser shows box art and information about the games. None of it is shipped with Harissa64 or kept in this repository: the console downloads it when it is online (`platform/xbox360/xb_art.cpp`), or the user fetches it on a PC with `tools/fetch_game_art.py`, into the `art\games\` folder next to the emulator.
+The ROM browser shows box art and information about the games, and offers HD texture packs. None of it is shipped with Harissa64 or kept in this repository: the console downloads it when it is online (`platform/xbox360/xb_art.cpp`), or the user fetches it on a PC with `tools/fetch_game_art.py`, into the `art\games\` folder next to the emulator.
 
 | What | Origin | Licence / terms |
 |---|---|---|
@@ -44,6 +48,7 @@ The ROM browser shows box art and information about the games. None of it is shi
 | Titles, release dates, ratings | GameDB-N64 by Niema Moshiri (https://github.com/niemasd/GameDB-N64), release asset `N64.data.json` | GPL v3 (used as data, never copied into this repository) |
 | Box art pictures | libretro-thumbnails (https://github.com/libretro-thumbnails/Nintendo_-_Nintendo_64), `Named_Boxarts` | The pictures belong to their publishers; the collection states no licence. Downloaded for personal use only, never redistributed by this project |
 | Short descriptions | Wikipedia page summaries (https://en.wikipedia.org/api/rest_v1/) | CC BY-SA 4.0; credited under the text where it is shown |
+| HD texture packs | Each pack's author, from the link in `docs/texture-packs.json` (for example GhostlyDark's SM64/MK64/SSB/BK/BT/MM/RE2 Reloaded, intermissionfb's GoldenEye 007 HD on GitHub). Downloaded by the console when the user installs one (`platform/xbox360/xb_hd.cpp`), or on a PC with `tools/hd_textures.py`, and converted into `hd_textures\` next to the emulator | The authors state no licence; the catalogue only links to their pages and credits them. Nothing of a pack is kept in this repository or redistributed by this project |
 
 ## ares licence
 

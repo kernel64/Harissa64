@@ -15,12 +15,15 @@
 #include <string.h>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "../../core/common/h64_endian.h"
 #include "../../core/common/h64_log.h"
 #include "../../core/rdp/h64_rdp.h"
 #include "../../core/rdp/h64_rdp_state.h"
+#include "../../core/rdp/h64_rdp_hires.h"
+#include "../../core/rdp/h64_hdpack.h"
 #include "../../core/system/h64_system.h"
 
 // EDRAM layout (tiles of 5120 bytes, 80x16 pixels): the 1280x720 back
@@ -204,7 +207,33 @@ struct Xenos
     u32 staleCount;     // words set in staleTmem
     IDirect3DTexture9 *fbTex;   // set: bind_texture puts this image on unit 0 instead of decoding the tile
     float fbTexels[2];          // its N64 texels across [0, 1] (3-point filter sizes)
-    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; int chunk; } memo[8];
+    struct { u32 gen; u32 rasterFlags; IDirect3DTexture9 *tex; TexBinding b; int chunk; u64 key; } memo[8];
+    u64 lastTexKey;     // the cache key of lookup_texture's last texture
+    // Hi-res texture pack (h64_xenos_set_hd_pack, hd_texture): the pack's index,
+    // its file, the textures loaded from it, and for each texture cache key
+    // the pack entry it uses (-1: none).
+    FILE *hdFile;
+    std::vector<H64HdEntry> hdIndex;
+    std::vector<IDirect3DTexture9 *> hdTex;
+    std::vector<u8> hdState;     // per pack entry: HD_NONE, HD_QUEUED, HD_READY, HD_REFUSED
+    std::vector<u32> hdUse;      // per pack entry: presentCount of its last use
+    std::unordered_map<u64, int> hdMap;
+    u32 hdBytes, hdBudget;
+    // The loader thread (hd_thread) reads pictures from its own handle on the
+    // pack; requests and finished reads go through these queues (hdLock).
+    char hdPath[160];
+    HANDLE hdThread, hdWake;
+    CRITICAL_SECTION hdLock;
+    volatile LONG hdQuit;
+    std::vector<int> hdReq;                          // entries to read, oldest first
+    std::vector<std::pair<int, u8 *> > hdDone;       // entries read, waiting for hd_pump
+    u32 hdInFlight;              // bytes queued or read but not uploaded yet
+    u64 hdReadTicks;             // time the loader spent reading (sys->profClock)
+    int hdRefused;               // some entries are HD_REFUSED (budget full)
+    int hdBound;        // the texture get_texture just gave is a hi-res one
+    int hdOn;           // the menu's "HD textures" (H64XenosOptions.hdTextures)
+    u32 hdHits, hdNoKey, hdSize, hdLoads, hdFull, hdEvicted;
+    u64 hdLoadTicks, hdLoadMax;   // time uploading pictures on the graphics thread (sys->profClock): total, longest
     int lookupChunk;    // arena chunk of the texture lookup_texture returned last (-1: none)
 
     FbSlot fb[FB_SLOTS];
@@ -247,6 +276,8 @@ struct Xenos
     void (*overlay)(void *user, IDirect3DDevice9 *dev);   // front-end messages, drawn before each present
     void *overlayUser;
     int drewFrame;      // the RDP has drawn a colour image (until then RDRAM frames are not shown)
+    int loadHold;       // gfxNoOldFrame: a state was loaded and nothing drawn since: the first RDRAM image shown stays
+    u32 loadOrigin;     // that image's origin (0: none yet)
     u32 blankPresents;  // presents left black waiting for that
     int targetBound;    // the N64 target is bound (not the back buffer)
 
@@ -424,7 +455,7 @@ static const char *a_c(u32 s)
     return t[s & 7];
 }
 
-enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8 };
+enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16 };
 #define TRI_ZOUT 0x100   // batch flag beside H64_TRI_*: a vertex Z outside the RDP range
 
 // In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
@@ -517,7 +548,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "  float4 t1 = %s;\n"
               "  float4 noise = frac(sin(dot(vpos, float2(12.9898, 78.233))) * 43758.5453);\n"
               "  float4 comb = float4(0.0, 0.0, 0.0, 0.0);\n"
-              "%s%s%s"
+              "%s%s%s%s"
               "  o.c = comb;\n"
               "%s%s"
               "  return o;\n"
@@ -527,6 +558,9 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               (flags & KEY_3POINT) ? "tex3p(s0, tc.xy, tsize0)" : "tex2D(s0, tc.xy)",
               (flags & KEY_3POINT) ? "tex3p(s1, tc.zw, tsize1)" : "tex2D(s1, tc.zw)",
               c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
+              // Dithered alpha compare: the RDP keeps a pixel whose alpha is at
+              // least a random threshold (pixel noise): a grainy translucency.
+              (flags & KEY_ADITHER) ? "  clip(comb.a - noise.x);\n" : "",
               // Xenos computes ddx/ddy with a texture unit: a shader whose
               // combiner reads no texture had no sampler left and failed to
               // compile (X3602, Banjo-Kazooie); t0 * zbias.w (always 0) keeps s0.
@@ -707,22 +741,278 @@ static s32 mask_coord(u32 mask, int mirror, s32 v)
 static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b);
 
 // The texture of a tile, from the memo while neither TMEM nor the tile changed.
+// ---------------------------------------------------------------- hi-res textures
+// A community texture pack converted by h64hdconv (core/rdp/h64_hdpack.h):
+// when a tile's texture has a picture in the pack (same Rice key, same
+// original size, the whole texture decoded), that picture is bound instead.
+// Texture coordinates stay as they are: they are normalised to the original
+// size, which the picture covers. Off (no pack) nothing here runs.
+
+static int hd_cmp(const H64HdEntry &e, u32 tex, u32 pal, u32 fmt, u32 size, u32 flags)
+{
+    if (e.texCrc != tex) return e.texCrc < tex ? -1 : 1;
+    if (e.palCrc != pal) return e.palCrc < pal ? -1 : 1;
+    if (e.fmt != fmt) return e.fmt < fmt ? -1 : 1;
+    if (e.size != size) return e.size < size ? -1 : 1;
+    if (e.flags != flags) return e.flags < flags ? -1 : 1;
+    return 0;
+}
+
+static int hd_search(const Xenos *x, u32 tex, u32 pal, u32 fmt, u32 size, u32 flags)
+{
+    int lo = 0, hi = (int)x->hdIndex.size() - 1;
+    while (lo <= hi)
+    {
+        int mid = (lo + hi) / 2, c = hd_cmp(x->hdIndex[mid], tex, pal, fmt, size, flags);
+        if (!c) return mid;
+        if (c < 0) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+}
+
+static int hd_find(const Xenos *x, const H64HiresKey *k)
+{
+    int i = hd_search(x, k->texCrc, k->palCrc, k->fmt, k->size, k->hasPal ? H64HD_HAS_PAL : 0);
+    if (i < 0 && k->hasPal)   // "#$#": any texture with this palette
+        i = hd_search(x, 0, k->palCrc, k->fmt, k->size, H64HD_HAS_PAL | H64HD_WILDCARD);
+    return i;
+}
+
+enum { HD_NONE = 0, HD_QUEUED, HD_READY, HD_REFUSED };
+#define HD_IN_FLIGHT_MAX (16u << 20)   // pictures read ahead of their upload, at most
+#define HD_PUMP_MS 2                   // upload time per frame, at most (graphics thread)
+
+// The loader thread: reads the pictures hd_texture asks for, oldest request
+// first, so the graphics thread never waits for the drive.
+static DWORD WINAPI hd_thread(LPVOID arg)
+{
+    Xenos *x = (Xenos *)arg;
+    FILE *f = fopen(x->hdPath, "rb");
+    while (!x->hdQuit)
+    {
+        int i = -1;
+        EnterCriticalSection(&x->hdLock);
+        if (!x->hdReq.empty())
+        {
+            i = x->hdReq.front();
+            x->hdReq.erase(x->hdReq.begin());
+        }
+        LeaveCriticalSection(&x->hdLock);
+        if (i < 0)
+        {
+            WaitForSingleObject(x->hdWake, 100);
+            continue;
+        }
+        {
+            const H64HdEntry &e = x->hdIndex[i];
+            u64 t0 = h64_prof_now(x->sys);
+            u8 *data = (u8 *)malloc(e.bytes ? e.bytes : 1);
+            if (data && (!f || fseek(f, (long)e.offset, SEEK_SET) || fread(data, 1, e.bytes, f) != e.bytes))
+            {
+                free(data);
+                data = NULL;
+            }
+            EnterCriticalSection(&x->hdLock);
+            x->hdDone.push_back(std::make_pair(i, data));
+            x->hdReadTicks += h64_prof_now(x->sys) - t0;
+            LeaveCriticalSection(&x->hdLock);
+        }
+    }
+    if (f) fclose(f);
+    return 0;
+}
+
+// Releases the least recently used picture the GPU is done with. Returns 0
+// when there is none (every picture loaded was used in the last frames).
+static int hd_evict(Xenos *x)
+{
+    u32 i, best = 0xFFFFFFFFu, bestUse = 0;
+    for (i = 0; i < x->hdTex.size(); i++)
+        if (x->hdState[i] == HD_READY && x->presentCount - x->hdUse[i] >= 8 &&
+            (best == 0xFFFFFFFFu || (s32)(x->hdUse[i] - bestUse) < 0))
+        {
+            best = i;
+            bestUse = x->hdUse[i];
+        }
+    if (best == 0xFFFFFFFFu) return 0;
+    // Its last frame must be done on the GPU (fences of the last 8 presents).
+    if (x->presentCount - bestUse <= 8 && (x->presentFenceSet & (1u << (bestUse & 7))) &&
+        x->dev->IsFencePending(x->presentFence[bestUse & 7]))
+        return 0;
+    x->dev->SetTexture(0, x->dummy);   // (never release a texture still set on the device)
+    x->dev->SetTexture(1, x->dummy);
+    x->hdTex[best]->Release();
+    x->hdTex[best] = NULL;
+    x->hdState[best] = HD_NONE;
+    x->hdBytes -= x->hdIndex[best].bytes;
+    x->hdEvicted++;
+    if (x->hdRefused)
+    {
+        // Room again: pictures refused for the budget may be asked for again.
+        for (i = 0; i < x->hdState.size(); i++)
+            if (x->hdState[i] == HD_REFUSED) x->hdState[i] = HD_NONE;
+        x->hdRefused = 0;
+    }
+    return 1;
+}
+
+// The texture of pack entry i from its picture's data (DXT levels, rows of blocks).
+static IDirect3DTexture9 *hd_upload(Xenos *x, int i, const u8 *data)
+{
+    const H64HdEntry &e = x->hdIndex[i];
+    IDirect3DTexture9 *tex = NULL;
+    u32 lvl, w = e.width, h = e.height, pos = 0, blockBytes = e.dxt == 1 ? 8 : 16;
+    if (FAILED(x->dev->CreateTexture(w, h, e.mips, 0, e.dxt == 1 ? D3DFMT_LIN_DXT1 : D3DFMT_LIN_DXT4, 0, &tex, NULL)) || !tex)
+        return NULL;
+    for (lvl = 0; lvl < e.mips; lvl++)
+    {
+        D3DLOCKED_RECT lr;
+        u32 rows = (h + 3) / 4, rowBytes = ((w + 3) / 4) * blockBytes, r;
+        if (pos + rows * rowBytes > e.bytes) break;
+        if (FAILED(tex->LockRect(lvl, &lr, NULL, 0))) break;
+        for (r = 0; r < rows; r++) memcpy((u8 *)lr.pBits + r * lr.Pitch, data + pos + r * rowBytes, rowBytes);
+        tex->UnlockRect(lvl);
+        pos += rows * rowBytes;
+        w = w > 4 ? w / 2 : 4;
+        h = h > 4 ? h / 2 : 4;
+    }
+    return tex;
+}
+
+// At each present (graphics thread): turns the pictures read meanwhile into
+// textures, for HD_PUMP_MS at most; the rest wait for the next frame. Until
+// then the game's own texture is shown.
+static void hd_pump(Xenos *x)
+{
+    LARGE_INTEGER qf;
+    u64 start = h64_prof_now(x->sys), limit;
+    size_t n = 0;
+    if (!x->hdThread) return;
+    QueryPerformanceFrequency(&qf);
+    limit = (u64)qf.QuadPart * HD_PUMP_MS / 1000;   // (profClock is the QPC)
+    for (;;)
+    {
+        std::pair<int, u8 *> d;
+        u64 t0 = h64_prof_now(x->sys);
+        if (t0 - start > limit) break;
+        EnterCriticalSection(&x->hdLock);
+        if (n >= x->hdDone.size()) { LeaveCriticalSection(&x->hdLock); break; }
+        d = x->hdDone[n];
+        LeaveCriticalSection(&x->hdLock);
+        {
+            const H64HdEntry &e = x->hdIndex[d.first];
+            int fits = 1;
+            while (x->hdBytes + e.bytes > x->hdBudget && (fits = hd_evict(x)) != 0) {}
+            if (!fits)
+            {
+                // Every picture in memory is still in use: this one stays original for now.
+                if (!x->hdFull) H64_WARN("[hd] texture budget of %u MB reached: some pictures stay original", x->hdBudget >> 20);
+                x->hdFull++;
+                x->hdState[d.first] = HD_REFUSED;
+                x->hdRefused = 1;
+            }
+            else if (d.second && (x->hdTex[d.first] = hd_upload(x, d.first, d.second)) != NULL)
+            {
+                x->hdState[d.first] = HD_READY;
+                x->hdBytes += e.bytes;
+                x->hdLoads++;
+            }
+            else
+                x->hdState[d.first] = HD_REFUSED;   // unreadable: never asked for again
+            free(d.second);
+            x->hdInFlight -= e.bytes;
+        }
+        n++;
+        t0 = h64_prof_now(x->sys) - t0;
+        x->hdLoadTicks += t0;
+        if (t0 > x->hdLoadMax) x->hdLoadMax = t0;
+    }
+    if (n)
+    {
+        EnterCriticalSection(&x->hdLock);
+        x->hdDone.erase(x->hdDone.begin(), x->hdDone.begin() + n);
+        LeaveCriticalSection(&x->hdLock);
+    }
+}
+
+// hdMap: a picture's index, -1 (none in the pack, for good), or a texture
+// that had no key (its load was not tracked: made before the pack was opened
+// in the middle of a game, or not a plain load), as -2 - the present it was
+// seen at: asked again HD_RETRY_PRESENTS later, as the game may load it again.
+#define HD_RETRY_PRESENTS 30u
+#define HD_NO_KEY(present) (-2 - (int)((present) & 0x3FFFFFFFu))
+
+// The hi-res picture for tile t's texture (cache key `key`, binding b), or
+// NULL: no picture in the pack, or not loaded yet (then it is asked for).
+static IDirect3DTexture9 *hd_texture(Xenos *x, u32 t, const TexBinding *b, u64 key)
+{
+    std::unordered_map<u64, int>::iterator it = x->hdMap.find(key);
+    int i;
+    if (it == x->hdMap.end() ||
+        (it->second <= -2 && ((x->presentCount - (u32)(-2 - it->second)) & 0x3FFFFFFFu) >= HD_RETRY_PRESENTS))
+    {
+        H64HiresKey k;
+        i = -1;
+        if (b->ox || b->oy || !h64_rdp_hires_compute(x->sys, t, &k))
+        {
+            x->hdNoKey++;
+            i = HD_NO_KEY(x->presentCount);
+        }
+        else if (k.width != b->w || k.height != b->h) x->hdSize++;
+        else i = hd_find(x, &k);
+        if (x->hdMap.size() > 200000) x->hdMap.clear();
+        x->hdMap[key] = i;
+        if (i >= 0) x->hdHits++;
+    }
+    else
+        i = it->second;
+    if (i < 0) return NULL;
+    x->hdUse[i] = x->presentCount;
+    if (x->hdState[i] == HD_READY) return x->hdTex[i];
+    if (x->hdState[i] == HD_NONE && x->hdInFlight + x->hdIndex[i].bytes <= HD_IN_FLIGHT_MAX)
+    {
+        x->hdState[i] = HD_QUEUED;
+        x->hdInFlight += x->hdIndex[i].bytes;
+        EnterCriticalSection(&x->hdLock);
+        x->hdReq.push_back(i);
+        LeaveCriticalSection(&x->hdLock);
+        SetEvent(x->hdWake);
+    }
+    return NULL;
+}
+
 static IDirect3DTexture9 *get_texture(Xenos *x, u32 tileIndex, TexBinding *b)
 {
     u32 t = tileIndex & 7, rf = x->st->rasterFlags & (RS_TLUT | RS_TLUT_TYPE);
+    IDirect3DTexture9 *tex;
+    u64 key;
+    x->hdBound = 0;
     if (x->win.active && x->win.tile == t) return lookup_texture(x, t, b);   // (lookup_texture marks the chunk)
     if (x->memo[t].gen == x->tmemGen && x->memo[t].rasterFlags == rf && x->memo[t].tex)
     {
         *b = x->memo[t].b;
         if (x->memo[t].chunk >= 0) x->chunkUse[x->memo[t].chunk] = x->presentCount;
-        return x->memo[t].tex;
+        tex = x->memo[t].tex;
+        key = x->memo[t].key;
     }
-    x->memo[t].tex = lookup_texture(x, t, b);
-    x->memo[t].chunk = x->lookupChunk;
-    x->memo[t].b = *b;
-    x->memo[t].gen = x->tmemGen;
-    x->memo[t].rasterFlags = rf;
-    return x->memo[t].tex;
+    else
+    {
+        x->memo[t].tex = lookup_texture(x, t, b);
+        x->memo[t].chunk = x->lookupChunk;
+        x->memo[t].b = *b;
+        x->memo[t].gen = x->tmemGen;
+        x->memo[t].rasterFlags = rf;
+        x->memo[t].key = x->lastTexKey;
+        tex = x->memo[t].tex;
+        key = x->lastTexKey;
+    }
+    if (x->hdFile && x->hdOn && tex && tex != x->dummy)
+    {
+        IDirect3DTexture9 *hd = hd_texture(x, t, b, key);
+        if (hd) { x->hdBound = 1; return hd; }
+    }
+    return tex;
 }
 
 // Whether the GPU is done with every frame that used chunk c (no wait needed).
@@ -910,6 +1200,7 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         else key = mem_hash(key, st->tmem + 0x800, 0x800);
     }
     it = x->textures.find(key);
+    x->lastTexKey = key;
     x->lookupChunk = -1;
     if (it != x->textures.end() && x->debug != 12)   // xenosdebug=12: every texture decoded again (diagnosis)
     {
@@ -1089,6 +1380,15 @@ static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
     x->dev->SetTexture(stage, tex ? tex : x->dummy);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSU, b->clampS ? D3DTADDRESS_CLAMP : b->mirrorS ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
     x->dev->SetSamplerState(stage, D3DSAMP_ADDRESSV, b->clampT ? D3DTADDRESS_CLAMP : b->mirrorT ? D3DTADDRESS_MIRROR : D3DTADDRESS_WRAP);
+    if (x->hdBound && tex)
+    {
+        // A hi-res picture: smoothed, with its mip levels (several of its
+        // texels fall on one screen pixel where the original's did not).
+        x->dev->SetSamplerState(stage, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+        x->dev->SetSamplerState(stage, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+        x->dev->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_LINEAR);
+        return;
+    }
     x->dev->SetSamplerState(stage, D3DSAMP_MINFILTER, filter);
     x->dev->SetSamplerState(stage, D3DSAMP_MAGFILTER, filter);
     x->dev->SetSamplerState(stage, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
@@ -1564,6 +1864,7 @@ static void resolve_current(Xenos *x)
     x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, NULL, s->tex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
     s->valid = 1;
     x->drewFrame = 1;
+    x->loadHold = 0;
 }
 
 static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32);
@@ -2255,16 +2556,23 @@ static void set_depth(Xenos *x, int hasDepth)
 static void set_alpha_test(Xenos *x)
 {
     const H64RdpState *st = x->st;
-    if (st->rasterFlags & RS_ALPHA_TEST)
+    if (x->sys->options.gfxAlphaDither && (st->rasterFlags & (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER)) == (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER))
+        x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);   // the shader's clip() does it (KEY_ADITHER)
+    else if (st->rasterFlags & RS_ALPHA_TEST)
     {
         // The RDP drops a pixel whose alpha is below the blend colour's
         // alpha. Against 0 nothing is dropped; dropping alpha 0 there is the
         // default, profile gfxAlphaRef0Pass keeps it (Hot Wheels Turbo Racing
         // draws with alpha = texel alpha * fog factor: unfogged surfaces vanished).
+        // With coverage times alpha as well, a pixel whose alpha leaves it no
+        // coverage is still dropped (below): Top Gear Rally's wheel rims are
+        // squares whose corner texels have alpha 0, kept as black corners by
+        // gfxAlphaRef0Pass before.
         u32 ref = st->blendColor & 0xFF;
+        int cvgDrop = (st->rasterFlags & RS_CVG_TIMES_ALPHA) && ref < 0x20;
         x->dev->SetRenderState(D3DRS_ALPHATESTENABLE, TRUE);
-        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref || x->sys->options.gfxAlphaRef0Pass ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
-        x->dev->SetRenderState(D3DRS_ALPHAREF, ref);
+        x->dev->SetRenderState(D3DRS_ALPHAFUNC, ref || cvgDrop || x->sys->options.gfxAlphaRef0Pass ? D3DCMP_GREATEREQUAL : D3DCMP_GREATER);
+        x->dev->SetRenderState(D3DRS_ALPHAREF, cvgDrop ? 0x20 : ref);
     }
     else if (st->rasterFlags & RS_CVG_TIMES_ALPHA)
     {
@@ -2316,6 +2624,8 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     if (!two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     if (zOut && hasDepth && (st->depthBlendFlags & (DB_DEPTH_TEST | DB_DEPTH_UPDATE))) flags |= KEY_DEPTH;
     if (x->texFilter == 0 && (st->rasterFlags & RS_SAMPLE_QUAD) && !(st->rasterFlags & RS_COPY)) flags |= KEY_3POINT;
+    if (x->sys->options.gfxAlphaDither && (st->rasterFlags & (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER)) == (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER))
+        flags |= KEY_ADITHER;
     ps = combiner_shader(x, flags);
     x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);
@@ -2845,6 +3155,31 @@ static int rdram_copy_rect(Xenos *x, const u32 *w)
     return 1;
 }
 
+// Point-sampled rectangles: the N64 takes texel floor(c) of each pixel's
+// coordinate c = start + n * step; the GPU samples c + 0.5 at the centre of a
+// native pixel (tex_coord's half texel) and up to half a native pixel's step
+// either side of it at a higher resolution. With whole-texel coordinates that
+// lands mid-texel. World Driver Championship draws its timer text upside
+// down from t = 31.94 (its tile's last row, 31): c + 0.5 read row 32, past
+// the clamp, black (a black line over each line of text). Returns the texels to add so that the fractional parts of the
+// rectangle's coordinates sit around the middle of their texels (0 when they
+// are all whole: unchanged).
+static float point_rect_shift(float start, float step, float count)
+{
+    double fmin = 1.0, fmax = 0.0;
+    int n, num = (int)count;
+    if (num > 256) num = 256;
+    for (n = 0; n < num; n++)
+    {
+        double v = (double)start + (double)n * step + 1e-6;
+        double f = v - floor(v);
+        if (f < fmin) fmin = f;
+        if (f > fmax) fmax = f;
+    }
+    if (num <= 0 || fmax < 2e-6) return 0.0f;
+    return (float)(-(fmin + fmax) * 0.5);
+}
+
 static void tex_rect(Xenos *x, const u32 *w, int flip)
 {
     int fullWidth = 0;   // set below: a rectangle across the whole image (a background) stays full width
@@ -2949,6 +3284,21 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         }
     }
     fullWidth = ws_wide(xh - xl, (float)(st->colorWidth ? st->colorWidth : 320));
+    {
+        // Point sampled (as bind_texture decides): keep each pixel on the N64's texel.
+        int linear = !copy && (st->rasterFlags & RS_SAMPLE_QUAD) && x->texFilter != 2 && t0->fmt != 1 &&
+                     !(x->sys->options.gfxRectPoint && (dsdx == 1.0f || dsdx == -1.0f) && (dtdy == 1.0f || dtdy == -1.0f));
+        if (!linear && !fbSrc && !x->hdBound)
+        {
+            // In the tile's texels (its shift scales the coordinates: World
+            // Driver Championship's font has shift 15, x2).
+            float spanS = flip ? yh - yl : xh - xl, spanT = flip ? xh - xl : yh - yl;
+            float kS = t0->shiftS > 10 ? (float)(1 << (16 - t0->shiftS)) : t0->shiftS ? 1.0f / (float)(1 << t0->shiftS) : 1.0f;
+            float kT = t0->shiftT > 10 ? (float)(1 << (16 - t0->shiftT)) : t0->shiftT ? 1.0f / (float)(1 << t0->shiftT) : 1.0f;
+            s += 32.0f * point_rect_shift(s / 32.0f * kS, dsdx * kS, spanS) / kS;
+            t += 32.0f * point_rect_shift(t / 32.0f * kT, dtdy * kT, spanT) / kT;
+        }
+    }
     for (i = 0; i < 4; i++)
     {
         // Texture coordinates half a pixel back: the N64 samples a pixel at its
@@ -3024,6 +3374,12 @@ static void xenos_reset(void *user)
     memset(x->staleTmem, 0, sizeof(x->staleTmem));
     x->staleCount = 0;
     x->stateDirty = 1;
+    // A state was loaded: its RDRAM is a real machine's (with the picture on
+    // screen since states carry it), shown until the game draws again, at
+    // once (a game paused on a still picture draws nothing).
+    x->drewFrame = 1;
+    x->loadHold = 1;
+    x->loadOrigin = 0;
 }
 
 // Profile gfxSkipZImage (Mario Tennis): ~50 times a frame it draws an effect's
@@ -3353,6 +3709,87 @@ void h64_xenos_present(H64Renderer *r)
     h64_xenos_present_vi(r, X(r)->sys->vi.regs);
 }
 
+void h64_xenos_hd_stats(H64Renderer *r, u32 *hits, u32 *noKey, u32 *size, u32 *loads, u32 *mb)
+{
+    Xenos *x = X(r);
+    *hits = x->hdHits; *noKey = x->hdNoKey; *size = x->hdSize; *loads = x->hdLoads; *mb = x->hdBytes >> 20;
+}
+
+void h64_xenos_hd_times(H64Renderer *r, u64 *total, u64 *longest, u32 *overBudget)
+{
+    Xenos *x = X(r);
+    *total = x->hdLoadTicks; *longest = x->hdLoadMax; *overBudget = x->hdFull;
+    x->hdLoadMax = 0;
+}
+
+void h64_xenos_hd_more(H64Renderer *r, u64 *readTicks, u32 *evicted, u32 *waiting)
+{
+    Xenos *x = X(r);
+    EnterCriticalSection(&x->hdLock);
+    *readTicks = x->hdReadTicks;
+    *waiting = (u32)(x->hdReq.size() + x->hdDone.size());
+    LeaveCriticalSection(&x->hdLock);
+    *evicted = x->hdEvicted;
+}
+
+// Opens a hi-res texture pack (.h64hd): its index stays in memory, the
+// pictures are read when first used, up to budgetMB of them. Returns the
+// number of pictures (0: none, the file is not a pack, or it is unreadable).
+u32 h64_xenos_set_hd_pack(H64Renderer *r, const char *path, u32 budgetMB)
+{
+    Xenos *x = X(r);
+    u8 head[H64HD_HEADER_BYTES];
+    u32 count, indexOff, i;
+    std::vector<u8> idx;
+    if (x->hdFile) return (u32)x->hdIndex.size();
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fread(head, 1, sizeof(head), f) != sizeof(head) || memcmp(head, H64HD_MAGIC, 8) || h64_load_be32(head + 8) != H64HD_VERSION)
+    {
+        H64_WARN("[hd] %s is not a Harissa64 HD pack (version %u)", path, H64HD_VERSION);
+        fclose(f);
+        return 0;
+    }
+    count = h64_load_be32(head + 12);
+    indexOff = h64_load_be32(head + 16);
+    if (!count || count > 1000000) { fclose(f); return 0; }
+    idx.resize((size_t)count * H64HD_ENTRY_BYTES);
+    if (fseek(f, (long)indexOff, SEEK_SET) || fread(&idx[0], 1, idx.size(), f) != idx.size()) { fclose(f); return 0; }
+    x->hdIndex.resize(count);
+    for (i = 0; i < count; i++)
+    {
+        const u8 *p = &idx[(size_t)i * H64HD_ENTRY_BYTES];
+        H64HdEntry &e = x->hdIndex[i];
+        e.texCrc = h64_load_be32(p);
+        e.palCrc = h64_load_be32(p + 4);
+        e.fmt = p[8]; e.size = p[9]; e.flags = p[10]; e.dxt = p[11];
+        e.width = h64_load_be16(p + 12);
+        e.height = h64_load_be16(p + 14);
+        e.mips = p[16];
+        e.offset = h64_load_be32(p + 20);
+        e.bytes = h64_load_be32(p + 24);
+    }
+    x->hdTex.assign(count, (IDirect3DTexture9 *)NULL);
+    x->hdState.assign(count, (u8)HD_NONE);
+    x->hdUse.assign(count, 0u);
+    x->hdMap.clear();
+    x->hdBudget = (budgetMB ? budgetMB : 96) << 20;
+    x->hdFile = f;
+    strncpy(x->hdPath, path, sizeof(x->hdPath) - 1);
+    x->hdPath[sizeof(x->hdPath) - 1] = 0;
+    InitializeCriticalSection(&x->hdLock);
+    x->hdWake = CreateEvent(NULL, FALSE, FALSE, NULL);
+    x->hdQuit = 0;
+    x->hdThread = CreateThread(NULL, 64 * 1024, hd_thread, x, CREATE_SUSPENDED, NULL);
+    if (x->hdThread)
+    {
+        XSetThreadProcessor(x->hdThread, 3);   // (0 CPU, 2 graphics, 4 audio, 5 parse + log)
+        ResumeThread(x->hdThread);
+    }
+    H64_INFO("[hd] %s: %u pictures, budget %u MB", path, count, x->hdBudget >> 20);
+    return count;
+}
+
 void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
 {
     Xenos *x = X(r);
@@ -3510,7 +3947,17 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->shownTiled = 1;
     }
     else if (x->drewFrame || ++x->blankPresents > 600)
+    {
+        if (x->sys->options.gfxNoOldFrame && x->loadHold)
+        {
+            // Profile gfxNoOldFrame after a state load: the game flips the VI
+            // between its two buffers while it draws nothing (Top Gear Rally
+            // 2 paused); the picture first shown stays until it draws again.
+            if (!x->loadOrigin) x->loadOrigin = origin;
+            origin = x->loadOrigin;
+        }
         show_rdram_frame(x, vi, origin, width, type == 3);
+    }
     // else: at boot the VI often shows RDRAM the game still uses for other data
     // (noise); stay black until the RDP draws a frame, or for 600 VIs at most
     // (games that draw their first images with the CPU; DK64 draws its first
@@ -3550,6 +3997,7 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
     x->presentFenceSet |= 1u << (x->presentCount & 7);
     x->stats.presents++;
     x->presentCount++;
+    hd_pump(x);
     // The next draw rebinds the N64 target and restores its content.
     x->curSlot = -1;
 }
@@ -3631,7 +4079,23 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->stencilRef = 0;
     x->shownSlot = -1;
     x->drewFrame = 0;
+    x->lastTexKey = 0;
+    x->hdFile = NULL;
+    x->hdBytes = 0;
+    x->hdBudget = 96u << 20;
+    x->hdBound = 0;
+    x->hdOn = 1;
+    x->hdHits = x->hdNoKey = x->hdSize = x->hdLoads = x->hdFull = x->hdEvicted = 0;
+    x->hdThread = x->hdWake = NULL;
+    x->hdQuit = 0;
+    x->hdInFlight = 0;
+    x->hdReadTicks = 0;
+    x->hdRefused = 0;
+    x->hdPath[0] = 0;
+    x->hdLoadTicks = x->hdLoadMax = 0;
     x->blankPresents = 0;
+    x->loadHold = 0;
+    x->loadOrigin = 0;
     x->overlay = NULL;
     x->overlayUser = NULL;
     x->copyBacks = 0;
@@ -3714,6 +4178,19 @@ void h64_xenos_free(H64Renderer *r)
     std::map<u64, IDirect3DPixelShader9 *>::iterator it;
     int i;
     if (!x) return;
+    if (x->hdThread)
+    {
+        size_t k;
+        x->hdQuit = 1;
+        SetEvent(x->hdWake);
+        WaitForSingleObject(x->hdThread, INFINITE);
+        CloseHandle(x->hdThread);
+        CloseHandle(x->hdWake);
+        for (k = 0; k < x->hdDone.size(); k++) free(x->hdDone[k].second);
+        x->hdDone.clear();
+        DeleteCriticalSection(&x->hdLock);
+        x->hdThread = NULL;
+    }
     x->dev->SetRenderTarget(0, x->backBuffer);
     x->dev->SetDepthStencilSurface(NULL);
     retire_all_textures(x);   // waits for the GPU
@@ -3739,6 +4216,11 @@ void h64_xenos_free(H64Renderer *r)
             for (k = 0; k < x->arenaHeaders[c].size(); k++) delete x->arenaHeaders[c][k];
         if (x->arena) XPhysicalFree(x->arena);
         x->arena = NULL;
+        for (c = 0; c < x->hdTex.size(); c++)
+            if (x->hdTex[c]) x->hdTex[c]->Release();
+        x->hdTex.clear();
+        if (x->hdFile) fclose(x->hdFile);
+        x->hdFile = NULL;
     }
     for (it = x->shaders.begin(); it != x->shaders.end(); ++it)
         if (it->second) it->second->Release();
@@ -3773,6 +4255,60 @@ void h64_xenos_free(H64Renderer *r)
     x->sys->options.rdpStateOnly = 0;
     free(x->ramShadow);
     delete x;
+}
+
+int h64_xenos_shown_frame_to_rdram(H64Renderer *r, u32 *addr, u32 *bytes, u8 *before, u32 beforeSize)
+{
+    // A game saved while it shows a still picture (Top Gear Rally 2's pause
+    // messages: nothing is drawn while they show) loaded back black: the
+    // state's RDRAM held no picture and the renderer has no frame after a load.
+    // The picture on screen, and the game's other buffer (as wide, drawn
+    // lately: it flips between the two), go to RDRAM, one range to restore.
+    Xenos *x = X(r);
+    int pick[2], np = 0, k, shown = x->shownSlot;
+    u32 lo = 0xFFFFFFFFu, hi = 0, i;
+    if (shown < 0) return 0;
+    pick[np++] = shown;
+    {
+        // The other buffer: the newest other image as wide (a paused game
+        // draws nothing for a long while: no age limit).
+        int other = -1;
+        for (i = 0; i < FB_SLOTS; i++)
+        {
+            const FbSlot *o = &x->fb[i];
+            if ((int)i == shown || !o->valid || !o->tex || o->width != x->fb[shown].width || o->bytes != x->fb[shown].bytes) continue;
+            if (other < 0 || o->drawnAt > x->fb[other].drawnAt) other = (int)i;
+        }
+        if (other >= 0) pick[np++] = other;
+    }
+    for (k = 0; k < np; k++)
+    {
+        const FbSlot *fs = &x->fb[pick[k]];
+        u32 rows = fs->drawnH && fs->drawnH < fs->height ? fs->drawnH : fs->height, a = fs->addr & 0xFFFFFF;
+        if (!fs->valid || !fs->tex || !fs->gpuDirty || fs->bytes < 2 || !fs->width) { pick[k] = -1; continue; }
+        if (a < lo) lo = a;
+        if (a + fs->width * fs->bytes * rows > hi) hi = a + fs->width * fs->bytes * rows;
+    }
+    if (hi <= lo || hi > H64_RDRAM_SIZE || hi - lo > beforeSize) return 0;
+    memcpy(before, x->sys->rdram + lo, hi - lo);
+    for (k = 0; k < np; k++)
+    {
+        FbSlot *fs;
+        u32 dirty, cl, ch;
+        if (pick[k] < 0) continue;
+        fs = &x->fb[pick[k]];
+        dirty = fs->gpuDirty;
+        cl = fs->cleanLo;
+        ch = fs->cleanHi;
+        frame_to_rdram(x, pick[k]);
+        // RDRAM gets its own bytes back after the save: the slot's bookkeeping too.
+        fs->gpuDirty = dirty;
+        fs->cleanLo = cl;
+        fs->cleanHi = ch;
+    }
+    *addr = lo;
+    *bytes = hi - lo;
+    return 1;
 }
 
 int h64_xenos_save_frame(H64Renderer *r, const char *path)
@@ -3902,6 +4438,12 @@ void h64_xenos_set_options(H64Renderer *r, const H64XenosOptions *o)
     if (o->texFilter != x->texFilter)
     {
         x->texFilter = o->texFilter < 0 || o->texFilter > 2 ? 1 : o->texFilter;
+        x->stateDirty = 1;
+    }
+    if ((o->hdTextures != 0) != x->hdOn)
+    {
+        // On or off at once: the next texture bound is the pack's picture or the game's.
+        x->hdOn = o->hdTextures != 0;
         x->stateDirty = 1;
     }
     if (scale != x->scale)
