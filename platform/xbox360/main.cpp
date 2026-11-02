@@ -973,14 +973,25 @@ static void StatePath(char *out, size_t size)
 }
 
 // Returns 1 when done (saved or failed), 0 when the machine is not quiet yet.
-static int SaveStateNow(H64System *sys)
+static int SaveStateNow(H64System *sys, H64Renderer *renderer)
 {
     std::vector<u8> st;
     char path[160];
     FILE *f;
-    int ok;
+    int ok, framed = 0;
+    u32 frameAddr = 0, frameBytes = 0;
+    static u8 s_frameKeep[1280 * 960 * 4];   // the RDRAM bytes under the picture, put back after the save
     if (!h64_state_quiet(sys)) return 0;
+    if (renderer)
+    {
+        // The picture on screen goes into the state (it is only on the GPU):
+        // a game saved on a still picture loads back with it, not black.
+        h64_hle_async_wait(sys);
+        if (s_gfxQ.thread) WorkWaitAll(NULL);
+        framed = h64_xenos_shown_frame_to_rdram(renderer, &frameAddr, &frameBytes, s_frameKeep, sizeof(s_frameKeep));
+    }
     h64_state_save(sys, &st);
+    if (framed) memcpy(sys->rdram + frameAddr, s_frameKeep, frameBytes);
     StatePath(path, sizeof(path));
     f = fopen(path, "wb");
     ok = f && fwrite(&st[0], 1, st.size(), f) == st.size();
@@ -1378,7 +1389,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             result = RG_BROWSER;
             break;
         }
-        if (s_statePending && SaveStateNow(sys)) s_statePending = 0;
+        if (s_statePending && SaveStateNow(sys, renderer)) s_statePending = 0;
         if (menuRequest)
         {
             menuRequest = 0;

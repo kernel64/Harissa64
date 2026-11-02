@@ -276,6 +276,8 @@ struct Xenos
     void (*overlay)(void *user, IDirect3DDevice9 *dev);   // front-end messages, drawn before each present
     void *overlayUser;
     int drewFrame;      // the RDP has drawn a colour image (until then RDRAM frames are not shown)
+    int loadHold;       // gfxNoOldFrame: a state was loaded and nothing drawn since: the first RDRAM image shown stays
+    u32 loadOrigin;     // that image's origin (0: none yet)
     u32 blankPresents;  // presents left black waiting for that
     int targetBound;    // the N64 target is bound (not the back buffer)
 
@@ -1862,6 +1864,7 @@ static void resolve_current(Xenos *x)
     x->dev->Resolve(D3DRESOLVE_RENDERTARGET0, NULL, s->tex, NULL, 0, 0, NULL, 0.0f, 0, NULL);
     s->valid = 1;
     x->drewFrame = 1;
+    x->loadHold = 0;
 }
 
 static IDirect3DTexture9 *upload_rdram(Xenos *x, u32 origin, u32 width, int bpp32);
@@ -3326,6 +3329,12 @@ static void xenos_reset(void *user)
     memset(x->staleTmem, 0, sizeof(x->staleTmem));
     x->staleCount = 0;
     x->stateDirty = 1;
+    // A state was loaded: its RDRAM is a real machine's (with the picture on
+    // screen since states carry it), shown until the game draws again, at
+    // once (a game paused on a still picture draws nothing).
+    x->drewFrame = 1;
+    x->loadHold = 1;
+    x->loadOrigin = 0;
 }
 
 // Profile gfxSkipZImage (Mario Tennis): ~50 times a frame it draws an effect's
@@ -3893,7 +3902,17 @@ void h64_xenos_present_vi(H64Renderer *r, const u32 *vi)
         x->shownTiled = 1;
     }
     else if (x->drewFrame || ++x->blankPresents > 600)
+    {
+        if (x->sys->options.gfxNoOldFrame && x->loadHold)
+        {
+            // Profile gfxNoOldFrame after a state load: the game flips the VI
+            // between its two buffers while it draws nothing (Top Gear Rally
+            // 2 paused); the picture first shown stays until it draws again.
+            if (!x->loadOrigin) x->loadOrigin = origin;
+            origin = x->loadOrigin;
+        }
         show_rdram_frame(x, vi, origin, width, type == 3);
+    }
     // else: at boot the VI often shows RDRAM the game still uses for other data
     // (noise); stay black until the RDP draws a frame, or for 600 VIs at most
     // (games that draw their first images with the CPU; DK64 draws its first
@@ -4030,6 +4049,8 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     x->hdPath[0] = 0;
     x->hdLoadTicks = x->hdLoadMax = 0;
     x->blankPresents = 0;
+    x->loadHold = 0;
+    x->loadOrigin = 0;
     x->overlay = NULL;
     x->overlayUser = NULL;
     x->copyBacks = 0;
@@ -4189,6 +4210,60 @@ void h64_xenos_free(H64Renderer *r)
     x->sys->options.rdpStateOnly = 0;
     free(x->ramShadow);
     delete x;
+}
+
+int h64_xenos_shown_frame_to_rdram(H64Renderer *r, u32 *addr, u32 *bytes, u8 *before, u32 beforeSize)
+{
+    // A game saved while it shows a still picture (Top Gear Rally 2's pause
+    // messages: nothing is drawn while they show) loaded back black: the
+    // state's RDRAM held no picture and the renderer has no frame after a load.
+    // The picture on screen, and the game's other buffer (as wide, drawn
+    // lately: it flips between the two), go to RDRAM, one range to restore.
+    Xenos *x = X(r);
+    int pick[2], np = 0, k, shown = x->shownSlot;
+    u32 lo = 0xFFFFFFFFu, hi = 0, i;
+    if (shown < 0) return 0;
+    pick[np++] = shown;
+    {
+        // The other buffer: the newest other image as wide (a paused game
+        // draws nothing for a long while: no age limit).
+        int other = -1;
+        for (i = 0; i < FB_SLOTS; i++)
+        {
+            const FbSlot *o = &x->fb[i];
+            if ((int)i == shown || !o->valid || !o->tex || o->width != x->fb[shown].width || o->bytes != x->fb[shown].bytes) continue;
+            if (other < 0 || o->drawnAt > x->fb[other].drawnAt) other = (int)i;
+        }
+        if (other >= 0) pick[np++] = other;
+    }
+    for (k = 0; k < np; k++)
+    {
+        const FbSlot *fs = &x->fb[pick[k]];
+        u32 rows = fs->drawnH && fs->drawnH < fs->height ? fs->drawnH : fs->height, a = fs->addr & 0xFFFFFF;
+        if (!fs->valid || !fs->tex || !fs->gpuDirty || fs->bytes < 2 || !fs->width) { pick[k] = -1; continue; }
+        if (a < lo) lo = a;
+        if (a + fs->width * fs->bytes * rows > hi) hi = a + fs->width * fs->bytes * rows;
+    }
+    if (hi <= lo || hi > H64_RDRAM_SIZE || hi - lo > beforeSize) return 0;
+    memcpy(before, x->sys->rdram + lo, hi - lo);
+    for (k = 0; k < np; k++)
+    {
+        FbSlot *fs;
+        u32 dirty, cl, ch;
+        if (pick[k] < 0) continue;
+        fs = &x->fb[pick[k]];
+        dirty = fs->gpuDirty;
+        cl = fs->cleanLo;
+        ch = fs->cleanHi;
+        frame_to_rdram(x, pick[k]);
+        // RDRAM gets its own bytes back after the save: the slot's bookkeeping too.
+        fs->gpuDirty = dirty;
+        fs->cleanLo = cl;
+        fs->cleanHi = ch;
+    }
+    *addr = lo;
+    *bytes = hi - lo;
+    return 1;
 }
 
 int h64_xenos_save_frame(H64Renderer *r, const char *path)

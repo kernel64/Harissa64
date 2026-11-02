@@ -42,6 +42,13 @@ void h64_xenos_set_overlay(H64Renderer *r, void (*fn)(void *user, IDirect3DDevic
 // GPU). Returns 0 on success.
 int h64_xenos_save_frame(H64Renderer *r, const char *path);
 
+// For a save state: the picture on screen exists only on the GPU, its RDRAM
+// is stale. Writes it into RDRAM (the caller restores those bytes after the
+// state is taken, so the running game sees no change). Returns the RDRAM
+// range written in *addr / *bytes, 0 when nothing was written. The graphics
+// worker must be idle and the device this thread's.
+int h64_xenos_shown_frame_to_rdram(H64Renderer *r, u32 *addr, u32 *bytes, u8 *before, u32 beforeSize);
+
 // Debug output of combined primitives: 0 normal, 1 solid red, 2 shade
 // colour only, 3 texture 0 only.
 void h64_xenos_set_debug(H64Renderer *r, int mode);
