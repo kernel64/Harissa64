@@ -1053,6 +1053,9 @@ static void shade_and_write(H64System *sys, H64RdpState *st, PrimContext *pc, co
                              (pc->ts.tile + k) & 7, tt->fmt, tt->size, tt->palette, tt->offset, tt->stride, tt->maskS, tt->maskT,
                              tt->shiftS, tt->shiftT, tt->flags, tt->slo, tt->shi, tt->tlo, tt->thi);
                 }
+                if (anyTex)
+                    H64_INFO("[probe]   texel0 %d %d %d %d, texel1 %d %d %d %d, shade %d %d %d %d", t0.c[0], t0.c[1], t0.c[2], t0.c[3],
+                             t1.c[0], t1.c[1], t1.c[2], t1.c[3], shade[0], shade[1], shade[2], shade[3]);
             }
         }
         else

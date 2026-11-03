@@ -479,13 +479,16 @@ static void apply_input(H64System *sys)
 }
 
 // ---- Audio capture to WAV ----
-struct WavCapture { u8 *data; u32 size, cap, rate; };
+struct WavCapture { u8 *data; u32 size, cap, rate, buffers, maxLen, minLen; };
 
 static void wav_sink(void *user, const u8 *samples, u32 len, u32 rate)
 {
     WavCapture *w = (WavCapture *)user;
     u32 i;
     if (!w->rate) w->rate = rate;
+    w->buffers++;
+    if (len > w->maxLen) w->maxLen = len;
+    if (!w->minLen || len < w->minLen) w->minLen = len;
     if (w->size + len > w->cap)
     {
         u32 cap = w->cap ? w->cap * 2 : 1 << 20;
@@ -1067,7 +1070,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     if (wavPath)
     {
         if (wav_write(wavPath, &wav) == 0)
-            printf("[run] audio: %u samples at %u Hz written to %s\n", wav.size / 4, wav.rate, wavPath);
+            printf("[run] audio: %u samples at %u Hz written to %s (%u buffers of %u..%u bytes)\n", wav.size / 4, wav.rate, wavPath, wav.buffers, wav.minLen, wav.maxLen);
         free(wav.data);
         memset(&wav, 0, sizeof(wav));
     }

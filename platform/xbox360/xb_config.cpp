@@ -81,10 +81,12 @@ void ConfigDefaults(Config *c)
     c->gfxCycles = 400000;
     c->gfxTiming = 0;
     c->lateParse = -1;   // per game (main.cpp)
+    c->cpiSet = 0;
     c->cpi = 2;      // mupen64plus's CountPerOp 1 (its exact setting; its default 2 is our 4)
     c->exitAfter = 0;
     c->stallMs = 100;
     c->audioMs = XB_AUDIO_DEFAULT_MS;
+    c->wavDump = 0;
     c->stateSlot = 1;
     c->loadState = 0;
     c->saveStateAt = 0;
@@ -155,6 +157,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "stallms")) c->stallMs = (u32)atoi(eq + 1);
         else if (!strcmp(line, "stateslot")) c->stateSlot = atoi(eq + 1);
         else if (!strcmp(line, "audioms")) c->audioMs = atoi(eq + 1);
+        else if (!strcmp(line, "wavdump")) c->wavDump = atoi(eq + 1);
         else if (!strcmp(line, "loadstate")) c->loadState = atoi(eq + 1);
         else if (!strcmp(line, "savestateat")) c->saveStateAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");
@@ -196,7 +199,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "gfxcycles")) c->gfxCycles = (u32)atoi(eq + 1);
         else if (!strcmp(line, "gfxtiming")) c->gfxTiming = atoi(eq + 1);
         else if (!strcmp(line, "lateparse")) c->lateParse = atoi(eq + 1);
-        else if (!strcmp(line, "cpi")) c->cpi = atoi(eq + 1);
+        else if (!strcmp(line, "cpi")) { c->cpi = atoi(eq + 1); c->cpiSet = 1; }
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);

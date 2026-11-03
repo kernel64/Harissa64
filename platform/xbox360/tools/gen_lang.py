@@ -286,7 +286,8 @@ def main():
         check(code, "PLAYER, USED_WHEN", width(t["USED_WHEN"], 16, False), 700)
         # Quit dialog, browser, picker, messages.
         check(code, "QUIT_ASK", width(t["QUIT_ASK"], 30, True), 640 - 96)
-        check(code, "FOOT_BROWSER and the box art progress", footer_width(t["FOOT_BROWSER"]) + 40 + width(t["ART_PROGRESS"] % (888, 888), 17, False) + 16 + 150,
+        check(code, "FOOT_BROWSER", footer_width(t["FOOT_BROWSER"]), 1280 - 128)
+        check(code, "FOOT_BROWSER_ART and the box art progress", footer_width(t["FOOT_BROWSER_ART"]) + 40 + width(t["ART_PROGRESS"] % (888, 888), 17, False) + 16 + 150,
               1280 - 128)
         check(code, "DOWNLOADING", width(t["DOWNLOADING"], 15, False), 300)
         check(code, "GAME_CODE", width(t["GAME_CODE"], 13, True), 110)

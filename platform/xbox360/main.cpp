@@ -1207,6 +1207,12 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         H64_INFO("[profile] gameflags=%X from the ini", c->gameFlags);
     }
     if (c->lateParse >= 0) sys->options.gfxLateParse = c->lateParse;
+    sys->cpu.cpi = s_cpi;
+    if (sys->options.gameCpi && !c->cpiSet)
+    {
+        sys->cpu.cpi = sys->options.gameCpi;   // the recompiler regenerates its code for it (rtCpi)
+        H64_INFO("[profile] %u CPU cycles an instruction", sys->cpu.cpi);
+    }
     if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;
@@ -1226,6 +1232,13 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     {
         sys->aiSink = xb_audio_sink;
         sys->aiUser = NULL;
+        if (c->wavDump)
+        {
+            char wp[64];
+            _snprintf(wp, sizeof(wp), "%s:\\audio.wav", s_logDrive);
+            wp[sizeof(wp) - 1] = 0;
+            xb_audio_dump(wp, c->wavDump);
+        }
     }
     renderer = h64_xenos_create(sys, dev);
     if (!renderer) { MessageScreen(dev, Tr(T_RENDERER_FAILED), Tr(T_SEE_LOG), D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }

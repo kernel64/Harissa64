@@ -28,5 +28,8 @@ int xb_audio_queued_ms(void);
 // playedHz: stereo frames the voice really played per second (QPC) since the last reset.
 struct XbAudioStats { u32 buffers, underruns, fillMs, ratioPermille, playedHz, submittedHz, dropped; };
 void xb_audio_stats(XbAudioStats *out, int reset);
+// ini wavdump=N (diagnosis): the first N seconds of AI buffers, as the game
+// queues them, written to path as a 16-bit stereo WAV (little-endian).
+void xb_audio_dump(const char *path, int seconds);
 
 #endif

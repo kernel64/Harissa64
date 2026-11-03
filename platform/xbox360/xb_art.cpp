@@ -52,6 +52,8 @@ static std::string s_note;
 
 // The worker's own.
 static std::set<std::string> s_tried;        // selections whose downloads were tried this session
+static std::map<std::string, DWORD> s_failAt;   // ...when the network failed: tried again 30 s later (after HarissaDC)
+static int s_netFailed;                      // the last download_missing met a network failure
 static std::map<std::string, RomId> s_ids;
 static H64GameDb *s_db;
 
@@ -314,6 +316,7 @@ static int download_missing(const std::string &path, int bulk)
     if (!NetStart(0))
     {
         s_status.offline = 1;
+        s_netFailed = 1;
         return 0;
     }
     s_status.offline = 0;
@@ -341,6 +344,7 @@ static int download_missing(const std::string &path, int bulk)
         int r;
         if (!nc && info.name[0]) { strcpy(covers[0], info.name); nc = 1; }
         r = fetch_cover(id, covers, nc);
+        if (r < 0) s_netFailed = 1;
         if (r >= 0 || info.cover != r)
         {
             info.cover = r > 0 ? 1 : r == 0 ? 0 : -1;
@@ -351,6 +355,7 @@ static int download_missing(const std::string &path, int bulk)
     if (info.found && info.wiki < 0)
     {
         int r = fetch_wiki(&info);
+        if (r < 0) s_netFailed = 1;
         if (r >= 0)
         {
             info.wiki = r;
@@ -447,6 +452,13 @@ static int step_wants(void)
         sent = s_delivered.count(wants[i]) != 0;
         LeaveCriticalSection(&s_lock);
         tried = s_tried.count(wants[i]) != 0;
+        if (tried && s_failAt.count(wants[i]) && GetTickCount() - s_failAt[wants[i]] >= 30000)
+        {
+            // The network failed for it: try again.
+            s_failAt.erase(wants[i]);
+            s_tried.erase(wants[i]);
+            tried = 0;
+        }
         if (!sent)
         {
             deliver(wants[i]);   // first what is there (fast), the downloads next
@@ -456,7 +468,9 @@ static int step_wants(void)
         {
             int changed;
             s_tried.insert(wants[0]);
+            s_netFailed = 0;
             changed = download_missing(wants[0], 0);
+            if (s_netFailed) s_failAt[wants[0]] = GetTickCount();
             set_busy("");
             if (changed)
             {

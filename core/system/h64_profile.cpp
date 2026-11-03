@@ -167,6 +167,13 @@ static const GameProfile s_profiles[] = {
     // Its 400-wide frames are 448 lines tall: the GPU renderer takes the
     // height from the scissor (only the top part showed, zoomed in).
     { "NIJ", "Indiana Jones and the Infernal Machine", H64_GP_BOOT_TIME | H64_GP_TALL_FRAME },
+    // Same engine (Factor 5): 400-wide interlaced frames taller than the 4:3
+    // guess (300 lines): the bottom half of the screen was garbled, menus
+    // included (GitHub issue #27). As Rogue Squadron, its menus load their
+    // text and frame pictures where the intro's frames were: those frames
+    // copied back over them drew the menus without text or frame (the
+    // user's state; console from boot, both fixed).
+    { "NNA", "Star Wars Episode I: Battle for Naboo", H64_GP_TALL_FRAME | H64_GP_COPY_BACK_SAME_WIDTH },
     // Its init sets the refresh rate (50/60, for the audio frame size) only
     // if its VI counter is still 0 after osContInit; with Count near 0
     // osContInit waits 0.5 s, retraces count, the rate stays 0: frame size
@@ -293,7 +300,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_VI_LINE_START = 64,     // options.gfxViLineStart
        H64_GX_SKIP_ZIMAGE = 128,      // options.gfxSkipZImage
        H64_GX_DECAL_STENCIL = 256,    // options.gfxDecalStencil
-       H64_GX_ALPHA_DITHER = 512 };   // options.gfxAlphaDither
+       H64_GX_ALPHA_DITHER = 512,     // options.gfxAlphaDither
+       H64_GX_LOD_TILE = 1024 };      // options.gfxLodTile
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -347,7 +355,10 @@ static const GameExtra s_extras[] = {
     // Its dust is a texture rectangle with the dithered alpha compare (a
     // grainy cloud); the GPU renderer took it as a plain alpha test against 0
     // and drew solid beige squares. GitHub issue #27.
-    { "NGR", H64_GX_ALPHA_DITHER },
+    // Its tail lights take texel 1 in the second cycle with texture LOD on:
+    // the RDP reads it from texel 0's tile when magnifying, tile + 1 (a mip
+    // level, 0 there) drew them black (GitHub issue #27).
+    { "NGR", H64_GX_ALPHA_DITHER | H64_GX_LOD_TILE },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -384,12 +395,24 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxSkipZImage = (extra & H64_GX_SKIP_ZIMAGE) != 0;
     sys->options.gfxDecalStencil = (extra & H64_GX_DECAL_STENCIL) != 0;
     sys->options.gfxAlphaDither = (extra & H64_GX_ALPHA_DITHER) != 0;
+    sys->options.gfxLodTile = (extra & H64_GX_LOD_TILE) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 
 // Idle threads that call osYieldThread in a loop instead of spinning: when
 // no other thread is ready, the recompiler lets the time pass up to the next
 // event there (h64_jit.cpp). The loop's head and where __osRunQueue lives.
+// CPU cycles per instruction the Xbox front end uses for a game (its default
+// is 2, mupen64plus's CountPerOp 1; ini cpi= still wins). Games whose threads
+// poll the clock spend fewer instructions a frame on it with more cycles each.
+struct GameCpi { const char *code; u32 cpi; };
+static const GameCpi s_gameCpi[] = {
+    // Its intro's streaming thread polls Count over a list each time a
+    // message arrives: 39-51 VI/s and the sound cut at 2 (the console's
+    // recompiled code cannot keep up with that many instructions), 60 at 3.
+    { "NNA", 3 },
+};
+
 struct IdleYield { const char *code; u32 pc, runQueue; };
 static const IdleYield s_idleYield[] = {
     // ~190 instructions a turn, 2700 turns a frame in its logos and menus
@@ -415,6 +438,9 @@ static void apply_idle_yield(H64System *sys)
 {
     u32 i;
     sys->options.idleYieldPc = sys->options.idleRunQueue = 0;
+    sys->options.gameCpi = 0;
+    for (i = 0; i < sizeof(s_gameCpi) / sizeof(s_gameCpi[0]); i++)
+        if (!memcmp(sys->rom.gameCode, s_gameCpi[i].code, 3)) sys->options.gameCpi = s_gameCpi[i].cpi;
     sys->options.countWaitPc = sys->options.countWaitStep = sys->options.countWaitQueue = 0;
     for (i = 0; i < sizeof(s_countWait) / sizeof(s_countWait[0]); i++)
         if (!memcmp(sys->rom.gameCode, s_countWait[i].code, 3))

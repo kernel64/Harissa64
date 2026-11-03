@@ -1124,8 +1124,13 @@ int LanguageScreen(IDirect3DDevice9 *dev, int initial, int firstStart)
 }
 
 // ---- ROM browser ----
-struct RomEntry { std::string file, shown; };
-static bool rom_less(const RomEntry &a, const RomEntry &b) { return _stricmp(a.shown.c_str(), b.shown.c_str()) < 0; }
+struct RomEntry { std::string file, shown; int fav; };
+// Favourites first (B in the list, config\favorites.txt), then by name.
+static bool rom_less(const RomEntry &a, const RomEntry &b)
+{
+    if (a.fav != b.fav) return a.fav > b.fav;
+    return _stricmp(a.shown.c_str(), b.shown.c_str()) < 0;
+}
 
 // `dir` ends with a backslash (Config.romDir).
 static void scan_roms(const char *dir, std::vector<RomEntry> *out)
@@ -1141,6 +1146,7 @@ static void scan_roms(const char *dir, std::vector<RomEntry> *out)
         if (!dot || (_stricmp(dot, ".z64") && _stricmp(dot, ".n64") && _stricmp(dot, ".v64") && _stricmp(dot, ".zip"))) continue;
         e.file = std::string(dir) + fd.cFileName;
         e.shown = std::string(fd.cFileName, dot - fd.cFileName);
+        e.fav = 0;
         out->push_back(e);
     } while (FindNextFileA(f, &fd));
     FindClose(f);
@@ -2015,6 +2021,86 @@ static void HdScreen(IDirect3DDevice9 *dev, const RomInfo *ri, const char *shown
     }
 }
 
+// ---- Favourites (after HarissaDC's game list) ----
+// favorites.txt beside settings.ini: one ROM path a line.
+static std::string fav_path(const char *settingsPath)
+{
+    std::string p(settingsPath);
+    size_t k = p.find_last_of('\\');
+    return (k == std::string::npos ? std::string("game:\\config\\") : p.substr(0, k + 1)) + "favorites.txt";
+}
+
+static void fav_load(const char *settingsPath, std::vector<RomEntry> *roms)
+{
+    char line[MAX_PATH + 4];
+    FILE *f = fopen(fav_path(settingsPath).c_str(), "rb");
+    size_t i;
+    for (i = 0; i < roms->size(); i++) (*roms)[i].fav = 0;
+    if (f)
+    {
+        while (fgets(line, sizeof(line), f))
+        {
+            line[strcspn(line, "\r\n")] = 0;
+            for (i = 0; line[0] && i < roms->size(); i++)
+                if (!_stricmp((*roms)[i].file.c_str(), line)) (*roms)[i].fav = 1;
+        }
+        fclose(f);
+    }
+    std::sort(roms->begin(), roms->end(), rom_less);
+}
+
+static void fav_save(const char *settingsPath, const std::vector<RomEntry> &roms)
+{
+    std::string path = fav_path(settingsPath);
+    FILE *f = fopen(path.c_str(), "wb");
+    size_t i;
+    if (!f) { H64_WARN("[menu] cannot write %s", path.c_str()); return; }
+    for (i = 0; i < roms.size(); i++)
+        if (roms[i].fav) fprintf(f, "%s\r\n", roms[i].file.c_str());
+    fclose(f);
+}
+
+// ---- Jump by letter (D-pad left/right) ----
+// A title's letter: its first letter or digit, upper case ('#' for digits).
+static char rom_letter(const RomEntry &e)
+{
+    const char *p = e.shown.c_str();
+    for (; *p; p++)
+    {
+        char c = *p;
+        if (c >= 'a' && c <= 'z') return (char)(c - 32);
+        if (c >= 'A' && c <= 'Z') return c;
+        if (c >= '0' && c <= '9') return '#';
+    }
+    return '#';
+}
+
+// Right: the first ROM of the next letter; left: the first of this letter, or
+// of the previous one when already there. The favourites are a group of
+// their own.
+static int letter_jump(const std::vector<RomEntry> &roms, int sel, int dir)
+{
+    int n = (int)roms.size(), i;
+#define SAME(a, b) (roms[a].fav == roms[b].fav && rom_letter(roms[a]) == rom_letter(roms[b]))
+    if (dir > 0)
+    {
+        for (i = sel + 1; i < n; i++)
+            if (!SAME(i, sel)) return i;
+        return n - 1;
+    }
+    i = sel;
+    while (i > 0 && SAME(i - 1, sel)) i--;
+    if (i < sel) return i;
+    if (i == 0) return 0;
+    i--;
+    while (i > 0 && SAME(i - 1, i)) i--;
+#undef SAME
+    return i;
+}
+
+static char s_jumpLetter;   // the letter just jumped to, shown a moment over the list
+static float s_jumpAt;
+
 static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, int rows, const RomInfo *info, const ArtView *view,
                          int busy, float selAt, const ArtStatus *st, const char *romDir)
 {
@@ -2056,6 +2142,20 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
             int s = top + i == sel;
             UiTextFit(s ? UI_BOLD : UI_REGULAR, 21, textW, roms[top + i].shown.c_str(), buf, sizeof(buf));
             UiText(s ? UI_BOLD : UI_REGULAR, 21, listX + 30, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, buf, UI_LEFT);
+            if (roms[top + i].fav)   // a favourite: a gold dot after the title (the selection bar's mark is at the left)
+                UiCircle(listX + 30 + UiTextWidth(s ? UI_BOLD : UI_REGULAR, 21, buf) + 12, cy, 4.0f, D3DCOLOR_ARGB(255, 252, 206, 66));
+        }
+        {
+            // The letter just jumped to, over the list for a moment.
+            float age = UiTime() - s_jumpAt, al = age < 0.45f ? 1.0f : 1.0f - (age - 0.45f) / 0.25f;
+            if (s_jumpLetter && al > 0)
+            {
+                char l[2] = { s_jumpLetter, 0 };
+                float bx = listX + listW * 0.5f - 60, by = listY + listH * 0.5f - 60;
+                UiRoundRect(bx, by, 120, 120, 26, UiAlpha(D3DCOLOR_ARGB(225, 30, 32, 42), al), UiAlpha(D3DCOLOR_ARGB(225, 20, 21, 28), al));
+                UiRoundRing(bx, by, 120, 120, 26, 1.0f, UiAlpha(UI_COL_LINE, al));
+                UiText(UI_BOLD, 72, bx + 60, by + 60, UiAlpha(UI_COL_TEXT, al), l, UI_CENTER);
+            }
         }
         if (n > rows)
         {
@@ -2069,7 +2169,7 @@ static void browser_draw(const std::vector<RomEntry> &roms, int sel, int top, in
         }
         card_draw(roms[sel].shown.c_str(), info, view, busy, selAt);
     }
-    UiScreenFooter(Tr(n ? T_FOOT_BROWSER : T_FOOT_BROWSER_EMPTY));
+    UiScreenFooter(Tr(n ? (st->bulk ? T_FOOT_BROWSER_ART : T_FOOT_BROWSER) : T_FOOT_BROWSER_EMPTY));   // shorter beside the progress
     if (st->bulk)
     {
         // "Download all" progress at the right end of the footer.
@@ -2282,6 +2382,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
     float selAt = 0;
     msg[0] = 0;
     scan_roms(c->romDir, &roms);
+    fav_load(settingsPath, &roms);
     for (i = 0; i < (int)roms.size(); i++)
     {
         paths.push_back(roms[i].file.c_str());
@@ -2365,6 +2466,30 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
             if (down & XINPUT_GAMEPAD_DPAD_DOWN) sel = (sel + 1) % n;
             if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) sel = sel > rows ? sel - rows : 0;
             if (down & XINPUT_GAMEPAD_RIGHT_SHOULDER) sel = sel + rows < n ? sel + rows : n - 1;
+            if (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT))
+            {
+                sel = letter_jump(roms, sel, (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : -1);
+                s_jumpLetter = rom_letter(roms[sel]);
+                s_jumpAt = UiTime();
+            }
+            if (down & XINPUT_GAMEPAD_B)
+            {
+                // Favourite on/off, sorted again; the selection follows the ROM.
+                std::string file = roms[sel].file;
+                int fav = roms[sel].fav = !roms[sel].fav;
+                fav_save(settingsPath, roms);
+                std::sort(roms.begin(), roms.end(), rom_less);
+                paths.clear();
+                for (i = 0; i < (int)roms.size(); i++)
+                {
+                    paths.push_back(roms[i].file.c_str());
+                    if (roms[i].file == file) sel = i;
+                }
+                strncpy(msg, Tr(fav ? T_FAV_ADDED : T_FAV_REMOVED), sizeof(msg) - 1);
+                msg[sizeof(msg) - 1] = 0;
+                msgAt = GetTickCount();
+                detailsFor = lastSel = -1;   // the same ROM at another place
+            }
             if (down & XINPUT_GAMEPAD_A)
             {
                 strncpy(path, roms[sel].file.c_str(), pathSize - 1);
@@ -2435,6 +2560,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
                 roms.clear();
                 paths.clear();
                 scan_roms(c->romDir, &roms);
+                fav_load(settingsPath, &roms);
                 for (i = 0; i < (int)roms.size(); i++) paths.push_back(roms[i].file.c_str());
                 sel = top = 0;
                 detailsFor = lastSel = -1;
