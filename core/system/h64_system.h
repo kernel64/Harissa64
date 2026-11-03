@@ -140,6 +140,7 @@ struct H64Options
                             // falls at the start of a line (NBA in the Zone 2000's two frames side by side in one image)
     int viIntrLine0;        // game profile: the VI interrupt fires when a field starts (half-line 0), whatever
                             // VI_V_INTR's line, as mupen64plus does (FIFA Soccer 64's boot race, h64_profile.cpp)
+    u32 gameCpi;            // game profile: CPU cycles per instruction on the console (0: the front end's, cpi=)
     u32 idleYieldPc;        // recompiler (game profile): head of an idle thread's osYieldThread loop (0: none)
     u32 idleRunQueue;       // and the physical address of libultra's __osRunQueue (see h64_jit.cpp)
     u32 countWaitPc;        // recompiler (game profile): head of a loop that only polls Count or an empty

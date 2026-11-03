@@ -1207,6 +1207,12 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         H64_INFO("[profile] gameflags=%X from the ini", c->gameFlags);
     }
     if (c->lateParse >= 0) sys->options.gfxLateParse = c->lateParse;
+    sys->cpu.cpi = s_cpi;
+    if (sys->options.gameCpi && !c->cpiSet)
+    {
+        sys->cpu.cpi = sys->options.gameCpi;   // the recompiler regenerates its code for it (rtCpi)
+        H64_INFO("[profile] %u CPU cycles an instruction", sys->cpu.cpi);
+    }
     if (sys->options.gfxLateParse) H64_INFO("[main] late display list parse on");
     sys->options.hleAudio = c->hle;
     sys->padHook = PadHook;

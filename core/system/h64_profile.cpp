@@ -402,6 +402,17 @@ void h64_apply_game_profile(H64System *sys)
 // Idle threads that call osYieldThread in a loop instead of spinning: when
 // no other thread is ready, the recompiler lets the time pass up to the next
 // event there (h64_jit.cpp). The loop's head and where __osRunQueue lives.
+// CPU cycles per instruction the Xbox front end uses for a game (its default
+// is 2, mupen64plus's CountPerOp 1; ini cpi= still wins). Games whose threads
+// poll the clock spend fewer instructions a frame on it with more cycles each.
+struct GameCpi { const char *code; u32 cpi; };
+static const GameCpi s_gameCpi[] = {
+    // Its intro's streaming thread polls Count over a list each time a
+    // message arrives: 39-51 VI/s and the sound cut at 2 (the console's
+    // recompiled code cannot keep up with that many instructions), 60 at 3.
+    { "NNA", 3 },
+};
+
 struct IdleYield { const char *code; u32 pc, runQueue; };
 static const IdleYield s_idleYield[] = {
     // ~190 instructions a turn, 2700 turns a frame in its logos and menus
@@ -427,6 +438,9 @@ static void apply_idle_yield(H64System *sys)
 {
     u32 i;
     sys->options.idleYieldPc = sys->options.idleRunQueue = 0;
+    sys->options.gameCpi = 0;
+    for (i = 0; i < sizeof(s_gameCpi) / sizeof(s_gameCpi[0]); i++)
+        if (!memcmp(sys->rom.gameCode, s_gameCpi[i].code, 3)) sys->options.gameCpi = s_gameCpi[i].cpi;
     sys->options.countWaitPc = sys->options.countWaitStep = sys->options.countWaitQueue = 0;
     for (i = 0; i < sizeof(s_countWait) / sizeof(s_countWait[0]); i++)
         if (!memcmp(sys->rom.gameCode, s_countWait[i].code, 3))
