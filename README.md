@@ -144,6 +144,30 @@ Every setting is explained in [docs/settings.md](docs/settings.md).
 
 You need Visual Studio 2010 and the Xbox 360 SDK. Open `platform/xbox360/harissa64v2.sln` and build the Release configuration for the Xbox 360 platform.
 
+## Support the project
+
+Harissa64 is free and always will be. It is built in my spare time: every game fixed means hours of tests on a real console. If it gives you good moments with your N64 games and you would like to help it go further, a donation lets me spend more time on it: more games working, better speed, new features.
+
+Any amount helps, and thank you.
+
+### Donate in cryptocurrency
+
+| Currency | Network | Address |
+|---|---|---|
+| Tether (USDT) | TRON (TRC20) | `TMWW2XeV9kY1U9Cv4AeW9Z6oXnuxXyBut8` |
+| Bitcoin (BTC) | Bitcoin | `16GjM9aBDiTEkMyzcMq4sMWpdacc4zWkty` |
+| Ether (ETH) | Ethereum | `0xcb9b2f3563249c9508eae26af396f21926ec928c` |
+| Solana (SOL) | Solana | `mFxWKAEYnV5oKwYwtzmGCNfvWLNyqfL2FBWH3qSLSHU` |
+
+Send each currency only on the network shown on its line: coins sent on another network are lost. Check the address before you send: a transfer can't be cancelled.
+
+### Other ways to help
+
+- Star the repository on GitHub: it helps other players find it.
+- Report a bug in the [issues](https://github.com/kernel64/Harissa64/issues), with a save state if you can: it is the fastest way to get a game fixed.
+- Add your results to the [games list](docs/games.md).
+- Tell other Xbox 360 players about Harissa64.
+
 ## Credits and licence
 
 Harissa64 is free software under the GPL v2, see [LICENSE](LICENSE). Some parts come from or are based on other open-source projects (ares, ParaLLEl-RDP, mupen64plus, libdragon, GLideN64, zlib and others), and the interface uses the Inter and Noto Sans Arabic fonts. [THIRD_PARTY.md](THIRD_PARTY.md) lists them with their licences. Thanks to all of them.
