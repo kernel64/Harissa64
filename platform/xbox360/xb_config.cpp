@@ -62,10 +62,12 @@ void ConfigDefaults(Config *c)
     c->statusFast = 1;
     c->strict = 0;
     c->superblocks = 1;
+    // The graphics default to the N64 Enhanced preset (xb_menu.cpp: 3-point
+    // filter, FXAA, light sharpening; the user's choice for releases).
     c->smooth = 1;
     c->resScale = 3;
-    c->texFilter = 1;
-    c->sharpen = 0;
+    c->texFilter = 0;
+    c->sharpen = 1;
     c->blur = 0;
     c->screen = 0;
     c->brightness = 0;
