@@ -242,6 +242,9 @@ def run_case(con, c, update, log):
         ini += ['stateslot=%d' % SLOT, 'loadstate=1']
     if events:
         ini.append('input=' + ','.join(events))
+    # The references were made with the graphics defaults of 2.1.0 (bilinear,
+    # no sharpening); the defaults became the N64 Enhanced preset in 2.1.1.
+    ini += ['texfilter=1', 'sharpen=0']
     ini += c['extra']
     con.put(('\r\n'.join(ini) + '\r\n').encode(), 'harissa64v2.ini')
     con.delete('harissa64v2.log')

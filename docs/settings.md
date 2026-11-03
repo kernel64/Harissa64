@@ -26,6 +26,7 @@ How much sound is kept ready in advance, from 50 to 500 ms. A bigger margin mean
 
 **Show FPS**
 Shows the speed in a corner of the screen. 60 means full speed (50 for European games).
+- *Off* (the default): nothing shown.
 - *FPS*: the speed only.
 - *FPS, CPU, RAM*: also how busy the emulator is (CPU, in %) and how much of the console's memory is in use.
 - *FPS, CPU, RAM, resolution*: also the resolution the game is drawn at, and the N64's own picture size.
@@ -51,7 +52,7 @@ Keeps your changes for next time. If you leave without saving, they last until y
 **Preset**
 A quick way to set the look in one go. It changes the texture filter, smoothing, sharpening, blur and screen effect, but leaves the resolution and brightness alone.
 - *Original*: the plain N64 picture, with crisp pixels.
-- *N64 Enhanced*: smoother textures and a touch of sharpening. A good everyday choice.
+- *N64 Enhanced*: smoother textures and a touch of sharpening. A good everyday choice, and the default.
 - *N64 Smooth*: the same, with light scanlines.
 - *N64 CRT*: looks like an old TV, with scanlines and a soft glow.
 
@@ -93,7 +94,7 @@ Like the other settings, you can keep it for one game only.
 
 **Texture filter**
 How textures look up close.
-- *N64 3-point*: the N64's own smoothing, slightly soft. The most faithful.
+- *N64 3-point*: the N64's own smoothing, slightly soft. The most faithful, and the default.
 - *Bilinear*: a bit smoother.
 - *Nearest*: no smoothing at all, sharp square pixels.
 
@@ -104,7 +105,7 @@ Uses the game's HD texture pack, if one is installed (RT in the game list, see t
 Softens the jagged edges of 3D objects. On by default.
 
 **Sharpen**
-Brings back some detail after smoothing. *Low* is subtle, *High* is stronger.
+Brings back some detail after smoothing. *Low* (the default) is subtle, *High* is stronger.
 
 **Blur**
 Softens the whole picture, for a gentler, old-TV feel. *Soft* or *Strong*.
