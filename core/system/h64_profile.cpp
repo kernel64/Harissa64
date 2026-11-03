@@ -167,6 +167,10 @@ static const GameProfile s_profiles[] = {
     // Its 400-wide frames are 448 lines tall: the GPU renderer takes the
     // height from the scissor (only the top part showed, zoomed in).
     { "NIJ", "Indiana Jones and the Infernal Machine", H64_GP_BOOT_TIME | H64_GP_TALL_FRAME },
+    // Same engine (Factor 5): 400-wide interlaced frames taller than the 4:3
+    // guess (300 lines): the bottom half of the screen was garbled, menus
+    // included (GitHub issue #27).
+    { "NNA", "Star Wars Episode I: Battle for Naboo", H64_GP_TALL_FRAME },
     // Its init sets the refresh rate (50/60, for the audio frame size) only
     // if its VI counter is still 0 after osContInit; with Count near 0
     // osContInit waits 0.5 s, retraces count, the rate stays 0: frame size
