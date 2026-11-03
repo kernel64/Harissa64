@@ -13,6 +13,8 @@
 #include <xtl.h>
 #include <xaudio2.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../../core/common/h64_log.h"
@@ -39,6 +41,38 @@ static u64 s_framesSubmitted;
 static int s_playing;
 static float s_ratio, s_ratioApplied;
 static u64 s_periodFrames;   // frames submitted since the last stats reset
+static char s_dumpPath[64];  // wavdump=: where the sound goes, and the buffer filling up
+static u8 *s_dump;
+static u32 s_dumpBytes, s_dumpCap, s_dumpRate, s_dumpSec;
+
+void xb_audio_dump(const char *path, int seconds)
+{
+    if (seconds <= 0 || seconds > 120) return;
+    s_dumpSec = (u32)seconds;
+    s_dumpCap = (u32)seconds * 48000u * 4u;
+    s_dump = (u8 *)malloc(s_dumpCap);
+    s_dumpBytes = 0;
+    if (s_dump) { strncpy(s_dumpPath, path, sizeof(s_dumpPath) - 1); s_dumpPath[sizeof(s_dumpPath) - 1] = 0; }
+}
+
+static void put32le(u8 *p, u32 v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); p[2] = (u8)(v >> 16); p[3] = (u8)(v >> 24); }
+
+static void dump_write(void)
+{
+    u8 h[44];
+    u32 i;
+    FILE *f;
+    memcpy(h, "RIFF", 4); put32le(h + 4, 36 + s_dumpBytes); memcpy(h + 8, "WAVEfmt ", 8);
+    put32le(h + 16, 16); h[20] = 1; h[21] = 0; h[22] = 2; h[23] = 0; put32le(h + 24, s_dumpRate);
+    put32le(h + 28, s_dumpRate * 4); h[32] = 4; h[33] = 0; h[34] = 16; h[35] = 0;
+    memcpy(h + 36, "data", 4); put32le(h + 40, s_dumpBytes);
+    for (i = 0; i + 1 < s_dumpBytes; i += 2) { u8 t = s_dump[i]; s_dump[i] = s_dump[i + 1]; s_dump[i + 1] = t; }   // big- to little-endian
+    f = fopen(s_dumpPath, "wb");
+    if (f) { fwrite(h, 1, 44, f); fwrite(s_dump, 1, s_dumpBytes, f); fclose(f); }
+    H64_INFO("[audio] wavdump: %u frames at %u Hz written to %s (%s)", s_dumpBytes / 4, s_dumpRate, s_dumpPath, f ? "ok" : "failed");
+    free(s_dump);
+    s_dump = NULL;
+}
 
 int xb_audio_init(void)
 {
@@ -116,6 +150,15 @@ void xb_audio_sink(void *user, const u8 *samples, u32 len, u32 rate)
     u32 queued, pending, frames;
     (void)user;
     if (!s_xa || !s_master || len == 0 || rate < 4000 || rate > 96000) return;
+    if (s_dump)
+    {
+        u32 n = len & ~3u;
+        if (!s_dumpRate) s_dumpRate = rate;
+        if (n > s_dumpCap - s_dumpBytes) n = s_dumpCap - s_dumpBytes;
+        memcpy(s_dump + s_dumpBytes, samples, n);
+        s_dumpBytes += n;
+        if (s_dumpBytes >= s_dumpRate * 4u * s_dumpSec || s_dumpBytes == s_dumpCap) dump_write();
+    }
     if (!s_voice || rate != s_rate)
         if (create_voice(rate)) return;
     pending = pending_frames(&queued);

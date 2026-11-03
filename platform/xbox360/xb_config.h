@@ -73,6 +73,7 @@ struct Config
     int lateParse;      // lateparse=0/1: graphics tasks end without waiting for their parse (experimental; -1: per game)
     int cpi;            // cpi=N: CPU cycles per instruction (2 by default; mupen64plus's CountPerOp N is 2N)
     int audioMs;        // audioms=N: audio queue target in ms (pacing threshold)
+    int wavDump;        // wavdump=N (diagnosis): the first N seconds of game sound to <drive>:\audio.wav
     int stateSlot;      // stateslot=N: save state slot at start (1..9)
     int loadState;      // loadstate=1: load the slot's state at start (scripted runs)
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)

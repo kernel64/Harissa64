@@ -85,6 +85,7 @@ void ConfigDefaults(Config *c)
     c->exitAfter = 0;
     c->stallMs = 100;
     c->audioMs = XB_AUDIO_DEFAULT_MS;
+    c->wavDump = 0;
     c->stateSlot = 1;
     c->loadState = 0;
     c->saveStateAt = 0;
@@ -155,6 +156,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "stallms")) c->stallMs = (u32)atoi(eq + 1);
         else if (!strcmp(line, "stateslot")) c->stateSlot = atoi(eq + 1);
         else if (!strcmp(line, "audioms")) c->audioMs = atoi(eq + 1);
+        else if (!strcmp(line, "wavdump")) c->wavDump = atoi(eq + 1);
         else if (!strcmp(line, "loadstate")) c->loadState = atoi(eq + 1);
         else if (!strcmp(line, "savestateat")) c->saveStateAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "renderer")) c->softRenderer = !strcmp(eq + 1, "soft");

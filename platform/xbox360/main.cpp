@@ -1226,6 +1226,13 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     {
         sys->aiSink = xb_audio_sink;
         sys->aiUser = NULL;
+        if (c->wavDump)
+        {
+            char wp[64];
+            _snprintf(wp, sizeof(wp), "%s:\\audio.wav", s_logDrive);
+            wp[sizeof(wp) - 1] = 0;
+            xb_audio_dump(wp, c->wavDump);
+        }
     }
     renderer = h64_xenos_create(sys, dev);
     if (!renderer) { MessageScreen(dev, Tr(T_RENDERER_FAILED), Tr(T_SEE_LOG), D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
