@@ -43,7 +43,11 @@ While playing:
 - **BACK + D-pad left/right**: change the state slot (1 to 9).
 - **Hold BACK for 3 seconds**: back to the game list.
 
-In the game list, X shows the About page.
+In the game list:
+
+- **D-pad left/right** jumps to the previous or next letter.
+- **B** adds the game to your favourites, or takes it out. Favourites come first in the list, with a gold dot.
+- **X** shows the About page.
 
 ### Games on a USB stick or in another folder
 
