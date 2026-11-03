@@ -169,8 +169,11 @@ static const GameProfile s_profiles[] = {
     { "NIJ", "Indiana Jones and the Infernal Machine", H64_GP_BOOT_TIME | H64_GP_TALL_FRAME },
     // Same engine (Factor 5): 400-wide interlaced frames taller than the 4:3
     // guess (300 lines): the bottom half of the screen was garbled, menus
-    // included (GitHub issue #27).
-    { "NNA", "Star Wars Episode I: Battle for Naboo", H64_GP_TALL_FRAME },
+    // included (GitHub issue #27). As Rogue Squadron, its menus load their
+    // text and frame pictures where the intro's frames were: those frames
+    // copied back over them drew the menus without text or frame (the
+    // user's state; console from boot, both fixed).
+    { "NNA", "Star Wars Episode I: Battle for Naboo", H64_GP_TALL_FRAME | H64_GP_COPY_BACK_SAME_WIDTH },
     // Its init sets the refresh rate (50/60, for the audio frame size) only
     // if its VI counter is still 0 after osContInit; with Count near 0
     // osContInit waits 0.5 s, retraces count, the rate stays 0: frame size
