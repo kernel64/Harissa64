@@ -297,7 +297,8 @@ enum { H64_GX_SOFT_TINY = 1,    // options.gfxSoftTiny
        H64_GX_VI_LINE_START = 64,     // options.gfxViLineStart
        H64_GX_SKIP_ZIMAGE = 128,      // options.gfxSkipZImage
        H64_GX_DECAL_STENCIL = 256,    // options.gfxDecalStencil
-       H64_GX_ALPHA_DITHER = 512 };   // options.gfxAlphaDither
+       H64_GX_ALPHA_DITHER = 512,     // options.gfxAlphaDither
+       H64_GX_LOD_TILE = 1024 };      // options.gfxLodTile
 struct GameExtra { const char *code; u32 extra; };
 static const GameExtra s_extras[] = {
     // Each character's shaded palette is drawn into a 16x1 image, then loaded
@@ -351,7 +352,10 @@ static const GameExtra s_extras[] = {
     // Its dust is a texture rectangle with the dithered alpha compare (a
     // grainy cloud); the GPU renderer took it as a plain alpha test against 0
     // and drew solid beige squares. GitHub issue #27.
-    { "NGR", H64_GX_ALPHA_DITHER },
+    // Its tail lights take texel 1 in the second cycle with texture LOD on:
+    // the RDP reads it from texel 0's tile when magnifying, tile + 1 (a mip
+    // level, 0 there) drew them black (GitHub issue #27).
+    { "NGR", H64_GX_ALPHA_DITHER | H64_GX_LOD_TILE },
 };
 
 static void apply_idle_yield(H64System *sys);
@@ -388,6 +392,7 @@ void h64_apply_game_profile(H64System *sys)
     sys->options.gfxSkipZImage = (extra & H64_GX_SKIP_ZIMAGE) != 0;
     sys->options.gfxDecalStencil = (extra & H64_GX_DECAL_STENCIL) != 0;
     sys->options.gfxAlphaDither = (extra & H64_GX_ALPHA_DITHER) != 0;
+    sys->options.gfxLodTile = (extra & H64_GX_LOD_TILE) != 0;
     if (name) H64_INFO("[profile] %s: flags %X%s", name, f, extra ? " (+ extra options)" : "");
 }
 

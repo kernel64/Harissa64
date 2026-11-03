@@ -1172,11 +1172,16 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         if (t->maskT && b->h >= (1u << t->maskT)) rows = 1u << t->maskT;
         else if (t->maskT) rows = b->h + 1;   // gfxMaskToTile: the tile's rows (+1: bilinear)
         else { firstRow = b->oy; rows = b->h + (b->clampT ? 0 : 1); }
-        if (rowBytes * rows > 4096) { rows = 4096 / rowBytes; firstRow = 0; }
+        // With a TLUT the texels are read from the low 2 KB only (addresses
+        // masked with 0x7FF, h64_rdp_fetch_texel): Top Gear Rally's tail lights
+        // use a 16-bit tile at 0x800 that reads the CI texture at 0. Hashing
+        // 0x800.. (the palette) kept the first decode, transparent black.
+        u32 span = tlut ? 2048 : 4096;
+        if (rowBytes * rows > span) { rows = span / rowBytes; firstRow = 0; }
         {
-            // The rows are contiguous in TMEM (wrapping at 4 KB): one or two ranges.
-            u32 off = (t->offset + firstRow * rowBytes) & 0xFFF, n = rows * rowBytes, first = n;
-            if (off + first > 4096) first = 4096 - off;
+            // The rows are contiguous in TMEM (wrapping at 4 KB, 2 KB with a TLUT): one or two ranges.
+            u32 off = (t->offset + firstRow * rowBytes) & (span - 1), n = rows * rowBytes, first = n;
+            if (off + first > span) first = span - off;
             key = mem_hash(key, st->tmem + off, first);
             if (first < n) key = mem_hash(key, st->tmem, n - first);
             if (t->size == 3 && t->fmt == 0)
@@ -1342,6 +1347,16 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         x->stats.bigRect = x->win.active;
     }
     return e.tex;
+}
+
+// The tile texel 1 is sampled from: tile + 1, or with texture LOD on
+// (profile gfxLodTile) texel 0's tile, as the RDP does when the texture is
+// magnified (h64_rdp_compute_lod); per-pixel LOD is not emulated here.
+static u32 tile1_of(const Xenos *x, u32 tile)
+{
+    u32 f = x->st->rasterFlags;
+    if (x->sys->options.gfxLodTile && (f & RS_TEX_LOD) && !(f & (RS_DETAIL_LOD | RS_SHARPEN_LOD))) return tile & 7;
+    return (tile + 1) & 7;
 }
 
 static void bind_texture(Xenos *x, u32 stage, u32 tile, TexBinding *b)
@@ -2650,7 +2665,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
         u32 retires = x->retires;
         bind_texture(x, 0, tile, tb0);
         if (x->usesT1)
-            bind_texture(x, 1, (tile + 1) & 7, tb1);
+            bind_texture(x, 1, tile1_of(x, tile), tb1);
         else
         {
             // Tile + 1 is not sampled: not decoded (PD's cutscene strips: one
@@ -2743,7 +2758,7 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     Xenos *x = (Xenos *)user;
     const H64RdpState *st = x->st;
     const H64RenderVertex *v[3];
-    const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[(tile + 1) & 7];
+    const H64RdpTile *t0 = &st->tiles[tile & 7], *t1 = &st->tiles[tile1_of(x, tile)];
     XVtx *q;
     int i, persp = (st->rasterFlags & RS_PERSPECTIVE) != 0, wsFull;
     if (skip_zimage(x)) return;
@@ -3186,7 +3201,7 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
     const H64RdpState *st = x->st;
     int copy = (st->rasterFlags & RS_COPY) != 0;
     u32 tile = (w[1] >> 24) & 7;
-    const H64RdpTile *t0 = &st->tiles[tile], *t1 = &st->tiles[(tile + 1) & 7];
+    const H64RdpTile *t0 = &st->tiles[tile], *t1 = &st->tiles[tile1_of(x, tile)];
     float xh = ((w[0] >> 12) & 0xFFF) / 4.0f, yh = (w[0] & 0xFFF) / 4.0f;
     float xl = ((w[1] >> 12) & 0xFFF) / 4.0f, yl = (w[1] & 0xFFF) / 4.0f;
     float s = (float)(s16)(w[2] >> 16), t = (float)(s16)w[2];
