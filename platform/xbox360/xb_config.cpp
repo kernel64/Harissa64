@@ -25,6 +25,7 @@ void ConfigDefaults(Config *c)
     c->hdBudget = 96;
     c->hdCatalog[0] = 0;
     c->hdPack[0] = 0;
+    c->cheats[0] = 0;
     c->updateCheck = 1;
     c->artDownload = 1;
     c->browserDemo = 0;
@@ -35,6 +36,8 @@ void ConfigDefaults(Config *c)
     c->logCpu = 5;
     c->menuAt = 0;
     c->aboutAt = 0;
+    c->cheatsAt = 0;
+    c->cheatOn = -1;
     c->hdPage = 0;
     c->controlsTest = -1;
     c->autoStart = 0;
@@ -135,6 +138,11 @@ int ConfigParseFile(Config *c, const char *path)
             strncpy(c->hdPack, eq + 1, sizeof(c->hdPack) - 1);
             c->hdPack[sizeof(c->hdPack) - 1] = 0;
         }
+        else if (!strcmp(line, "cheats"))
+        {
+            strncpy(c->cheats, eq + 1, sizeof(c->cheats) - 1);
+            c->cheats[sizeof(c->cheats) - 1] = 0;
+        }
         else if (!strcmp(line, "hdcatalog"))
         {
             strncpy(c->hdCatalog, eq + 1, sizeof(c->hdCatalog) - 1);
@@ -150,6 +158,8 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "logcpu")) c->logCpu = atoi(eq + 1);
         else if (!strcmp(line, "menuat")) c->menuAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "aboutat")) c->aboutAt = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "cheatsat")) c->cheatsAt = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "cheaton")) c->cheatOn = atoi(eq + 1);
         else if (!strcmp(line, "hdpage")) c->hdPage = atoi(eq + 1);
         else if (!strcmp(line, "controlstest")) c->controlsTest = atoi(eq + 1);
         else if (!strcmp(line, "autostart")) c->autoStart = atoi(eq + 1);
@@ -235,6 +245,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
     fprintf(f, "zoom=%d\nposx=%d\nposy=%d\nrumble=%d\nhdtextures=%d\n", c->zoom, c->offsetX, c->offsetY, c->rumble, c->hdTextures);
     if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
+    if (!withLastRom && c->cheats[0]) fprintf(f, "cheats=%s\n", c->cheats);   // a game's own: the Cheats page's choices
     if (!withLastRom && c->hdPack[0]) fprintf(f, "hdpack=%s\n", c->hdPack);   // a game's own: the HD textures page's choice
     // Controls: "map=default" first (a game's profile then undoes custom
     // controls of settings.ini), then every key of a changed mapping.

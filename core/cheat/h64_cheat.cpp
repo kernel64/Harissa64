@@ -386,5 +386,5 @@ void h64_cheat_frame(H64System *sys)
     mem.user = sys;
     mem.read = sys_read;
     mem.write = sys_write;
-    h64_cheat_run(sys->cheats, &mem, 0);
+    h64_cheat_run(sys->cheats, &mem, sys->cheatButton);
 }

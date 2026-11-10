@@ -115,6 +115,21 @@ The same script also downloads and converts the packs of the list on a PC: `pyth
 
 Options: `--out FOLDER` (where the `hd_textures` folder is made), `--max 2048` (keep pictures up to 2048 pixels wide; the default 1024 halves bigger ones, which saves the console's memory).
 
+## Cheats
+
+In a game, open the menu (short press on **BACK**) and pick **Cheats**. The list shows the codes known for that game: turn each one on or off with A or the D-pad. Some have several choices (a character, a level...): left and right go through them. What you turn on is remembered for that game.
+
+- The codes come from `cheats\mupencheat.txt`, which is in the zip. It covers most games.
+- Codes that say "Press GS" work while you click the right stick.
+- A code can make a game misbehave or freeze. If that happens, turn it off; some need a reset of the game to go away.
+
+To add your own GameShark codes, make a text file in the `cheats` folder, named like the game's save folder (for example `cheats\SUPER MARIO 64 NSME.txt`): a line with the cheat's name, then its codes, one per line.
+
+```
+Infinite lives
+8033B21D 0064
+```
+
 ## Saves
 
 Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. Copy that folder somewhere if you want a backup.

@@ -246,7 +246,7 @@ def main():
                          ("SHARPEN", [t["OFF"], t["LOW"], t["HIGH"]], 1), ("BLUR", [t["OFF"], t["SOFT"], t["STRONG"]], 1),
                          ("SCREEN_EFFECT", [t["SCREEN_NONE"], t["SCANLINES"], t["CRT"], t["CRT_CURVED"], t["LCD_GRID"], t["LIGHT_SCANLINES"]], 1),
                          ("BACK", [], 1)],
-            "pause": [("RESUME", [], 1), ("SAVE_STATE", [], 1), ("LOAD_STATE", [], 1), ("STATE_SLOT", ["9"], 1), ("SETTINGS", [], 1),
+            "pause": [("RESUME", [], 1), ("SAVE_STATE", [], 1), ("LOAD_STATE", [], 1), ("STATE_SLOT", ["9"], 1), ("CHEATS", [], 1), ("SETTINGS", [], 1),
                       ("RESET_GAME", [], 1), ("BACK_TO_LIST", [], 1), ("QUIT_DASHBOARD", [], 1)],
         }
         # UiMenuDraw: a 660-pixel panel, labels 44 pixels in, values 40 from the right, some room between.

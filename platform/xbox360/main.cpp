@@ -27,6 +27,7 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../core/system/h64_system.h"
 #include "../../core/system/h64_profile.h"
+#include "../../core/cheat/h64_cheat.h"
 #include "../../core/rdp/h64_rdp_state.h"
 #include "../../core/rdp/h64_rdp_hires.h"
 #include "../../core/dynarec/h64_lockstep.h"
@@ -650,6 +651,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
 static void FreeSystem(H64System *sys)
 {
     if (!sys) return;
+    if (sys->cheats) { h64_cheat_free(sys->cheats); sys->cheats = NULL; }
     h64_system_free(sys);
     free(sys);
 }
@@ -840,6 +842,8 @@ static void PadHook(H64System *sys)
     int i;
     if (s_script) { h64_input_script_apply_at(s_script, sys, sys->vi.frames - s_scriptBase); return; }
     sys->padMask = 1;
+    // The GameShark's "GS button" (codes like "Press GS for 255 coins"): a click on the right stick of controller 1.
+    sys->cheatButton = s_padValid && (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
     // BACK held: the buttons are front-end shortcuts, not the game's.
     if (!s_padValid || (s_pad.Gamepad.wButtons & XINPUT_GAMEPAD_BACK)) { sys->pad[0].buttons = 0; sys->pad[0].x = sys->pad[0].y = 0; }
     else PadFromXInput(&s_pad.Gamepad, 0, &sys->pad[0]);
@@ -1019,7 +1023,7 @@ static void LoadStateNow(H64System *sys)
 // margin, smoothing, FPS) or at the next start (CPU, RSP); they are saved
 // for all games (config\settings.ini) or for this game (config\<game>.ini).
 enum { RG_DASHBOARD = 0, RG_BROWSER, RG_CONTINUE };
-enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_SETTINGS, M_RESET, M_ROMS, M_DASHBOARD };   // X opens About
+enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_CHEATS, M_SETTINGS, M_RESET, M_ROMS, M_DASHBOARD };   // X opens About
 static char s_settingsPath[160];    // <drive>:\config\settings.ini ("" when the menu files are not used)
 static char s_profilePath[160];     // <drive>:\config\<game>.ini
 
@@ -1032,10 +1036,125 @@ static void BuildGameMenu(void)
     UiMenuAdd(&s_menu, Tr(T_LOAD_STATE), "");
     sprintf(slot, "< %d >", s_stateSlot);
     UiMenuAdd(&s_menu, Tr(T_STATE_SLOT), slot);
+    UiMenuAdd(&s_menu, Tr(T_CHEATS), "");
     UiMenuAdd(&s_menu, Tr(T_SETTINGS), "");
     UiMenuAdd(&s_menu, Tr(T_RESET_GAME), "");
     UiMenuAdd(&s_menu, Tr(T_BACK_TO_LIST), "");
     UiMenuAdd(&s_menu, Tr(T_QUIT_DASHBOARD), "");
+}
+
+// ---- Cheats ----
+// <drive>:\cheats\mupencheat.txt (mupen64plus's database, in the release zip)
+// and <drive>:\cheats\<game folder>.txt (the user's own codes) give the list;
+// the game's profile keeps which ones are on (cheats=).
+static u8 *ReadWhole(const char *path, u32 *len)
+{
+    FILE *f = fopen(path, "rb");
+    u8 *data;
+    long n;
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    data = n > 0 && n < (8 << 20) ? (u8 *)malloc((size_t)n) : NULL;
+    if (data && fread(data, 1, (size_t)n, f) != (size_t)n) { free(data); data = NULL; }
+    fclose(f);
+    *len = data ? (u32)n : 0;
+    return data;
+}
+
+static void CheatsLoad(H64System *sys, const Config *c)
+{
+    char path[160], folder[64];
+    u8 *text;
+    u32 len;
+    int db = 0, own = 0;
+    sys->cheats = h64_cheat_new();
+    _snprintf(path, sizeof(path) - 1, "%s:\\cheats\\mupencheat.txt", s_logDrive);
+    path[sizeof(path) - 1] = 0;
+    text = ReadWhole(path, &len);
+    if (text)
+    {
+        db = h64_cheat_load_db(sys->cheats, (const char *)text, len, sys->rom.crc1, sys->rom.crc2, sys->rom.region);
+        free(text);
+    }
+    h64_save_folder_name(&sys->rom, folder, sizeof(folder));
+    _snprintf(path, sizeof(path) - 1, "%s:\\cheats\\%s.txt", s_logDrive, folder);
+    path[sizeof(path) - 1] = 0;
+    text = ReadWhole(path, &len);
+    if (text)
+    {
+        own = h64_cheat_load_plain(sys->cheats, (const char *)text, len);
+        free(text);
+    }
+    h64_cheat_states_read(sys->cheats, c->cheats);
+    if (c->cheatOn >= 0) h64_cheat_set(sys->cheats, c->cheatOn, 1);
+    H64_INFO("[cheat] %d cheats from the database, %d from %s, %d on", db, own, path, h64_cheat_active(sys->cheats));
+}
+
+#define CHEAT_ROWS 10
+static int s_cheatSel;
+static int s_cheatsOpen;   // cheatsat=: the menu opens on the Cheats page
+
+// The Cheats page: a window of CHEAT_ROWS cheats around the selection.
+static void BuildCheats(H64System *sys)
+{
+    char title[64], name[128];
+    int n = h64_cheat_count(sys->cheats), top, i;
+    if (s_cheatSel >= n) s_cheatSel = n ? n - 1 : 0;
+    top = s_cheatSel / CHEAT_ROWS * CHEAT_ROWS;
+    _snprintf(title, sizeof(title) - 1, "%s  %d / %d", Tr(T_CHEATS), n ? s_cheatSel + 1 : 0, n);
+    title[sizeof(title) - 1] = 0;
+    UiMenuClear(&s_menu, title, Tr(T_FOOT_SELECT));
+    for (i = top; i < n && i < top + CHEAT_ROWS; i++)
+    {
+        H64CheatInfo ci;
+        char value[64], fit[96];
+        const char *v;
+        size_t k;
+        h64_cheat_info(sys->cheats, i, &ci);
+        v = !ci.state ? Tr(T_OFF) : ci.options ? h64_cheat_option_name(sys->cheats, i, ci.state - 1) : Tr(T_ON);
+        UiTextFit(UI_REGULAR, 21, 190, v, fit, sizeof(fit));
+        _snprintf(value, sizeof(value) - 1, "< %s >", fit);
+        value[sizeof(value) - 1] = 0;
+        strncpy(name, ci.name, sizeof(name) - 1);
+        name[sizeof(name) - 1] = 0;
+        for (k = 0; name[k]; k++)
+            if (name[k] == '\\') name[k] = ' ';   // "Infinite\Lives": a group and its cheat
+        // The name takes the room the value leaves in the 660-pixel panel.
+        UiTextFit(UI_BOLD, 22, 660 - 88 - 30 - (UiTextWidth(UI_REGULAR, 21, value) + 16), name, fit, sizeof(fit));
+        UiMenuAdd(&s_menu, fit, value);
+    }
+    s_menu.sel = n ? s_cheatSel - top : 0;
+}
+
+// One input on the Cheats page; returns 1 when the page is left.
+static int CheatsInput(H64System *sys, Config *c, WORD down)
+{
+    int n = h64_cheat_count(sys->cheats);
+    if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK))
+    {
+        // What is on goes to the game's profile at once.
+        h64_cheat_states_write(sys->cheats, c->cheats, sizeof(c->cheats));
+        if (s_profilePath[0] && !ConfigWriteKey(s_profilePath, "cheats", c->cheats)) H64_WARN("[cheat] cannot write %s", s_profilePath);
+        H64_INFO("[cheat] %d on: %s", h64_cheat_active(sys->cheats), c->cheats);
+        return 1;
+    }
+    if (!n) return 0;
+    if (down & XINPUT_GAMEPAD_DPAD_UP) s_cheatSel = (s_cheatSel + n - 1) % n;
+    if (down & XINPUT_GAMEPAD_DPAD_DOWN) s_cheatSel = (s_cheatSel + 1) % n;
+    if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) s_cheatSel = s_cheatSel >= CHEAT_ROWS ? s_cheatSel - CHEAT_ROWS : 0;
+    if (down & XINPUT_GAMEPAD_RIGHT_SHOULDER) s_cheatSel = s_cheatSel + CHEAT_ROWS < n ? s_cheatSel + CHEAT_ROWS : n - 1;
+    if (down & (XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT | XINPUT_GAMEPAD_A))
+    {
+        H64CheatInfo ci;
+        int states;
+        h64_cheat_info(sys->cheats, s_cheatSel, &ci);
+        states = (ci.options ? ci.options : 1) + 1;   // off, then on or each choice
+        h64_cheat_set(sys->cheats, s_cheatSel, (ci.state + ((down & XINPUT_GAMEPAD_DPAD_LEFT) ? states - 1 : 1)) % states);
+    }
+    BuildCheats(sys);
+    return 0;
 }
 
 static void ResetGame(H64System *sys)
@@ -1051,9 +1170,11 @@ static void ResetGame(H64System *sys)
 static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
 {
     UiInput in;
-    int settings = 0, sel, result = -1;
+    int settings = 0, cheats = 0, sel, result = -1;
     if (s_gfxQ.thread) WorkWaitAll(NULL);   // the device is this thread's while the menu shows
     BuildGameMenu();
+    if (s_cheatsOpen && h64_cheat_count(sys->cheats)) { cheats = 1; BuildCheats(sys); }
+    s_cheatsOpen = 0;
     UiInputInit(&in);
     s_menuOpen = 1;
     while (result < 0)
@@ -1062,6 +1183,15 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
         if (s_aboutOpen)
         {
             if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_X)) s_aboutOpen = 0;
+        }
+        else if (cheats)
+        {
+            if (CheatsInput(sys, c, down))
+            {
+                cheats = 0;
+                BuildGameMenu();
+                s_menu.sel = M_CHEATS;
+            }
         }
         else if (settings)
         {
@@ -1107,6 +1237,10 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
                 case M_RESUME: result = RG_CONTINUE; break;
                 case M_SAVE: s_statePending = 1; result = RG_CONTINUE; break;   // at the next quiet point
                 case M_LOAD: LoadStateNow(sys); result = RG_CONTINUE; break;
+                case M_CHEATS:
+                    if (h64_cheat_count(sys->cheats)) { cheats = 1; BuildCheats(sys); }
+                    else OsdT(T_NO_CHEATS, 0);
+                    break;
                 case M_SETTINGS: settings = 1; SettingsBuild(&s_menu, c, s_profilePath[0] != 0); break;
                 case M_RESET: ResetGame(sys); result = RG_CONTINUE; break;
                 case M_ROMS: result = RG_BROWSER; break;
@@ -1201,6 +1335,8 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     sys->options.strictCpu = c->strict;
     // Per-game settings (core/system/h64_profile.cpp); the ini may still force late parse.
     h64_apply_game_profile(sys);
+    CheatsLoad(sys, c);
+    s_cheatSel = 0;
     if (c->gameFlags >= 0)
     {
         h64_apply_profile_flags(sys, (u32)c->gameFlags);
@@ -1396,6 +1532,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         if (c->saveStateAt && presented == c->saveStateAt) s_statePending = 1;
         if (c->menuAt && presented == c->menuAt) menuRequest = 1;
         if (c->aboutAt && presented == c->aboutAt) { menuRequest = 1; s_aboutOpen = 1; }   // remote check of the About panel
+        if (c->cheatsAt && presented == c->cheatsAt) { menuRequest = 1; s_cheatsOpen = 1; }   // ...of the Cheats page
         if (c->browserAt && presented == c->browserAt)
         {
             H64_INFO("[main] browserat reached: back to the ROM list");
@@ -1790,7 +1927,7 @@ int __cdecl main()
         int scripted = cfg.input.count || cfg.exitAfter || cfg.trace || cfg.shotCount || cfg.loadState || cfg.saveStateAt;
         // Checks driven by harissa64v2.ini: no language list.
         int checks = cfg.autoStart || cfg.controlsTest >= 0 || cfg.browserDemo || cfg.artAll || cfg.browserSel[0] || cfg.browserAt ||
-                     cfg.menuAt || cfg.aboutAt || cfg.filesOpen;
+                     cfg.menuAt || cfg.aboutAt || cfg.cheatsAt || cfg.filesOpen;
         char dir[64], menuFile[160];
         _snprintf(dir, sizeof(dir), "%s:\\config", s_logDrive);
         dir[sizeof(dir) - 1] = 0;
