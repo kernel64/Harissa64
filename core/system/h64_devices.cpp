@@ -521,6 +521,7 @@ void h64_device_event(H64System *sys, int ev)
         if ((sys->vi.regs[VI_V_INTR] & 0x3FF) < vi_halflines(sys))
             h64_mi_raise(sys, MI_INTR_VI);
         if (sys->cheats) h64_cheat_frame(sys);   // once a frame, between blocks of the recompiler
+        if (sys->viHook) sys->viHook(sys);
         vi_schedule(sys);
         break;
     case H64_EV_AI:

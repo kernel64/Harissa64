@@ -37,6 +37,27 @@
 #include "../../render/api.h"
 #include "png_write.h"
 #include "../../core/cheat/h64_cheat.h"
+#include "../../core/ra/h64_ra.h"
+extern "C" {
+#include "../../third_party/rcheevos/include/rc_runtime.h"
+}
+
+// --ra-trigger MEMADDR: RetroAchievements conditions (the site's "MemAddr"
+// syntax) checked once a frame by rcheevos, as an achievement would be.
+static rc_runtime_t s_raRuntime;
+static H64System *s_raSys;
+static uint32_t RC_CCONV ra_read(uint32_t address, uint8_t *buffer, uint32_t count, void *ud)
+{
+    return h64_ra_read((const H64System *)ud, address, buffer, count);
+}
+static void RC_CCONV ra_event(const rc_runtime_event_t *e)
+{
+    if (e->type == RC_RUNTIME_EVENT_ACHIEVEMENT_TRIGGERED)
+        printf("[ra] achievement %u triggered at frame %u\n", (unsigned)e->id, s_raSys->vi.frames);
+    else if (e->type == RC_RUNTIME_EVENT_ACHIEVEMENT_ACTIVATED)
+        printf("[ra] achievement %u active from frame %u\n", (unsigned)e->id, s_raSys->vi.frames);
+}
+static void ra_frame(H64System *sys) { rc_runtime_do_frame(&s_raRuntime, ra_event, ra_read, sys, NULL); }
 #include "../../tests/unit/unit_tests.h"
 
 #ifdef _WIN32
@@ -545,6 +566,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u32 rdpLogFrame = 0, peekVa = 0;
     const char *cheatFile = NULL, *cheatOn[16];
     int cheatOnCount = 0, cheatList = 0;
+    const char *raTrigger[8];
+    int raCount = 0, raHash = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0, *jitProf = 0, *gameDb = 0;
@@ -582,6 +605,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--cheats") && i + 1 < argc) cheatFile = argv[++i];   // mupencheat.txt or a user's file
         else if (!strcmp(argv[i], "--cheat") && i + 1 < argc && cheatOnCount < 16) cheatOn[cheatOnCount++] = argv[++i];   // N or N:choice
         else if (!strcmp(argv[i], "--cheat-list")) cheatList = 1;
+        else if (!strcmp(argv[i], "--ra-trigger") && i + 1 < argc && raCount < 8) raTrigger[raCount++] = argv[++i];
+        else if (!strcmp(argv[i], "--ra-hash")) raHash = 1;
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--log-from") && i + 1 < argc) s_logFrom = (u32)atoi(argv[++i]);
@@ -762,6 +787,22 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     s_sysForStop = sys;
     if (stopOnNops) sys->cpu.nopHook = nop_hook;
     if (wavPath) { sys->aiSink = wav_sink; sys->aiUser = &wav; }
+    if (raHash)
+    {
+        char hash[33];
+        h64_ra_rom_hash(&sys->rom, hash);
+        printf("[ra] hash %s\n", hash);
+    }
+    if (raCount)
+    {
+        int k;
+        rc_runtime_init(&s_raRuntime);
+        for (k = 0; k < raCount; k++)
+            printf("[ra] achievement %d \"%s\": %s\n", k + 1, raTrigger[k],
+                   rc_runtime_activate_achievement(&s_raRuntime, (uint32_t)(k + 1), raTrigger[k], NULL, 0) == 0 ? "ok" : "NOT understood");
+        s_raSys = sys;
+        sys->viHook = ra_frame;
+    }
     if (cheatFile)
     {
         // --cheats FILE: the game's cheats from mupen64plus's database, or a
