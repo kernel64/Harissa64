@@ -39,6 +39,10 @@ static const GameProfile s_profiles[] = {
     // frame into narrow strips: copying those strips back garbled the HUD,
     // and no copy back at all left the course black once the camera stops.
     { "NMF", "Mario Golf", H64_GP_OTHERMODE_INIT | H64_GP_COPY_BACK_FULL },
+    // As Mario Golf: it never sets texture perspective nor the bilinear /
+    // convert bits and relies on F3DEX2's defaults (other mode H 08ACFF from
+    // the LLE microcode, 00A0C0 from the HLE): grey, warped pictures.
+    { "NYW", "Harvest Moon 64", H64_GP_OTHERMODE_INIT },
     // Missing players and net with copy backs; right without.
     // Players' shadows: drawn each frame into a 64x64 8-bit image (cleared
     // as a 64x32 16-bit one), then pasted: the software RDP draws it (they
