@@ -43,6 +43,7 @@
 #include "xb_menu.h"
 #include "xb_audio.h"
 #include "xb_hd.h"
+#include "xb_ach.h"
 
 // ---- Recompiler code memory (M0.3 result: only an image section linked
 // writable + executable runs generated code; /SECTION:.jitc,ERW in the project) ----
@@ -1001,6 +1002,7 @@ static int SaveStateNow(H64System *sys, H64Renderer *renderer)
     ok = f && fwrite(&st[0], 1, st.size(), f) == st.size();
     if (f) fclose(f);
     OsdT(ok ? T_STATE_SAVED : T_STATE_WRITE_FAILED, s_stateSlot);
+    if (ok) XbAchUnlock(XB_ACH_SAVE_STATE);
     return 1;
 }
 
@@ -1867,6 +1869,8 @@ int __cdecl main()
     // with the display list parser; checks of the 2 s stalls).
     if (s_logThread && cfg.logCpu >= 0 && cfg.logCpu <= 5 && cfg.logCpu != 5) XSetThreadProcessor(s_logThread, (DWORD)cfg.logCpu);
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
+    // Xbox achievements: not in Xenia, and not during scripted checks (they would unlock on the tester's profile).
+    XbAchInit(!cfg.xenia && !cfg.input.count && !cfg.exitAfter && !cfg.shotCount && !cfg.saveStateAt && cfg.controlsTest < 0 && !cfg.hdPage);
     s_jitNoFpu = !cfg.jitFpu;
     s_noRegCache = !cfg.regCache;
     s_noFpCache = !cfg.fpCache;

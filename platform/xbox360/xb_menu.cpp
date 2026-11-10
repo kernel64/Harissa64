@@ -21,6 +21,7 @@
 #include "xb_drives.h"
 #include "xb_flags.h"
 #include "xb_hd.h"
+#include "xb_ach.h"
 #include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_update.h"
@@ -245,6 +246,7 @@ static void lang_change(Config *c, int lang)
     LangSet(lang);
     strcpy(c->lang, LangCode(lang));
     if (s_langPath[0] && !ConfigWriteLang(s_langPath, c->lang)) H64_WARN("[lang] cannot write %s", s_langPath);
+    XbAchUnlock(XB_ACH_LANGUAGE);
     H64_INFO("[lang] menus in %s", c->lang);
 }
 
@@ -2498,6 +2500,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
                     if (roms[i].file == file) sel = i;
                 }
                 strncpy(msg, Tr(fav ? T_FAV_ADDED : T_FAV_REMOVED), sizeof(msg) - 1);
+                if (fav) XbAchUnlock(XB_ACH_FAVOURITE);
                 msg[sizeof(msg) - 1] = 0;
                 msgAt = GetTickCount();
                 detailsFor = lastSel = -1;   // the same ROM at another place

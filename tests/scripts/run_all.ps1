@@ -42,6 +42,9 @@ if (-not $SkipXbox) {
     # The menu texts (platform/xbox360/lang): complete, fitting, and xb_lang_table.h up to date.
     python (Join-Path $root 'platform\xbox360\tools\gen_lang.py') --check
     if ($LASTEXITCODE -ne 0) { $failed += 'menu texts' }
+    # The Xbox achievements: the gameconfig and xb_ach_ids.h up to date with tools/gen_achievements.py.
+    python (Join-Path $root 'platform\xbox360\tools\gen_achievements.py') --check
+    if ($LASTEXITCODE -ne 0) { $failed += 'achievements' }
     $sln = Join-Path $root 'platform\xbox360\harissa64v2.sln'
     $out = cmd /c "`"$vs2010`" x86 >nul && `"$msbuild`" `"$sln`" /p:Configuration=Release /p:Platform=`"Xbox 360`" /m /v:minimal" 2>&1
     $out | Select-String -Pattern 'warning|error' | ForEach-Object { $_.Line }

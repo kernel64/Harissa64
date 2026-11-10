@@ -131,6 +131,7 @@
     </ClCompile>
     <ClCompile Include="xb_update.cpp" />
     <ClCompile Include="xb_hd.cpp" />
+    <ClCompile Include="xb_ach.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\core\**\*.h" />
