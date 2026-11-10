@@ -89,7 +89,7 @@ On an installed pack, **A** turns it on for this game, or off if it is the activ
 
 A pack is downloaded once and serves every game it suits: the other versions of the game (USA, Europe, Japan) and hacks that keep its name or its code.
 
-In a game, **HD textures** in **Settings > Graphics** turns the pack on or off at once.
+In a game, **HD textures** in **Settings > Effects** turns the pack on or off at once.
 
 The packs are made by their authors and stay on their pages; Harissa64 only keeps a [list of links](docs/texture-packs.json). To add a pack to the list, open a pull request.
 
@@ -107,7 +107,7 @@ For a pack that is not in the list (on Mega, Google Drive, a forum...), or a con
 
    It makes `hd_textures\SUPER MARIO 64.h64hd`. A big pack takes a minute or two.
 4. Copy that file to the console, into the `hd_textures` folder of Harissa64 (create the folder if it is not there): `Harissa64\hd_textures\SUPER MARIO 64.h64hd`.
-5. Start the game, open the menu (short press on **BACK**), and turn on **HD textures** in **Settings > Graphics**.
+5. Start the game, open the menu (short press on **BACK**), and turn on **HD textures** in **Settings > Effects**.
 
 The file name must be the game's name as Harissa64 writes it in its `saves` folder, without the 4-letter code at the end: `saves\SUPER MARIO 64 NSME` gives `SUPER MARIO 64.h64hd`. The script names it that way already; rename it only if the game shows no HD textures. One file serves every version of the game (USA, Europe, Japan).
 
@@ -123,7 +123,7 @@ Your in-game saves are kept automatically, one folder per game, in `saves\<game 
 
 Open the menu in a game, then **Settings**. You can save the settings for all games or just for the game you're playing.
 
-The **Graphics** page has four presets:
+The **Effects** page has four presets:
 
 - **Original**: the plain N64 picture.
 - **N64 Enhanced**: smoother textures and a little sharpening.

@@ -235,7 +235,7 @@ def main():
         onoff = [t["ON"], t["OFF"]]
         menus = {
             "settings": [("CPU_NEXT", [t["RECOMPILER"], t["INTERPRETER"]], 1), ("RSP_NEXT", ["HLE"], 1), ("AUDIO_MARGIN", ["500 ms"], 1),
-                         ("SHOW_FPS", [t["OFF"], t["FPS_ONLY"], t["FPS_CPU"], t["FPS_ALL"]], 1), ("GRAPHICS", [], 1), ("CONTROLS", [t["CUSTOM"], t["DEFAULT"]], 0),
+                         ("SHOW_FPS", [t["OFF"], t["FPS_ONLY"], t["FPS_CPU"], t["FPS_ALL"]], 1), ("PICTURE", [], 1), ("EFFECTS", [], 1), ("INTERFACE", [], 1), ("ADVANCED", [], 1), ("CONTROLS", [t["CUSTOM"], t["DEFAULT"]], 0),
                          ("LANGUAGE", names, 1), ("ART_DOWNLOADS", onoff, 1), ("ART_ALL", [], 1), ("SAVE_ALL", [], 1),
                          ("SAVE_GAME", [], 1), ("BACK", [], 1)],
             "graphics": [("PRESET", [t["PRESET_ORIGINAL"], t["PRESET_ENHANCED"], t["PRESET_SMOOTH"], t["PRESET_CRT"], t["CUSTOM"]], 1),
@@ -255,7 +255,7 @@ def main():
                 lw = width(t[key], 22, True)
                 vw = max([value_width(v) if chev else width(v, 21, False) for v in values] + [0])
                 check(code, "%s row %s with its widest value" % (menu, key), lw + vw + (24 if values else 0), 660 - 84)
-        for key in ("SETTINGS", "SETTINGS_ALL", "GRAPHICS", "CONTROLS", "PAUSED"):
+        for key in ("SETTINGS", "SETTINGS_ALL", "PICTURE", "EFFECTS", "INTERFACE", "ADVANCED", "CONTROLS", "PAUSED"):
             check(code, "title " + key, width(t[key], 30, True), 660 - 80)
         for key in ("FOOT_SELECT", "FOOT_PAUSED"):
             check(code, key, footer_width(t[key]), 660 - 80)
