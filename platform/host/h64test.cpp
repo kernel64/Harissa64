@@ -36,6 +36,7 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../render/api.h"
 #include "png_write.h"
+#include "../../core/cheat/h64_cheat.h"
 #include "../../tests/unit/unit_tests.h"
 
 #ifdef _WIN32
@@ -542,6 +543,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1, strictCpu = 0; u32 gameFlags = 0;
     int profileInfo = 0, renderHash = 0, inputAfterLoad = 0; u32 moreFrames = 0;
     u32 rdpLogFrame = 0, peekVa = 0;
+    const char *cheatFile = NULL, *cheatOn[16];
+    int cheatOnCount = 0, cheatList = 0;
     u32 watchWord = 0, watchLast = 0, watchReports = 0;
     int stopOnNops = 0;
     const char *fbPng = 0, *rawPng = 0, *dumpRam = 0, *jitDump = 0, *jitProf = 0, *gameDb = 0;
@@ -576,6 +579,9 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--rdp-log") && i + 1 < argc) rdpLogFrame = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--jit-inval") && i + 1 < argc) h64_jit_log_invalidations((u32)atoi(argv[++i]));   // log writes that drop blocks
         else if (!strcmp(argv[i], "--peek") && i + 1 < argc) peekVa = (u32)strtoul(argv[++i], 0, 16);
+        else if (!strcmp(argv[i], "--cheats") && i + 1 < argc) cheatFile = argv[++i];   // mupencheat.txt or a user's file
+        else if (!strcmp(argv[i], "--cheat") && i + 1 < argc && cheatOnCount < 16) cheatOn[cheatOnCount++] = argv[++i];   // N or N:choice
+        else if (!strcmp(argv[i], "--cheat-list")) cheatList = 1;
         else if (!strcmp(argv[i], "--gfx-timing")) gfxTiming = 1;
         else if (!strcmp(argv[i], "--log-word") && i + 1 < argc) s_logWord = (u32)strtoul(argv[++i], 0, 16);
         else if (!strcmp(argv[i], "--log-from") && i + 1 < argc) s_logFrom = (u32)atoi(argv[++i]);
@@ -756,6 +762,33 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     s_sysForStop = sys;
     if (stopOnNops) sys->cpu.nopHook = nop_hook;
     if (wavPath) { sys->aiSink = wav_sink; sys->aiUser = &wav; }
+    if (cheatFile)
+    {
+        // --cheats FILE: the game's cheats from mupen64plus's database, or a
+        // user's file; --cheat-list prints them, --cheat N[:choice] turns one on.
+        u32 clen = 0;
+        u8 *ctext = read_file(cheatFile, &clen);
+        int k, n = 0;
+        sys->cheats = h64_cheat_new();
+        if (ctext)
+        {
+            n = h64_cheat_load_db(sys->cheats, (const char *)ctext, clen, sys->rom.crc1, sys->rom.crc2, sys->rom.region);
+            if (!n) n = h64_cheat_load_plain(sys->cheats, (const char *)ctext, clen);
+            free(ctext);
+        }
+        printf("[cheat] %d cheats for %08X-%08X-C:%02X in %s\n", n, sys->rom.crc1, sys->rom.crc2, sys->rom.region, cheatFile);
+        for (k = 0; k < cheatOnCount; k++)
+        {
+            const char *colon = strchr(cheatOn[k], ':');
+            h64_cheat_set(sys->cheats, atoi(cheatOn[k]), colon ? atoi(colon + 1) : 1);
+        }
+        for (k = 0; k < n && (cheatList || cheatOnCount); k++)
+        {
+            H64CheatInfo ci;
+            h64_cheat_info(sys->cheats, k, &ci);
+            if (cheatList || ci.state) printf("[cheat] %3d %s %s%s\n", k, ci.state ? "ON " : "off", ci.name, ci.options ? " (choices)" : "");
+        }
+    }
     sys->options.noRdpDraw = noRdp;
     sys->options.hleAudio = hleAudio == 1;
     sys->options.hleAudioCheck = hleAudio == 2;

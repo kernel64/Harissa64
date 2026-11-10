@@ -26,6 +26,7 @@ void test_padmap(H64TestContext *ctx);
 void test_png(H64TestContext *ctx);
 void test_gameinfo(H64TestContext *ctx);
 void test_hdpack(H64TestContext *ctx);
+void test_cheat(H64TestContext *ctx);
 
 static const H64TestCase s_tests[] = {
     { "types", test_types },
@@ -52,6 +53,7 @@ static const H64TestCase s_tests[] = {
     { "png", test_png },
     { "gameinfo", test_gameinfo },
     { "hdpack", test_hdpack },
+    { "cheat", test_cheat },
 };
 
 int h64_run_all_unit_tests(int *testsOut, int *checksOut)

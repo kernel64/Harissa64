@@ -245,6 +245,7 @@ struct H64System
     u32 asyncAudioCycles;
     void (*aiSink)(void *user, const u8 *samples, u32 len, u32 rate);
     void *aiUser;
+    struct H64CheatList *cheats;   // optional (core/cheat/h64_cheat.h, owned by the platform): run at each VI event
 
     int stop;            // set to leave the run loop
     int exitRequested;   // the guest asked to end the run (EMUX XIOCTL exit)
