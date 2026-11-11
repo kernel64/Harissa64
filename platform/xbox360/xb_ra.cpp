@@ -45,6 +45,11 @@ static char s_drive[16], s_iniPath[96], s_logPath[96];
 static char s_user[64], s_token[96];
 static void (*s_toast)(const char *text, int ms, const char *badge);
 static H64System *s_sys;
+// From this id on, an entry of the list is a notice of the server, not an
+// achievement ("Unknown Emulator": no hardcore unlocks here; rcheevos'
+// RC_CLIENT_ACHIEVEMENT_WARNING_ID). It comes as already earned: neither
+// listed nor counted.
+#define RA_WARNING_ID 101000001u
 static int s_gameAsked, s_cheated;
 static char s_code[4];   // the running game's code without the region ("NSM")
 
@@ -550,6 +555,8 @@ static void RC_CCONV on_game(int result, const char *error, rc_client_t *client,
 {
     char text[160];
     rc_client_user_game_summary_t sum;
+    rc_client_achievement_list_t *list;
+    u32 b, i, total = 0, unlocked = 0;
     const rc_client_game_t *game = rc_client_get_game_info(client);
     if (result != RC_OK)
     {
@@ -558,10 +565,24 @@ static void RC_CCONV on_game(int result, const char *error, rc_client_t *client,
         return;
     }
     rc_client_get_user_game_summary(client, &sum);
-    H64_INFO("[ra] game %u \"%s\": %u achievements, %u unlocked, %u not supported", game ? game->id : 0, game ? game->title : "",
-             sum.num_promoted_achievements, sum.num_unlocked_achievements, sum.num_unsupported_achievements);
-    if (!sum.num_promoted_achievements) { toast(Tr(T_RA_NONE), 4000); return; }
-    _snprintf(text, sizeof(text) - 1, Tr(T_RA_GAME), (int)sum.num_unlocked_achievements, (int)sum.num_promoted_achievements);
+    // The message counts what the Achievements page lists: every set of the
+    // game (the summary only knows the main one).
+    list = rc_client_create_achievement_list(client, RC_CLIENT_ACHIEVEMENT_CATEGORY_PROMOTED, RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+    if (list)
+    {
+        for (b = 0; b < list->num_buckets; b++)
+            for (i = 0; i < list->buckets[b].num_achievements; i++)
+            {
+                if (list->buckets[b].achievements[i]->id >= RA_WARNING_ID) continue;
+                total++;
+                if (list->buckets[b].achievements[i]->unlocked != RC_CLIENT_ACHIEVEMENT_UNLOCKED_NONE) unlocked++;
+            }
+        rc_client_destroy_achievement_list(list);
+    }
+    H64_INFO("[ra] game %u \"%s\": %u achievements, %u unlocked (main set: %u, %u), %u not supported", game ? game->id : 0,
+             game ? game->title : "", total, unlocked, sum.num_promoted_achievements, sum.num_unlocked_achievements, sum.num_unsupported_achievements);
+    if (!total) { toast(Tr(T_RA_NONE), 4000); return; }
+    _snprintf(text, sizeof(text) - 1, Tr(T_RA_GAME), (int)unlocked, (int)total);
     text[sizeof(text) - 1] = 0;
     toast(text, 5000);
     xbox_check();
@@ -908,7 +929,7 @@ int XbRaListBegin(void)
     if (!s_list) return 0;
     for (b = 0; b < s_list->num_buckets; b++)
         for (i = 0; i < s_list->buckets[b].num_achievements && s_listCount < RA_LIST_MAX; i++)
-            s_listItem[s_listCount++] = s_list->buckets[b].achievements[i];
+            if (s_list->buckets[b].achievements[i]->id < RA_WARNING_ID) s_listItem[s_listCount++] = s_list->buckets[b].achievements[i];
     return s_listCount;
 }
 
