@@ -22,6 +22,7 @@
 #include "xb_flags.h"
 #include "xb_hd.h"
 #include "xb_ach.h"
+#include "xb_ra.h"
 #include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_update.h"
@@ -187,12 +188,13 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 // Advanced), then save and back. A section's rows are shown in the same
 // UiMenu; its Back returns to the main page. Each row carries an item id
 // (s_item[]), so a page holds any rows in any order.
-enum { PG_MAIN = 0, PG_PICTURE, PG_EFFECTS, PG_INTERFACE, PG_ADVANCED, PG_COUNT };
+enum { PG_MAIN = 0, PG_PICTURE, PG_EFFECTS, PG_INTERFACE, PG_ADVANCED, PG_ACH, PG_COUNT };
 enum { IT_BACK = 0, IT_PICTURE, IT_EFFECTS, IT_CONTROLS, IT_INTERFACE, IT_ADVANCED, IT_SAVE_ALL, IT_SAVE_GAME,
        IT_RES, IT_STRETCH, IT_BRIGHT, IT_ZOOM, IT_POSX, IT_POSY,                                  // Picture
        IT_PRESET, IT_FILTER, IT_HD, IT_SMOOTH, IT_SHARPEN, IT_BLUR, IT_SCREEN, IT_DEFLICKER,      // Effects
        IT_LANGUAGE, IT_FPS, IT_ART, IT_ART_ALL,                                                   // Interface
-       IT_CPU, IT_HLE, IT_AUDIO, IT_VSYNC };                                                      // Advanced
+       IT_CPU, IT_HLE, IT_AUDIO, IT_VSYNC,                                                        // Advanced
+       IT_ACH, IT_RA_ON, IT_RA_ACCOUNT };                                                         // Achievements
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
@@ -297,6 +299,14 @@ static void settings_values(UiMenu *m, const Config *c)
             break;
         }
         case IT_LANGUAGE: sprintf(v, "< %s >", Tr(T_LANG_NAME)); break;
+        case IT_RA_ON: sprintf(v, "< %s >", onoff(c->achievements)); break;
+        case IT_RA_ACCOUNT:
+        {
+            int st = XbRaState();
+            UiTextFit(UI_REGULAR, 21, 300, st == XB_RA_IN ? XbRaUser() : st == XB_RA_BUSY ? Tr(T_RA_CONNECTING) : st == XB_RA_OUT ? Tr(T_RA_NOT_CONNECTED) : "-",
+                      v, sizeof(m->value[i]));
+            break;
+        }
         case IT_ART: sprintf(v, "< %s >", onoff(c->artDownload)); break;
         }
     }
@@ -311,7 +321,7 @@ static void row(UiMenu *m, int item, int text)
 // Shows a page (PG_*).
 static void settings_page(UiMenu *m, const Config *c, int page)
 {
-    static const int title[PG_COUNT] = { 0, T_PICTURE, T_EFFECTS, T_INTERFACE, T_ADVANCED };
+    static const int title[PG_COUNT] = { 0, T_PICTURE, T_EFFECTS, T_INTERFACE, T_ADVANCED, T_ACHIEVEMENTS };
     s_page = page;
     UiMenuClear(m, Tr(page == PG_MAIN ? (s_perGame ? T_SETTINGS : T_SETTINGS_ALL) : title[page]), Tr(T_FOOT_SELECT));
     switch (page)
@@ -321,6 +331,7 @@ static void settings_page(UiMenu *m, const Config *c, int page)
         row(m, IT_EFFECTS, T_EFFECTS);
         row(m, IT_CONTROLS, T_CONTROLS);
         row(m, IT_INTERFACE, T_INTERFACE);
+        row(m, IT_ACH, T_ACHIEVEMENTS);
         row(m, IT_ADVANCED, T_ADVANCED);
         row(m, IT_SAVE_ALL, T_SAVE_ALL);
         if (s_perGame) row(m, IT_SAVE_GAME, T_SAVE_GAME);
@@ -351,6 +362,10 @@ static void settings_page(UiMenu *m, const Config *c, int page)
             row(m, IT_ART, T_ART_DOWNLOADS);
             row(m, IT_ART_ALL, T_ART_ALL);
         }
+        break;
+    case PG_ACH:   // RetroAchievements: on or off, and the account
+        row(m, IT_RA_ON, T_RA_ENABLE);
+        row(m, IT_RA_ACCOUNT, T_RA_ACCOUNT);
         break;
     case PG_ADVANCED:
         row(m, IT_CPU, T_CPU_NEXT);
@@ -854,9 +869,12 @@ void SettingsBuild(UiMenu *m, const Config *c, int perGame)
 
 int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
 {
-    static const int section[PG_COUNT] = { 0, IT_PICTURE, IT_EFFECTS, IT_INTERFACE, IT_ADVANCED };
+    static const int section[PG_COUNT] = { 0, IT_PICTURE, IT_EFFECTS, IT_INTERFACE, IT_ADVANCED, IT_ACH };
     int dir, item, a = (down & XINPUT_GAMEPAD_A) != 0, changed = 1;
     s_perGame = perGame;
+    XbRaPump();
+    if (XbRaBusy()) return SET_NONE;   // the Xbox keyboard has the controller
+    if (s_page == PG_ACH && m->page != UI_PAGE_CONTROLS) settings_values(m, c);   // the account row follows the connection
     if (m->page == UI_PAGE_CONTROLS) return controls_input(m, c, down);
     dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
     UiMenuNavigate(m, down);
@@ -877,6 +895,12 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
         case IT_EFFECTS: settings_page(m, c, PG_EFFECTS); return SET_NONE;
         case IT_INTERFACE: settings_page(m, c, PG_INTERFACE); return SET_NONE;
         case IT_ADVANCED: settings_page(m, c, PG_ADVANCED); return SET_NONE;
+        case IT_ACH: settings_page(m, c, PG_ACH); return SET_NONE;
+        case IT_RA_ACCOUNT:
+            if (!c->achievements) return SET_NONE;
+            XbRaAccount();   // connected: disconnects; otherwise the keyboard, then the connection
+            settings_values(m, c);
+            return SET_NONE;
         case IT_CONTROLS: controls_open(m, c); return SET_NONE;
         case IT_SAVE_ALL: return SET_SAVE_ALL;
         case IT_SAVE_GAME: return SET_SAVE_GAME;
@@ -932,6 +956,14 @@ int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
         break;
     case IT_FPS: c->showFps = ((c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps) + dir + 4) % 4; break;   // off, FPS, + CPU/RAM, + resolution
     case IT_ART: c->artDownload = !c->artDownload; break;
+    case IT_RA_ON:
+        // For all games, kept at once (as the language is).
+        c->achievements = !c->achievements;
+        XbRaSetEnabled(c->achievements);
+        if (s_langPath[0] && !ConfigWriteKey(s_langPath, "achievements", c->achievements ? "1" : "0")) H64_WARN("[ra] cannot write %s", s_langPath);
+        changed = 0;
+        break;
+    case IT_RA_ACCOUNT: changed = 0; break;
     default: changed = 0; break;
     }
     settings_values(m, c);

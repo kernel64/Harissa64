@@ -11,7 +11,7 @@ Not sure where to begin? Leave everything as it is. The defaults are what we tes
 
 ## Main page
 
-The settings are sorted into sections. **Picture**, **Effects**, **Controls**, **Interface** and **Advanced** each open their own page, described below.
+The settings are sorted into sections. **Picture**, **Effects**, **Controls**, **Interface**, **Achievements** and **Advanced** each open their own page, described below.
 
 **Save for all games / Save for this game only**
 Keeps your changes for next time. If you leave without saving, they last until you quit the game.
@@ -124,6 +124,13 @@ Shows the speed in a corner of the screen. 60 means full speed (50 for European 
 
 **Get box art for all games**
 Downloads the box art and info of every game in your list in one go. You can keep browsing while it works: the progress shows at the bottom right. At the end a message says how many games got a picture. Games it couldn't find before are tried again. Without internet, a message tells you so and nothing changes. On a PC, `tools/fetch_game_art.py` does the same thing (see the README).
+
+## Achievements
+
+- **RetroAchievements**: on or off (off by default). For all games; kept at once.
+- **Account**: shows the connected account. Pick it to connect (user name, then password, on the Xbox keyboard) or to disconnect.
+
+See the README for how achievements work.
 
 ## Advanced
 

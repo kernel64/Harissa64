@@ -31,6 +31,10 @@ int NetStart(int retry);
 // reached (no DNS answer, no connection, TLS failure, time-out).
 int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, u32 maxLen, char *location, int locSize);
 
+// POST `data` (`type`: its Content-Type, NULL for a form) to https://host/path;
+// `agent` is added to the User-Agent (NULL: nothing). No redirects. The answer
+// and the result are as NetGet's.
+int NetPost(const char *host, const char *path, const char *data, const char *type, const char *agent, u8 **body, u32 *len, u32 maxLen);
 // Downloads https://... to `file`, following redirects. Bytes already in the
 // file (an interrupted download) are kept and the rest is asked for (Range);
 // a dropped connection is tried again a few times. `expected`: the whole

@@ -38,6 +38,9 @@ void ConfigDefaults(Config *c)
     c->aboutAt = 0;
     c->cheatsAt = 0;
     c->cheatOn = -1;
+    c->achievements = 0;
+    c->achAt = 0;
+    c->raTest = 0;
     c->hdPage = 0;
     c->controlsTest = -1;
     c->autoStart = 0;
@@ -160,6 +163,9 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "aboutat")) c->aboutAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "cheatsat")) c->cheatsAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "cheaton")) c->cheatOn = atoi(eq + 1);
+        else if (!strcmp(line, "achievements")) c->achievements = atoi(eq + 1);
+        else if (!strcmp(line, "achat")) c->achAt = (u32)atoi(eq + 1);
+        else if (!strcmp(line, "ratest")) c->raTest = atoi(eq + 1);
         else if (!strcmp(line, "hdpage")) c->hdPage = atoi(eq + 1);
         else if (!strcmp(line, "controlstest")) c->controlsTest = atoi(eq + 1);
         else if (!strcmp(line, "autostart")) c->autoStart = atoi(eq + 1);
@@ -244,7 +250,7 @@ int ConfigWriteMenuKeys(const Config *c, const char *path, int withLastRom)
     fprintf(f, "resolution=%d\ntexfilter=%d\nsharpen=%d\nblur=%d\nscreen=%d\nbrightness=%d\nvsync=%d\nstretch=%d\ndeflicker=%d\n", c->resScale,
             c->texFilter, c->sharpen, c->blur, c->screen, c->brightness, c->vsync, c->stretch, c->deflicker);
     fprintf(f, "zoom=%d\nposx=%d\nposy=%d\nrumble=%d\nhdtextures=%d\n", c->zoom, c->offsetX, c->offsetY, c->rumble, c->hdTextures);
-    if (withLastRom) fprintf(f, "artdownload=%d\n", c->artDownload);
+    if (withLastRom) fprintf(f, "artdownload=%d\nachievements=%d\n", c->artDownload, c->achievements);
     if (!withLastRom && c->cheats[0]) fprintf(f, "cheats=%s\n", c->cheats);   // a game's own: the Cheats page's choices
     if (!withLastRom && c->hdPack[0]) fprintf(f, "hdpack=%s\n", c->hdPack);   // a game's own: the HD textures page's choice
     // Controls: "map=default" first (a game's profile then undoes custom

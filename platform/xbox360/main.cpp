@@ -44,6 +44,7 @@
 #include "xb_audio.h"
 #include "xb_hd.h"
 #include "xb_ach.h"
+#include "xb_ra.h"
 
 // ---- Recompiler code memory (M0.3 result: only an image section linked
 // writable + executable runs generated code; /SECTION:.jitc,ERW in the project) ----
@@ -652,6 +653,7 @@ static H64System *MakeSystem(const u8 *rom, u32 size, int jit)
 static void FreeSystem(H64System *sys)
 {
     if (!sys) return;
+    XbRaGameEnd(sys);
     if (sys->cheats) { h64_cheat_free(sys->cheats); sys->cheats = NULL; }
     h64_system_free(sys);
     free(sys);
@@ -935,6 +937,7 @@ static int s_statePending;          // a save waits for a quiet point (no HLE ta
 static char s_osd[160];
 static DWORD s_osdUntil;
 #define OSD_MS 2000                 // how long a toast stays
+static int s_osdLife = OSD_MS;
 
 // A toast from a menu text (T_*), with a number for its %d if it has one;
 // the log gets the English text.
@@ -945,8 +948,18 @@ static void OsdT(int id, int num)
     s_osd[sizeof(s_osd) - 1] = 0;
     _snprintf(en, sizeof(en) - 1, TrIn(LANG_EN, id), num);
     en[sizeof(en) - 1] = 0;
+    s_osdLife = OSD_MS;
     s_osdUntil = GetTickCount() + OSD_MS;
     H64_INFO("[main] %s", en);
+}
+
+// A toast with any text, for `ms` (RetroAchievements: unlocks, the account).
+static void OsdText(const char *text, int ms)
+{
+    strncpy(s_osd, text, sizeof(s_osd) - 1);
+    s_osd[sizeof(s_osd) - 1] = 0;
+    s_osdLife = ms;
+    s_osdUntil = GetTickCount() + (DWORD)ms;
 }
 
 static int s_showFps;               // showfps=1: frames shown per second in the top-right corner
@@ -967,7 +980,7 @@ static void OverlayHook(void *, IDirect3DDevice9 *dev)
     else if (fps) UiFpsBadge(s_fpsText);
     if (s_menuOpen && s_aboutOpen) AboutDraw();
     else if (s_menuOpen) UiMenuDraw(&s_menu);
-    if (osd) UiToast(s_osd, (float)(OSD_MS - left), (float)OSD_MS);
+    if (osd) UiToast(s_osd, (float)(s_osdLife - left), (float)s_osdLife);
     UiEnd();
 }
 
@@ -1015,7 +1028,11 @@ static void LoadStateNow(H64System *sys)
     data = LoadFile(path, &size);
     if (!data) OsdT(T_NO_STATE, s_stateSlot);
     else if (h64_state_load(sys, data, size)) OsdT(T_STATE_LOAD_FAILED, s_stateSlot);
-    else OsdT(T_STATE_LOADED, s_stateSlot);
+    else
+    {
+        OsdT(T_STATE_LOADED, s_stateSlot);
+        XbRaReset();   // achievement conditions in progress start again
+    }
     free(data);
 }
 
@@ -1025,7 +1042,7 @@ static void LoadStateNow(H64System *sys)
 // margin, smoothing, FPS) or at the next start (CPU, RSP); they are saved
 // for all games (config\settings.ini) or for this game (config\<game>.ini).
 enum { RG_DASHBOARD = 0, RG_BROWSER, RG_CONTINUE };
-enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_CHEATS, M_SETTINGS, M_RESET, M_ROMS, M_DASHBOARD };   // X opens About
+enum { M_RESUME = 0, M_SAVE, M_LOAD, M_SLOT, M_CHEATS, M_ACH, M_SETTINGS, M_RESET, M_ROMS, M_DASHBOARD };   // X opens About
 static char s_settingsPath[160];    // <drive>:\config\settings.ini ("" when the menu files are not used)
 static char s_profilePath[160];     // <drive>:\config\<game>.ini
 
@@ -1039,6 +1056,7 @@ static void BuildGameMenu(void)
     sprintf(slot, "< %d >", s_stateSlot);
     UiMenuAdd(&s_menu, Tr(T_STATE_SLOT), slot);
     UiMenuAdd(&s_menu, Tr(T_CHEATS), "");
+    UiMenuAdd(&s_menu, Tr(T_ACHIEVEMENTS), "");
     UiMenuAdd(&s_menu, Tr(T_SETTINGS), "");
     UiMenuAdd(&s_menu, Tr(T_RESET_GAME), "");
     UiMenuAdd(&s_menu, Tr(T_BACK_TO_LIST), "");
@@ -1159,6 +1177,62 @@ static int CheatsInput(H64System *sys, Config *c, WORD down)
     return 0;
 }
 
+// ---- Achievements (RetroAchievements) ----
+// The game's list, ten a page as the cheats; A shows what the selected one asks for.
+static int s_achSel, s_achCount;
+static int s_achOpen;   // achat=: the menu opens on the Achievements page
+
+static void BuildAch(void)
+{
+    char title[64];
+    int n = s_achCount, top, i;
+    if (s_achSel >= n) s_achSel = n ? n - 1 : 0;
+    top = s_achSel / CHEAT_ROWS * CHEAT_ROWS;
+    _snprintf(title, sizeof(title) - 1, "%s  %d / %d", Tr(T_ACHIEVEMENTS), n ? s_achSel + 1 : 0, n);
+    title[sizeof(title) - 1] = 0;
+    UiMenuClear(&s_menu, title, Tr(T_FOOT_SELECT));
+    for (i = top; i < n && i < top + CHEAT_ROWS; i++)
+    {
+        XbRaItem it;
+        char value[64], fit[128];
+        XbRaListItem(i, &it);
+        if (it.unlocked) strcpy(value, Tr(T_RA_DONE));
+        else sprintf(value, "%d", it.points);
+        UiTextFit(UI_BOLD, 22, 660 - 88 - 30 - (UiTextWidth(UI_REGULAR, 21, value) + 16), it.title, fit, sizeof(fit));
+        UiMenuAdd(&s_menu, fit, value);
+    }
+    s_menu.sel = n ? s_achSel - top : 0;
+}
+
+// Opens the page; 0 (with a message) when there is nothing to show.
+static int AchOpen(const Config *c)
+{
+    s_achCount = XbRaListBegin();
+    if (s_achCount) { BuildAch(); return 1; }
+    XbRaListEnd();
+    OsdT(!c->achievements ? T_RA_OFF_HINT : XbRaState() == XB_RA_IN ? T_RA_NONE : T_RA_NOT_CONNECTED, 0);
+    return 0;
+}
+
+// One input on the Achievements page; returns 1 when the page is left.
+static int AchInput(WORD down)
+{
+    int n = s_achCount;
+    if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK)) { XbRaListEnd(); return 1; }
+    if (down & XINPUT_GAMEPAD_DPAD_UP) s_achSel = (s_achSel + n - 1) % n;
+    if (down & XINPUT_GAMEPAD_DPAD_DOWN) s_achSel = (s_achSel + 1) % n;
+    if (down & XINPUT_GAMEPAD_LEFT_SHOULDER) s_achSel = s_achSel >= CHEAT_ROWS ? s_achSel - CHEAT_ROWS : 0;
+    if (down & XINPUT_GAMEPAD_RIGHT_SHOULDER) s_achSel = s_achSel + CHEAT_ROWS < n ? s_achSel + CHEAT_ROWS : n - 1;
+    if (down & XINPUT_GAMEPAD_A)
+    {
+        XbRaItem it;
+        XbRaListItem(s_achSel, &it);
+        if (it.description[0]) OsdText(it.description, 5000);
+    }
+    BuildAch();
+    return 0;
+}
+
 static void ResetGame(H64System *sys)
 {
     h64_hle_async_wait(sys);
@@ -1166,25 +1240,38 @@ static void ResetGame(H64System *sys)
     h64_system_reset(sys);
     if (sys->renderer && sys->renderer->reset) sys->renderer->reset(sys->renderer->user);
     OsdT(T_GAME_RESET, 0);
+    XbRaReset();
 }
 
 // Runs the menu; returns RG_CONTINUE, RG_BROWSER or RG_DASHBOARD.
 static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
 {
     UiInput in;
-    int settings = 0, cheats = 0, sel, result = -1;
+    int settings = 0, cheats = 0, ach = 0, sel, result = -1;
     if (s_gfxQ.thread) WorkWaitAll(NULL);   // the device is this thread's while the menu shows
     BuildGameMenu();
     if (s_cheatsOpen && h64_cheat_count(sys->cheats)) { cheats = 1; BuildCheats(sys); }
     s_cheatsOpen = 0;
+    if (s_achOpen) ach = AchOpen(c);
+    s_achOpen = 0;
     UiInputInit(&in);
     s_menuOpen = 1;
     while (result < 0)
     {
         WORD down = UiInputPoll(&in);
+        XbRaPump();   // answers of the RetroAchievements server, the account's keyboard
         if (s_aboutOpen)
         {
             if (down & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_X)) s_aboutOpen = 0;
+        }
+        else if (ach)
+        {
+            if (AchInput(down))
+            {
+                ach = 0;
+                BuildGameMenu();
+                s_menu.sel = M_ACH;
+            }
         }
         else if (cheats)
         {
@@ -1243,6 +1330,7 @@ static int GameMenu(H64System *sys, H64Renderer *renderer, Config *c)
                     if (h64_cheat_count(sys->cheats)) { cheats = 1; BuildCheats(sys); }
                     else OsdT(T_NO_CHEATS, 0);
                     break;
+                case M_ACH: ach = AchOpen(c); break;
                 case M_SETTINGS: settings = 1; SettingsBuild(&s_menu, c, s_profilePath[0] != 0); break;
                 case M_RESET: ResetGame(sys); result = RG_CONTINUE; break;
                 case M_ROMS: result = RG_BROWSER; break;
@@ -1339,6 +1427,9 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
     h64_apply_game_profile(sys);
     CheatsLoad(sys, c);
     s_cheatSel = 0;
+    s_achSel = 0;
+    XbRaSetEnabled(c->achievements);
+    XbRaGameStart(sys);
     if (c->gameFlags >= 0)
     {
         h64_apply_profile_flags(sys, (u32)c->gameFlags);
@@ -1535,6 +1626,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         if (c->menuAt && presented == c->menuAt) menuRequest = 1;
         if (c->aboutAt && presented == c->aboutAt) { menuRequest = 1; s_aboutOpen = 1; }   // remote check of the About panel
         if (c->cheatsAt && presented == c->cheatsAt) { menuRequest = 1; s_cheatsOpen = 1; }   // ...of the Cheats page
+        if (c->achAt && presented == c->achAt) { menuRequest = 1; s_achOpen = 1; }           // ...of the Achievements page
         if (c->browserAt && presented == c->browserAt)
         {
             H64_INFO("[main] browserat reached: back to the ROM list");
@@ -1871,6 +1963,9 @@ int __cdecl main()
     if (cfg.xenia || !cfg.fpuFlags) h64_fenv_disable_host_flags();
     // Xbox achievements: not in Xenia, and not during scripted checks (they would unlock on the tester's profile).
     XbAchInit(!cfg.xenia && !cfg.input.count && !cfg.exitAfter && !cfg.shotCount && !cfg.saveStateAt && cfg.controlsTest < 0 && !cfg.hdPage);
+    // RetroAchievements: off until a settings file or the menu turns it on.
+    XbRaInit(s_logDrive, 0, OsdText);
+    if (cfg.raTest) XbRaSelfTest();
     s_jitNoFpu = !cfg.jitFpu;
     s_noRegCache = !cfg.regCache;
     s_noFpCache = !cfg.fpCache;
@@ -1956,6 +2051,7 @@ int __cdecl main()
             {
                 base = cfg;
                 ConfigParseFile(&base, s_settingsPath);
+                XbRaSetEnabled(base.achievements);   // connects in the background when an account is kept
                 if (!RomBrowser(dev, &base, s_settingsPath, path, sizeof(path))) break;
                 if (cfg.autoStart > 0) { cfg.autoStart--; cfg.autoIndex++; }
                 game = base;

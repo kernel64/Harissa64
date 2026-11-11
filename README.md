@@ -130,6 +130,22 @@ Infinite lives
 8033B21D 0064
 ```
 
+## Achievements
+
+Harissa64 works with [RetroAchievements](https://retroachievements.org): challenges made by players for each N64 game. It is off by default.
+
+1. Make a free account on retroachievements.org.
+2. In **Settings > Achievements**, turn **RetroAchievements** on.
+3. Pick **Account** and type your user name, then your password, on the Xbox keyboard. The console needs an internet connection. Your password is not kept: only the key the site gives back is saved, in `config\ra.ini`.
+
+When a game starts, a message says how many achievements you already have. When you earn one, a message shows its name. In a game, the menu (short press on **BACK**) has an **Achievements** page with the full list; A shows what the selected one asks for.
+
+- Save states are allowed (the site calls this "softcore").
+- Achievements stop for a game as soon as a cheat is turned on, until the game is started again without it.
+- Picking **Account** again disconnects.
+
+Harissa64 also has its own Xbox 360 achievements, shown in your profile like any game's (sign in with a profile first). Most are earned by unlocking RetroAchievements; a few by using the emulator (a save state, an HD texture pack, a favourite, another language).
+
 ## Saves
 
 Your in-game saves are kept automatically, one folder per game, in `saves\<game name> <code>\` next to the `.xex`. Save states go in the same folder. Copy that folder somewhere if you want a backup.

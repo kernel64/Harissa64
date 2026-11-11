@@ -83,6 +83,9 @@ struct Config
     u32 aboutAt;        // aboutat=N: the same, showing the About panel
     u32 cheatsAt;       // cheatsat=N: the same, showing the Cheats page (remote checks)
     int cheatOn;        // cheaton=N: cheat N of the list is on from the start (remote checks; -1: none)
+    int achievements;   // achievements=1: RetroAchievements on (Settings > Achievements; all games)
+    u32 achAt;          // achat=N: the in-game menu opens at VI N on the Achievements page (remote checks)
+    int raTest;         // ratest=1: asks the RetroAchievements server for a game id at start-up and logs it
     int hdPage;         // hdpage=1: the ROM browser opens the HD textures page of its selection (checks); 2: and installs the first pack
     int controlsTest;   // controlstest=N: the ROM list opens Settings > Controls on item N; 100+N: also
                         // waiting for an input, again and again; 200+N: the Settings page on item N

@@ -314,8 +314,11 @@ static int dechunk_feed(Dechunk *d, const u8 *p, u32 n, FILE *f)
     return wrote;
 }
 
+// A POST's body, its type, and what to add to the User-Agent (NULL: a GET).
+struct NetPostData { const char *data, *type, *agent; };
+
 static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, u32 maxLen, char *location, int locSize,
-                   NetSink *sink)
+                   NetSink *sink, const NetPostData *post = NULL)
 {
     NetTls *t;
     IN_ADDR ip;
@@ -379,13 +382,23 @@ static int request(const char *host, const char *path, u8 **body, u32 *bodyLen, 
         range[0] = 0;
         if (sink && sink->from) _snprintf(range, sizeof(range) - 1, "Range: bytes=%u-\r\n", sink->from);
         range[sizeof(range) - 1] = 0;
-        _snprintf(req, NET_URL_MAX + 511,
-                  "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Harissa64/" H64_VERSION_STRING
-                  " (Xbox 360; https://github.com/kernel64/Harissa64)\r\nAccept: */*\r\n%sConnection: close\r\n\r\n",
-                  path, host, range);
+        if (post)
+            _snprintf(req, NET_URL_MAX + 511,
+                      "POST %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Harissa64/" H64_VERSION_STRING
+                      " (Xbox 360; https://github.com/kernel64/Harissa64)%s%s\r\nAccept: */*\r\nContent-Type: %s\r\n"
+                      "Content-Length: %u\r\nConnection: close\r\n\r\n",
+                      path, host, post->agent && post->agent[0] ? " " : "", post->agent ? post->agent : "",
+                      post->type ? post->type : "application/x-www-form-urlencoded", (unsigned)strlen(post->data));
+        else
+            _snprintf(req, NET_URL_MAX + 511,
+                      "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Harissa64/" H64_VERSION_STRING
+                      " (Xbox 360; https://github.com/kernel64/Harissa64)\r\nAccept: */*\r\n%sConnection: close\r\n\r\n",
+                      path, host, range);
     }
     req[NET_URL_MAX + 511] = 0;
-    if (br_sslio_write_all(&t->ioc, req, strlen(req)) != 0 || br_sslio_flush(&t->ioc) != 0) goto done;
+    if (br_sslio_write_all(&t->ioc, req, strlen(req)) != 0) goto done;
+    if (post && post->data[0] && br_sslio_write_all(&t->ioc, post->data, strlen(post->data)) != 0) goto done;
+    if (br_sslio_flush(&t->ioc) != 0) goto done;
 
     // Headers (whatever body arrives with them is kept).
     while (n < NET_HEAD_MAX)
@@ -603,6 +616,17 @@ static int fetch(const char *host, const char *path, int follow, u8 **body, u32 
 int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, u32 maxLen, char *location, int locSize)
 {
     return fetch(host, path, follow, body, len, maxLen, location, locSize, NULL);
+}
+
+int NetPost(const char *host, const char *path, const char *data, const char *type, const char *agent, u8 **body, u32 *len, u32 maxLen)
+{
+    NetPostData post;
+    post.data = data ? data : "";
+    post.type = type;
+    post.agent = agent;
+    if (body) *body = NULL;
+    if (len) *len = 0;
+    return request(host, path, body, len, maxLen, NULL, 0, NULL, &post);
 }
 
 int NetDownload(const char *url, const char *file, u32 expected, int (*progress)(void *user, u32 done, u32 total), void *user)
