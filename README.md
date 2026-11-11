@@ -138,7 +138,7 @@ Harissa64 works with [RetroAchievements](https://retroachievements.org): challen
 2. In **Settings > Achievements**, turn **RetroAchievements** on.
 3. Pick **Account** and type your user name, then your password, on the Xbox keyboard. The console needs an internet connection. Your password is not kept: only the key the site gives back is saved, in `config\ra.ini`.
 
-When a game starts, a message says how many achievements you already have. When you earn one, a message shows its name. In a game, the menu (short press on **BACK**) has an **Achievements** page with the full list; A shows what the selected one asks for.
+When a game starts, a message says how many achievements you already have. When you earn one, a message shows its name and its picture. In a game, the menu (short press on **BACK**) has an **Achievements** page with the full list and the pictures (they are downloaded once and kept in `artbadges`); A shows what the selected one asks for.
 
 - Save states are allowed (the site calls this "softcore").
 - Achievements stop for a game as soon as a cheat is turned on, until the game is started again without it.

@@ -938,6 +938,7 @@ static char s_osd[160];
 static DWORD s_osdUntil;
 #define OSD_MS 2000                 // how long a toast stays
 static int s_osdLife = OSD_MS;
+static char s_osdBadge[24];   // the toast shows this achievement badge (xb_ra.h); "": a plain toast
 
 // A toast from a menu text (T_*), with a number for its %d if it has one;
 // the log gets the English text.
@@ -949,13 +950,17 @@ static void OsdT(int id, int num)
     _snprintf(en, sizeof(en) - 1, TrIn(LANG_EN, id), num);
     en[sizeof(en) - 1] = 0;
     s_osdLife = OSD_MS;
+    s_osdBadge[0] = 0;
     s_osdUntil = GetTickCount() + OSD_MS;
     H64_INFO("[main] %s", en);
 }
 
-// A toast with any text, for `ms` (RetroAchievements: unlocks, the account).
-static void OsdText(const char *text, int ms)
+// A toast with any text, for `ms` (RetroAchievements: unlocks, the account),
+// with an achievement's badge when `badge` is not NULL.
+static void OsdText(const char *text, int ms, const char *badge)
 {
+    strncpy(s_osdBadge, badge ? badge : "", sizeof(s_osdBadge) - 1);
+    s_osdBadge[sizeof(s_osdBadge) - 1] = 0;
     strncpy(s_osd, text, sizeof(s_osd) - 1);
     s_osd[sizeof(s_osd) - 1] = 0;
     s_osdLife = ms;
@@ -975,12 +980,15 @@ static void OverlayHook(void *, IDirect3DDevice9 *dev)
     s32 left = (s32)(s_osdUntil - GetTickCount());
     int fps = s_showFps && s_fpsText[0], osd = s_osd[0] && left >= 0;
     if (!fps && !osd && !s_menuOpen) return;
+    // Achievement badges on screen (a toast's, the list's): their textures are made here.
+    if ((osd && s_osdBadge[0]) || (s_menuOpen && s_menu.icon)) XbRaBadgesPump(dev);
     UiBegin(dev);
     if (fps && s_showFps >= 2) UiPerfPanel(s_fpsText);
     else if (fps) UiFpsBadge(s_fpsText);
     if (s_menuOpen && s_aboutOpen) AboutDraw();
     else if (s_menuOpen) UiMenuDraw(&s_menu);
-    if (osd) UiToast(s_osd, (float)(s_osdLife - left), (float)s_osdLife);
+    if (osd && s_osdBadge[0]) UiToastBadge(s_osd, XbRaBadge(s_osdBadge), (float)(s_osdLife - left), (float)s_osdLife);
+    else if (osd) UiToast(s_osd, (float)(s_osdLife - left), (float)s_osdLife);
     UiEnd();
 }
 
@@ -1183,6 +1191,9 @@ static int CheatsInput(H64System *sys, Config *c, WORD down)
 static int s_achSel, s_achCount;
 static int s_achOpen;   // achat=: the menu opens on the Achievements page
 
+static char s_achBadge[UI_MENU_MAX][24];   // the badges of the rows shown
+static IDirect3DTexture9 *AchIcon(int row) { return XbRaBadge(s_achBadge[row]); }
+
 static void BuildAch(void)
 {
     char title[64];
@@ -1192,14 +1203,16 @@ static void BuildAch(void)
     _snprintf(title, sizeof(title) - 1, "%s  %d / %d", Tr(T_ACHIEVEMENTS), n ? s_achSel + 1 : 0, n);
     title[sizeof(title) - 1] = 0;
     UiMenuClear(&s_menu, title, Tr(T_FOOT_SELECT));
+    s_menu.icon = AchIcon;
     for (i = top; i < n && i < top + CHEAT_ROWS; i++)
     {
         XbRaItem it;
         char value[64], fit[128];
         XbRaListItem(i, &it);
+        strcpy(s_achBadge[i - top], it.badge);
         if (it.unlocked) strcpy(value, Tr(T_RA_DONE));
         else sprintf(value, "%d", it.points);
-        UiTextFit(UI_BOLD, 22, 660 - 88 - 30 - (UiTextWidth(UI_REGULAR, 21, value) + 16), it.title, fit, sizeof(fit));
+        UiTextFit(UI_BOLD, 22, 660 - 88 - 30 - 48 - (UiTextWidth(UI_REGULAR, 21, value) + 16), it.title, fit, sizeof(fit));
         UiMenuAdd(&s_menu, fit, value);
     }
     s_menu.sel = n ? s_achSel - top : 0;
@@ -1228,7 +1241,7 @@ static int AchInput(WORD down)
     {
         XbRaItem it;
         XbRaListItem(s_achSel, &it);
-        if (it.description[0]) OsdText(it.description, 5000);
+        if (it.description[0]) OsdText(it.description, 5000, it.badge);
     }
     BuildAch();
     return 0;
@@ -1627,6 +1640,7 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
         if (c->menuAt && presented == c->menuAt) menuRequest = 1;
         if (c->aboutAt && presented == c->aboutAt) { menuRequest = 1; s_aboutOpen = 1; }   // remote check of the About panel
         if (c->cheatsAt && presented == c->cheatsAt) { menuRequest = 1; s_cheatsOpen = 1; }   // ...of the Cheats page
+        if (c->raToast && presented == c->raToast) XbRaTestToast();
         if (c->achAt && presented == c->achAt) { menuRequest = 1; s_achOpen = 1; }           // ...of the Achievements page
         if (c->browserAt && presented == c->browserAt)
         {

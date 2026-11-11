@@ -17,6 +17,9 @@ struct UiMenu
     int count, sel;
     char footer[192];
     int page;                      // UI_PAGE_*: how UiMenuDraw shows it
+    // Not NULL: each row has a small picture before its label (an empty frame
+    // while the function gives NULL for it). Asked at each draw.
+    IDirect3DTexture9 *(*icon)(int row);
 };
 enum { UI_PAGE_LIST = 0, UI_PAGE_CONTROLS };
 

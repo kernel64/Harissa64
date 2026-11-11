@@ -10,12 +10,15 @@
 #ifndef XB_RA_H
 #define XB_RA_H
 
+#include "xb_ui.h"
+
 struct H64System;
 
 enum { XB_RA_OFF = 0, XB_RA_OUT, XB_RA_BUSY, XB_RA_IN };
 
-// `drive`: where config\ lives. `toast`: shows a message for `ms` (any thread).
-void XbRaInit(const char *drive, int enabled, void (*toast)(const char *text, int ms));
+// `drive`: where config\ lives. `toast`: shows a message for `ms` (any
+// thread), with the picture of the badge `badge` (XbRaBadge) when not NULL.
+void XbRaInit(const char *drive, int enabled, void (*toast)(const char *text, int ms, const char *badge));
 // Turns the whole thing on or off (also with a game running).
 void XbRaSetEnabled(int on);
 // XB_RA_*: off, no account, connecting, connected.
@@ -47,10 +50,23 @@ struct XbRaItem
 {
     const char *title, *description;
     int points, unlocked;
+    char badge[24];   // its picture as it is now (earned or not), for XbRaBadge; "" when it has none
 };
 int XbRaListBegin(void);
 void XbRaListItem(int index, XbRaItem *item);
 void XbRaListEnd(void);
+
+// Badges (the achievements' pictures) come from RetroAchievements in the
+// background and are kept in <drive>:\art\badges\. XbRaListItem and an
+// unlock ask for theirs. XbRaBadgesPump, on the device's thread and outside
+// UiBegin/UiEnd, makes the textures of those that arrived and drops the ones
+// no longer used; XbRaBadge gives a badge's texture, NULL while it is not there.
+void XbRaBadgesPump(IDirect3DDevice9 *dev);
+IDirect3DTexture9 *XbRaBadge(const char *name);
+
+// ratoast=N: shows the unlock message of the game's first achievement, with
+// its badge; nothing is unlocked.
+void XbRaTestToast(void);
 
 // ratest=1: asks the server for the game id of SM64's hash without an account
 // and logs the answer (checks the POST path). Blocks; returns the id or 0.

@@ -119,6 +119,9 @@ void UiScreenFooter(const char *hints);
 // A toast at the bottom centre; `age` and `life` in ms (it slides in and fades out).
 void UiToast(const char *text, float age, float life);
 // The frames-per-second badge in the top-right corner.
+// The same with a picture on its left (an achievement's badge); an empty
+// frame while `badge` is NULL.
+void UiToastBadge(const char *text, IDirect3DTexture9 *badge, float age, float life);
 void UiFpsBadge(const char *text);
 // The same corner with several lines ("\n"-separated): FPS, CPU, RAM, resolution.
 void UiPerfPanel(const char *text);

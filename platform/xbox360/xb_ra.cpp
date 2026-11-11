@@ -12,6 +12,7 @@
 #include "../../core/cart/h64_rom.h"
 #include "../../core/cheat/h64_cheat.h"
 #include "../../core/common/h64_log.h"
+#include "../../core/common/h64_png.h"
 #include "../../core/common/h64_types.h"
 #include "../../core/ra/h64_ra.h"
 #include "../../core/system/h64_system.h"
@@ -42,7 +43,7 @@ static rc_client_t *s_client;
 static int s_enabled, s_state = XB_RA_OFF;
 static char s_drive[16], s_iniPath[96], s_logPath[96];
 static char s_user[64], s_token[96];
-static void (*s_toast)(const char *text, int ms);
+static void (*s_toast)(const char *text, int ms, const char *badge);
 static H64System *s_sys;
 static int s_gameAsked, s_cheated;
 static char s_code[4];   // the running game's code without the region ("NSM")
@@ -152,8 +153,234 @@ static void RC_CCONV log_message(const char *message, const rc_client_t *)
 
 static void toast(const char *text, int ms)
 {
-    if (s_toast) s_toast(text, ms);
+    if (s_toast) s_toast(text, ms, NULL);
 }
+
+// ---- Badges ----
+// Each achievement's picture (64x64 PNG; "<badge>" once earned, "<badge>_lock"
+// before) from RetroAchievements' media server, kept in <drive>:\art\badges\.
+// A thread (hardware thread 3) reads or downloads and decodes them; the
+// device's thread makes the textures (XbRaBadgesPump). Nothing waits: a badge
+// that is not there yet is simply not drawn.
+#define BADGE_MAX 48
+#define BADGE_KEEP_FREE 12        // slots kept free, so that a page of the list always finds room
+#define BADGE_RETRY_MS 30000      // a failed badge (no network) is asked again after this
+enum { BG_FREE = 0, BG_WANTED, BG_LOADING, BG_PIXELS, BG_TEXTURE, BG_FAILED };
+struct Badge
+{
+    char name[24], host[64], path[96];
+    int state;
+    u8 *px;
+    int w, h;
+    IDirect3DTexture9 *tex;
+    DWORD used;   // GetTickCount of the last request or draw
+};
+static Badge s_badge[BADGE_MAX];
+static CRITICAL_SECTION s_badgeLock;
+static HANDLE s_badgeWake, s_badgeThread;
+
+static Badge *badge_find(const char *name)
+{
+    int i;
+    for (i = 0; i < BADGE_MAX; i++)
+        if (s_badge[i].state != BG_FREE && !strcmp(s_badge[i].name, name)) return &s_badge[i];
+    return NULL;
+}
+
+static u8 *badge_load(const char *name, const char *host, const char *path, int *w, int *h)
+{
+    char file[160], dir[96];
+    u8 *data = NULL, *px;
+    u32 len = 0;
+    FILE *f;
+    _snprintf(file, sizeof(file) - 1, "%s:\\art\\badges\\%s.png", s_drive, name);
+    file[sizeof(file) - 1] = 0;
+    f = fopen(file, "rb");
+    if (f)
+    {
+        long size;
+        fseek(f, 0, SEEK_END);
+        size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (size > 0 && size < 1024 * 1024) data = (u8 *)malloc((size_t)size);
+        if (data && fread(data, 1, (size_t)size, f) == (size_t)size) len = (u32)size;
+        fclose(f);
+    }
+    if (!len)
+    {
+        free(data);
+        data = NULL;
+        if (!NetStart(0) || NetGet(host, path, 1, &data, &len, 1024 * 1024, NULL, 0) != 200 || !len)
+        {
+            free(data);
+            return NULL;
+        }
+        _snprintf(dir, sizeof(dir) - 1, "%s:\\art", s_drive);
+        dir[sizeof(dir) - 1] = 0;
+        CreateDirectoryA(dir, NULL);
+        strcat(dir, "\\badges");
+        CreateDirectoryA(dir, NULL);
+        f = fopen(file, "wb");
+        if (f)
+        {
+            size_t wrote = fwrite(data, 1, len, f);
+            fclose(f);
+            if (wrote != len) DeleteFileA(file);
+        }
+    }
+    px = h64_png_decode(data, len, w, h, 512u * 512u);
+    free(data);
+    if (!px) DeleteFileA(file);   // not a picture: asked again another time
+    return px;
+}
+
+static DWORD WINAPI badge_thread(LPVOID)
+{
+    for (;;)
+    {
+        WaitForSingleObject(s_badgeWake, INFINITE);
+        for (;;)
+        {
+            char name[24], host[64], path[96];
+            Badge *b = NULL;
+            u8 *px;
+            int i, w = 0, h = 0;
+            EnterCriticalSection(&s_badgeLock);
+            // The most recently asked first: what is on screen now.
+            for (i = 0; i < BADGE_MAX; i++)
+                if (s_badge[i].state == BG_WANTED && (!b || (LONG)(s_badge[i].used - b->used) > 0)) b = &s_badge[i];
+            if (b)
+            {
+                b->state = BG_LOADING;
+                strcpy(name, b->name);
+                strcpy(host, b->host);
+                strcpy(path, b->path);
+            }
+            LeaveCriticalSection(&s_badgeLock);
+            if (!b) break;
+            px = badge_load(name, host, path, &w, &h);
+            EnterCriticalSection(&s_badgeLock);   // a slot being loaded is never given away
+            b->px = px;
+            b->w = w;
+            b->h = h;
+            b->used = GetTickCount();
+            b->state = px ? BG_PIXELS : BG_FAILED;
+            LeaveCriticalSection(&s_badgeLock);
+        }
+    }
+}
+
+// Asks for the badge `name` at `url` (https://host/path); again and again is fine.
+static void badge_want(const char *name, const char *url)
+{
+    const char *host = url, *slash;
+    Badge *b;
+    int i;
+    if (!name[0] || strlen(name) >= sizeof(s_badge[0].name)) return;
+    if (strncmp(url, "https://", 8)) return;
+    host += 8;
+    slash = strchr(host, '/');
+    if (!slash || (size_t)(slash - host) >= sizeof(s_badge[0].host) || strlen(slash) >= sizeof(s_badge[0].path)) return;
+    if (!s_badgeThread)
+    {
+        InitializeCriticalSection(&s_badgeLock);
+        s_badgeWake = CreateEvent(NULL, FALSE, FALSE, NULL);
+        s_badgeThread = CreateThread(NULL, 128 * 1024, badge_thread, NULL, CREATE_SUSPENDED, NULL);
+        if (!s_badgeThread) return;
+        XSetThreadProcessor(s_badgeThread, 3);
+        SetThreadPriority(s_badgeThread, THREAD_PRIORITY_BELOW_NORMAL);
+        ResumeThread(s_badgeThread);
+    }
+    EnterCriticalSection(&s_badgeLock);
+    b = badge_find(name);
+    if (b)
+    {
+        if (b->state == BG_FAILED && GetTickCount() - b->used > BADGE_RETRY_MS) { b->state = BG_WANTED; SetEvent(s_badgeWake); }
+        if (b->state != BG_FAILED) b->used = GetTickCount();
+    }
+    else
+    {
+        for (i = 0; i < BADGE_MAX && s_badge[i].state != BG_FREE; i++) {}
+        if (i < BADGE_MAX)
+        {
+            b = &s_badge[i];
+            memset(b, 0, sizeof(*b));
+            strcpy(b->name, name);
+            memcpy(b->host, host, (size_t)(slash - host));
+            strcpy(b->path, slash);
+            b->used = GetTickCount();
+            b->state = BG_WANTED;
+            SetEvent(s_badgeWake);
+        }
+    }
+    LeaveCriticalSection(&s_badgeLock);
+}
+
+void XbRaBadgesPump(IDirect3DDevice9 *dev)
+{
+    int i, freeSlots = 0;
+    if (!s_badgeThread) return;
+    EnterCriticalSection(&s_badgeLock);
+    for (i = 0; i < BADGE_MAX; i++)
+    {
+        Badge *b = &s_badge[i];
+        if (b->state == BG_PIXELS)
+        {
+            b->tex = UiImageCreate(dev, b->px, b->w, b->h);
+            free(b->px);
+            b->px = NULL;
+            b->used = GetTickCount();
+            b->state = b->tex ? BG_TEXTURE : BG_FAILED;
+        }
+        if (b->state == BG_FREE) freeSlots++;
+    }
+    // Room for the next page of the list: the badges not asked for the longest go.
+    while (freeSlots < BADGE_KEEP_FREE)
+    {
+        Badge *old = NULL;
+        DWORD now = GetTickCount();
+        for (i = 0; i < BADGE_MAX; i++)
+        {
+            Badge *b = &s_badge[i];
+            if ((b->state == BG_TEXTURE || b->state == BG_FAILED) && now - b->used > 2000 && (!old || (LONG)(old->used - b->used) > 0)) old = b;
+        }
+        if (!old) break;
+        if (old->tex) UiImageRelease(dev, old->tex);
+        memset(old, 0, sizeof(*old));
+        freeSlots++;
+    }
+    LeaveCriticalSection(&s_badgeLock);
+}
+
+IDirect3DTexture9 *XbRaBadge(const char *name)
+{
+    IDirect3DTexture9 *tex = NULL;
+    Badge *b;
+    if (!s_badgeThread || !name || !name[0]) return NULL;
+    EnterCriticalSection(&s_badgeLock);
+    b = badge_find(name);
+    if (b && b->state == BG_TEXTURE)
+    {
+        b->used = GetTickCount();
+        tex = b->tex;
+    }
+    LeaveCriticalSection(&s_badgeLock);
+    return tex;
+}
+
+// The badge of an achievement as it is now (earned or not): its name in `name`
+// (24 bytes), asked for.
+static void badge_of(const rc_client_achievement_t *a, int unlocked, char *name)
+{
+    char url[256];
+    name[0] = 0;
+    if (!a->badge_name[0] || strlen(a->badge_name) > 16) return;
+    if (rc_client_achievement_get_image_url(a, unlocked ? RC_CLIENT_ACHIEVEMENT_STATE_UNLOCKED : RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE,
+                                            url, sizeof(url)) != RC_OK) return;
+    sprintf(name, unlocked ? "%s" : "%s_lock", a->badge_name);
+    badge_want(name, url);
+}
+
 
 // ---- What was unlocked here, and the Xbox achievements it gives ----
 // <drive>:\config\ra_unlocks.txt: "A game achievement points code" per
@@ -253,7 +480,7 @@ static void unlocks_append(const char *line)
 // ---- Events ----
 static void RC_CCONV on_event(const rc_client_event_t *e, rc_client_t *client)
 {
-    char text[200], line[96];
+    char text[200], line[96], badge[24];
     const rc_client_game_t *game = rc_client_get_game_info(client);
     u32 gameId = game ? game->id : 0;
     switch (e->type)
@@ -261,7 +488,8 @@ static void RC_CCONV on_event(const rc_client_event_t *e, rc_client_t *client)
     case RC_CLIENT_EVENT_ACHIEVEMENT_TRIGGERED:
         _snprintf(text, sizeof(text) - 1, Tr(T_RA_UNLOCKED), e->achievement->title, (int)e->achievement->points);
         text[sizeof(text) - 1] = 0;
-        toast(text, 6000);
+        badge_of(e->achievement, 1, badge);
+        if (s_toast) s_toast(text, 6000, badge);
         H64_INFO("[ra] unlocked: %u \"%s\" (%u points)", e->achievement->id, e->achievement->title, e->achievement->points);
         if (unlock_count(gameId, e->achievement->id, e->achievement->points, s_code))
         {
@@ -406,7 +634,7 @@ static void client_make(void)
     unlocks_load();
 }
 
-void XbRaInit(const char *drive, int enabled, void (*toastFn)(const char *text, int ms))
+void XbRaInit(const char *drive, int enabled, void (*toastFn)(const char *text, int ms, const char *badge))
 {
     strncpy(s_drive, drive, sizeof(s_drive) - 1);
     _snprintf(s_iniPath, sizeof(s_iniPath) - 1, "%s:\\config\\ra.ini", s_drive);
@@ -695,6 +923,7 @@ void XbRaListItem(int index, XbRaItem *item)
     item->description = a->description ? a->description : "";
     item->points = (int)a->points;
     item->unlocked = a->unlocked != RC_CLIENT_ACHIEVEMENT_UNLOCKED_NONE;
+    badge_of(a, item->unlocked, item->badge);
 }
 
 void XbRaListEnd(void)
@@ -702,6 +931,20 @@ void XbRaListEnd(void)
     if (s_list) rc_client_destroy_achievement_list(s_list);
     s_list = NULL;
     s_listCount = 0;
+}
+
+void XbRaTestToast(void)
+{
+    char text[200], badge[24];
+    if (XbRaListBegin() && s_toast)
+    {
+        const rc_client_achievement_t *a = s_listItem[0];
+        _snprintf(text, sizeof(text) - 1, Tr(T_RA_UNLOCKED), a->title, (int)a->points);
+        text[sizeof(text) - 1] = 0;
+        badge_of(a, 1, badge);
+        s_toast(text, 6000, badge);
+    }
+    XbRaListEnd();
 }
 
 int XbRaSelfTest(void)

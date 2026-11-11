@@ -161,15 +161,22 @@ void UiMenuDraw(const UiMenu *m)
     if (m->count) selection_bar_side(x + 18, sy + 3, w - 36, rowH - 6, rtl);
     for (i = 0; i < m->count; i++)
     {
-        float cy = y + head + i * rowH + rowH * 0.5f;
+        float cy = y + head + i * rowH + rowH * 0.5f, ic = rowH - 12, shift = m->icon ? ic + 12 : 0;
         int s = i == m->sel;
+        if (m->icon)
+        {
+            IDirect3DTexture9 *t = m->icon(i);
+            float ix = rtl ? x + w - 44 - ic : x + 44;
+            UiRoundRect(ix, cy - ic * 0.5f, ic, ic, 7, D3DCOLOR_ARGB(255, 22, 23, 30), D3DCOLOR_ARGB(255, 22, 23, 30));
+            if (t) UiImage(t, ix, cy - ic * 0.5f, ic, ic, 7, D3DCOLOR_ARGB(255, 255, 255, 255));
+        }
         if (rtl)
         {
-            UiText(s ? UI_BOLD : UI_REGULAR, 22, x + w - 44, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_RIGHT);
+            UiText(s ? UI_BOLD : UI_REGULAR, 22, x + w - 44 - shift, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_RIGHT);
             if (m->value[i][0]) draw_value(x + 40 + value_width(m->value[i], s), cy, m->value[i], s);
             continue;
         }
-        UiText(s ? UI_BOLD : UI_REGULAR, 22, x + 44, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_LEFT);
+        UiText(s ? UI_BOLD : UI_REGULAR, 22, x + 44 + shift, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_LEFT);
         if (m->value[i][0]) draw_value(x + w - 40, cy, m->value[i], s);
     }
     UiRect(x + 24, y + h - foot, w - 48, 1, UI_COL_LINE);
