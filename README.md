@@ -89,7 +89,7 @@ On an installed pack, **A** turns it on for this game, or off if it is the activ
 
 A pack is downloaded once and serves every game it suits: the other versions of the game (USA, Europe, Japan) and hacks that keep its name or its code.
 
-In a game, **HD textures** in **Settings > Graphics** turns the pack on or off at once.
+In a game, **HD textures** in **Settings > Effects** turns the pack on or off at once.
 
 The packs are made by their authors and stay on their pages; Harissa64 only keeps a [list of links](docs/texture-packs.json). To add a pack to the list, open a pull request.
 
@@ -107,13 +107,44 @@ For a pack that is not in the list (on Mega, Google Drive, a forum...), or a con
 
    It makes `hd_textures\SUPER MARIO 64.h64hd`. A big pack takes a minute or two.
 4. Copy that file to the console, into the `hd_textures` folder of Harissa64 (create the folder if it is not there): `Harissa64\hd_textures\SUPER MARIO 64.h64hd`.
-5. Start the game, open the menu (short press on **BACK**), and turn on **HD textures** in **Settings > Graphics**.
+5. Start the game, open the menu (short press on **BACK**), and turn on **HD textures** in **Settings > Effects**.
 
 The file name must be the game's name as Harissa64 writes it in its `saves` folder, without the 4-letter code at the end: `saves\SUPER MARIO 64 NSME` gives `SUPER MARIO 64.h64hd`. The script names it that way already; rename it only if the game shows no HD textures. One file serves every version of the game (USA, Europe, Japan).
 
 The same script also downloads and converts the packs of the list on a PC: `python hd_textures.py list` shows them, `python hd_textures.py get sm64-reloaded` gets one.
 
 Options: `--out FOLDER` (where the `hd_textures` folder is made), `--max 2048` (keep pictures up to 2048 pixels wide; the default 1024 halves bigger ones, which saves the console's memory).
+
+## Cheats
+
+In a game, open the menu (short press on **BACK**) and pick **Cheats**. The list shows the codes known for that game: turn each one on or off with A or the D-pad. Some have several choices (a character, a level...): left and right go through them. What you turn on is remembered for that game.
+
+- The codes come from `cheats\mupencheat.txt`, which is in the zip. It covers most games.
+- Codes that say "Press GS" work while you click the right stick.
+- A code can make a game misbehave or freeze. If that happens, turn it off; some need a reset of the game to go away.
+
+To add your own GameShark codes, make a text file in the `cheats` folder, named like the game's save folder (for example `cheats\SUPER MARIO 64 NSME.txt`): a line with the cheat's name, then its codes, one per line.
+
+```
+Infinite lives
+8033B21D 0064
+```
+
+## Achievements
+
+Harissa64 works with [RetroAchievements](https://retroachievements.org): challenges made by players for each N64 game. It is off by default.
+
+1. Make a free account on retroachievements.org.
+2. In **Settings > Achievements**, turn **RetroAchievements** on.
+3. Pick **Account** and type your user name, then your password, on the Xbox keyboard. The console needs an internet connection. Your password is not kept: only the key the site gives back is saved, in `config\ra.ini`.
+
+When a game starts, a message says how many achievements you already have. When you earn one, a message shows its name and its picture. In a game, the menu (short press on **BACK**) has an **Achievements** page with the full list and the pictures (they are downloaded once and kept in `art\badges`); A shows what the selected one asks for.
+
+- Save states are allowed (the site calls this "softcore").
+- Achievements stop for a game as soon as a cheat is turned on, until the game is started again without it.
+- Picking **Account** again disconnects.
+
+Harissa64 also has its own Xbox 360 achievements, shown in your profile like any game's (sign in with a profile first). Most are earned by unlocking RetroAchievements; a few by using the emulator (a save state, an HD texture pack, a favourite, another language).
 
 ## Saves
 
@@ -123,7 +154,7 @@ Your in-game saves are kept automatically, one folder per game, in `saves\<game 
 
 Open the menu in a game, then **Settings**. You can save the settings for all games or just for the game you're playing.
 
-The **Graphics** page has four presets:
+The **Effects** page has four presets:
 
 - **Original**: the plain N64 picture.
 - **N64 Enhanced**: smoother textures and a little sharpening.

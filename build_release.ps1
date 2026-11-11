@@ -19,6 +19,7 @@
         roms\                 put your games here
         art\                  cover, background and icon for the dashboard
                               (art\games\ is made on the console: box art)
+        cheats\               mupencheat.txt (cheat codes for most games)
         tools\                fetch_game_art.py (box art from a PC),
                               hd_textures.py + h64hdconv.exe (HD texture
                               packs converted on a PC)
@@ -130,6 +131,9 @@ foreach ($f in 'cover.png', 'background.png', 'icon.png') { Copy-Item (Join-Path
 # The PC script that fills art\games\ (box art, game information) for consoles without internet.
 New-Item -ItemType Directory -Force (Join-Path $stage 'tools') | Out-Null
 Copy-Item (Join-Path $repo 'tools\fetch_game_art.py') (Join-Path $stage 'tools')
+# The cheat codes (mupen64plus's database).
+New-Item -ItemType Directory -Force (Join-Path $stage 'cheats') | Out-Null
+Copy-Item (Join-Path $repo 'third_party\mupen64plus\mupencheat.txt') (Join-Path $stage 'cheats')
 # The HD texture pack script and its converter (packs the console cannot download).
 Copy-Item (Join-Path $repo 'tools\hd_textures.py') (Join-Path $stage 'tools')
 Copy-Item $conv (Join-Path $stage 'tools')
@@ -161,7 +165,10 @@ Windows PC with Python 3. Open a command prompt in the tools folder and run
     python hd_textures.py convert "C:\path\to\pack.zip" "SUPER MARIO 64"
 (the second name is how the pack's PNG files start). Copy the .h64hd file
 it makes to Harissa64\hd_textures\ on the console, then turn on HD textures
-in the game's Settings > Graphics. More in README.md.
+in the game's Settings > Effects. More in README.md.
+
+Cheats: in a game, open the menu (short press on BACK) and pick Cheats.
+Your own codes go in Harissa64\cheats\ (see README.md).
 
 In a game: a short press on BACK opens the menu (save and load states,
 settings, back to the game list). BACK + RB saves a state, BACK + LB loads it.

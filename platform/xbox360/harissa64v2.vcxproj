@@ -102,6 +102,14 @@
       <CompileAs>CompileAsC</CompileAs>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
     </ClCompile>
+    <!-- rcheevos (RetroAchievements), compiled as C; xbox\windows.h stands in
+         for the header the Xbox 360 does not have (it includes xtl.h). -->
+    <ClCompile Include="..\..\third_party\rcheevos\src\**\*.c;..\..\third_party\rcheevos\xbox\rc_xbox_snprintf.c">
+      <CompileAs>CompileAsC</CompileAs>
+      <WarningLevel>TurnOffAllWarnings</WarningLevel>
+      <AdditionalIncludeDirectories>..\..\third_party\rcheevos\xbox;..\..\third_party\rcheevos\include;..\..\third_party\rcheevos\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>RC_DISABLE_LUA;snprintf=rc_xbox_snprintf;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
     <!-- BearSSL 0.6 (TLS for the update check), compiled as C; no OS random or
          time source (xb_update.cpp gives both), portable code paths only. -->
     <ClCompile Include="..\..\third_party\bearssl\src\**\*.c">
@@ -123,6 +131,10 @@
     </ClCompile>
     <ClCompile Include="xb_update.cpp" />
     <ClCompile Include="xb_hd.cpp" />
+    <ClCompile Include="xb_ach.cpp" />
+    <ClCompile Include="xb_ra.cpp">
+      <AdditionalIncludeDirectories>..\..\third_party\rcheevos\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\core\**\*.h" />

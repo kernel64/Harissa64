@@ -245,6 +245,10 @@ struct H64System
     u32 asyncAudioCycles;
     void (*aiSink)(void *user, const u8 *samples, u32 len, u32 rate);
     void *aiUser;
+    struct H64CheatList *cheats;   // optional (core/cheat/h64_cheat.h, owned by the platform): run at each VI event
+    void (*viHook)(H64System *sys);   // optional: called at each VI event, after the cheats (achievements)
+    void *viUser;
+    int cheatButton;               // the GameShark's "GS button" is held (set by the platform; codes 88/89)
 
     int stop;            // set to leave the run loop
     int exitRequested;   // the guest asked to end the run (EMUX XIOCTL exit)

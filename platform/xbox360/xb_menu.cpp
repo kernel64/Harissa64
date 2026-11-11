@@ -21,6 +21,8 @@
 #include "xb_drives.h"
 #include "xb_flags.h"
 #include "xb_hd.h"
+#include "xb_ach.h"
+#include "xb_ra.h"
 #include "xb_lang.h"
 #include "xb_ui.h"
 #include "xb_update.h"
@@ -159,15 +161,22 @@ void UiMenuDraw(const UiMenu *m)
     if (m->count) selection_bar_side(x + 18, sy + 3, w - 36, rowH - 6, rtl);
     for (i = 0; i < m->count; i++)
     {
-        float cy = y + head + i * rowH + rowH * 0.5f;
+        float cy = y + head + i * rowH + rowH * 0.5f, ic = rowH - 12, shift = m->icon ? ic + 12 : 0;
         int s = i == m->sel;
+        if (m->icon)
+        {
+            IDirect3DTexture9 *t = m->icon(i);
+            float ix = rtl ? x + w - 44 - ic : x + 44;
+            UiRoundRect(ix, cy - ic * 0.5f, ic, ic, 7, D3DCOLOR_ARGB(255, 22, 23, 30), D3DCOLOR_ARGB(255, 22, 23, 30));
+            if (t) UiImage(t, ix, cy - ic * 0.5f, ic, ic, 7, D3DCOLOR_ARGB(255, 255, 255, 255));
+        }
         if (rtl)
         {
-            UiText(s ? UI_BOLD : UI_REGULAR, 22, x + w - 44, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_RIGHT);
+            UiText(s ? UI_BOLD : UI_REGULAR, 22, x + w - 44 - shift, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_RIGHT);
             if (m->value[i][0]) draw_value(x + 40 + value_width(m->value[i], s), cy, m->value[i], s);
             continue;
         }
-        UiText(s ? UI_BOLD : UI_REGULAR, 22, x + 44, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_LEFT);
+        UiText(s ? UI_BOLD : UI_REGULAR, 22, x + 44 + shift, cy, s ? UI_COL_TEXT : UI_COL_TEXT2, m->label[i], UI_LEFT);
         if (m->value[i][0]) draw_value(x + w - 40, cy, m->value[i], s);
     }
     UiRect(x + 24, y + h - foot, w - 48, 1, UI_COL_LINE);
@@ -182,12 +191,17 @@ void UiMenuNavigate(UiMenu *m, WORD down)
 }
 
 // ---- Settings ----
-// Main page: CPU, RSP, audio, FPS, the Graphics and Controls pages, save, back. The Graphics
-// page (resolution, texture filter, smoothing, sharpening, blur, screen effect) is
-// shown in the same UiMenu; its Back returns to the main page.
-enum { S_CPU = 0, S_HLE, S_AUDIO, S_FPS, S_GRAPHICS, S_CONTROLS, S_LANGUAGE };
-enum { G_PRESET = 0, G_RES, G_STRETCH, G_ZOOM, G_POSX, G_POSY, G_BRIGHT, G_VSYNC, G_DEFLICKER, G_FILTER, G_HD, G_SMOOTH, G_SHARPEN, G_BLUR,
-       G_SCREEN, G_BACK };
+// The main page lists the sections (Picture, Effects, Controls, Interface,
+// Advanced), then save and back. A section's rows are shown in the same
+// UiMenu; its Back returns to the main page. Each row carries an item id
+// (s_item[]), so a page holds any rows in any order.
+enum { PG_MAIN = 0, PG_PICTURE, PG_EFFECTS, PG_INTERFACE, PG_ADVANCED, PG_ACH, PG_COUNT };
+enum { IT_BACK = 0, IT_PICTURE, IT_EFFECTS, IT_CONTROLS, IT_INTERFACE, IT_ADVANCED, IT_SAVE_ALL, IT_SAVE_GAME,
+       IT_RES, IT_STRETCH, IT_BRIGHT, IT_ZOOM, IT_POSX, IT_POSY,                                  // Picture
+       IT_PRESET, IT_FILTER, IT_HD, IT_SMOOTH, IT_SHARPEN, IT_BLUR, IT_SCREEN, IT_DEFLICKER,      // Effects
+       IT_LANGUAGE, IT_FPS, IT_ART, IT_ART_ALL,                                                   // Interface
+       IT_CPU, IT_HLE, IT_AUDIO, IT_VSYNC,                                                        // Advanced
+       IT_ACH, IT_RA_ON, IT_RA_ACCOUNT };                                                         // Achievements
 
 // Graphics presets (the user's table): texture filter, smoothing, sharpening,
 // blur, screen effect. The resolution stays as it is.
@@ -212,13 +226,20 @@ static int current_preset(const Config *c)
     }
     return -1;
 }
-static int s_graphicsPage;
+static int s_page;                 // PG_*: the page the menu shows
+static int s_item[UI_MENU_MAX];    // IT_* of each row
 static int s_perGame;
 static int s_browser;   // opened from the ROM list: the box art rows are shown
 static char s_langPath[160];   // where a language change is kept (SettingsSetLangFile)
-#define S_ART (S_LANGUAGE + 1)       // "Box art downloads" (ROM list only)
-#define S_ART_ALL (S_LANGUAGE + 2)   // "Get box art for all games" (ROM list only)
-#define S_SAVE_ALL (s_browser ? S_LANGUAGE + 3 : S_LANGUAGE + 1)
+
+// The row showing `item` (0 when the page has none).
+static int row_of(const UiMenu *m, int item)
+{
+    int i;
+    for (i = 0; i < m->count; i++)
+        if (s_item[i] == item) return i;
+    return 0;
+}
 
 static const char *onoff(int v) { return Tr(v ? T_ON : T_OFF); }
 
@@ -234,99 +255,137 @@ static void lang_change(Config *c, int lang)
     LangSet(lang);
     strcpy(c->lang, LangCode(lang));
     if (s_langPath[0] && !ConfigWriteLang(s_langPath, c->lang)) H64_WARN("[lang] cannot write %s", s_langPath);
+    XbAchUnlock(XB_ACH_LANGUAGE);
     H64_INFO("[lang] menus in %s", c->lang);
 }
 
 static void settings_values(UiMenu *m, const Config *c)
 {
-    if (s_graphicsPage)
+    const char *res[4] = { Tr(T_RES_NATIVE), "x2 640x480", "x3 960x720", "HD 1280x720 (16:9)" };
+    const char *filt[3] = { Tr(T_FILTER_3POINT), Tr(T_FILTER_BILINEAR), Tr(T_FILTER_NEAREST) };
+    const char *lvl[3] = { Tr(T_OFF), Tr(T_LOW), Tr(T_HIGH) };
+    const char *blr[3] = { Tr(T_OFF), Tr(T_SOFT), Tr(T_STRONG) };
+    const char *scr[6] = { Tr(T_SCREEN_NONE), Tr(T_SCANLINES), Tr(T_CRT), Tr(T_CRT_CURVED), Tr(T_LCD_GRID), Tr(T_LIGHT_SCANLINES) };
+    const char *br[3] = { Tr(T_NORMAL), Tr(T_LIGHTER), Tr(T_MUCH_LIGHTER) };
+    static const int fps[4] = { T_OFF, T_FPS_ONLY, T_FPS_CPU, T_FPS_ALL };
+    int i;
+    for (i = 0; i < m->count; i++)
     {
-        const char *res[4] = { Tr(T_RES_NATIVE), "x2 640x480", "x3 960x720", "HD 1280x720 (16:9)" };
-        const char *filt[3] = { Tr(T_FILTER_3POINT), Tr(T_FILTER_BILINEAR), Tr(T_FILTER_NEAREST) };
-        const char *lvl[3] = { Tr(T_OFF), Tr(T_LOW), Tr(T_HIGH) };
-        const char *blr[3] = { Tr(T_OFF), Tr(T_SOFT), Tr(T_STRONG) };
-        const char *scr[6] = { Tr(T_SCREEN_NONE), Tr(T_SCANLINES), Tr(T_CRT), Tr(T_CRT_CURVED), Tr(T_LCD_GRID), Tr(T_LIGHT_SCANLINES) };
-        int pr = current_preset(c);
-        sprintf(m->value[G_PRESET], "< %s >", pr < 0 ? Tr(T_CUSTOM) : Tr(s_presets[pr].name));
-        sprintf(m->value[G_RES], "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 4 ? 4 : c->resScale) - 1]);
-        sprintf(m->value[G_FILTER], "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]);
-        sprintf(m->value[G_HD], "< %s >", onoff(c->hdTextures));
-        sprintf(m->value[G_SMOOTH], "< %s >", onoff(c->smooth));
-        sprintf(m->value[G_SHARPEN], "< %s >", lvl[c->sharpen < 0 || c->sharpen > 2 ? 0 : c->sharpen]);
-        sprintf(m->value[G_BLUR], "< %s >", blr[c->blur < 0 || c->blur > 2 ? 0 : c->blur]);
-        sprintf(m->value[G_SCREEN], "< %s >", scr[c->screen < 0 || c->screen > 5 ? 0 : c->screen]);
+        char *v = m->value[i];
+        switch (s_item[i])
         {
-            const char *br[3] = { Tr(T_NORMAL), Tr(T_LIGHTER), Tr(T_MUCH_LIGHTER) };
-            sprintf(m->value[G_BRIGHT], "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]);
-            sprintf(m->value[G_STRETCH], "< %s >", onoff(c->stretch));
-            sprintf(m->value[G_VSYNC], "< %s >", c->vsync == 2 ? Tr(T_VSYNC_STRICT) : onoff(c->vsync));
-            sprintf(m->value[G_DEFLICKER], "< %s >", onoff(c->deflicker));
-            sprintf(m->value[G_ZOOM], "< %d%% >", c->zoom);
-            sprintf(m->value[G_POSX], "< %+d >", c->offsetX);
-            sprintf(m->value[G_POSY], "< %+d >", c->offsetY);
+        case IT_PRESET:
+        {
+            int pr = current_preset(c);
+            sprintf(v, "< %s >", pr < 0 ? Tr(T_CUSTOM) : Tr(s_presets[pr].name));
+            break;
         }
-        return;
+        case IT_RES: sprintf(v, "< %s >", res[(c->resScale < 1 ? 1 : c->resScale > 4 ? 4 : c->resScale) - 1]); break;
+        case IT_FILTER: sprintf(v, "< %s >", filt[c->texFilter < 0 || c->texFilter > 2 ? 1 : c->texFilter]); break;
+        case IT_HD: sprintf(v, "< %s >", onoff(c->hdTextures)); break;
+        case IT_SMOOTH: sprintf(v, "< %s >", onoff(c->smooth)); break;
+        case IT_SHARPEN: sprintf(v, "< %s >", lvl[c->sharpen < 0 || c->sharpen > 2 ? 0 : c->sharpen]); break;
+        case IT_BLUR: sprintf(v, "< %s >", blr[c->blur < 0 || c->blur > 2 ? 0 : c->blur]); break;
+        case IT_SCREEN: sprintf(v, "< %s >", scr[c->screen < 0 || c->screen > 5 ? 0 : c->screen]); break;
+        case IT_BRIGHT: sprintf(v, "< %s >", br[c->brightness < 0 || c->brightness > 2 ? 0 : c->brightness]); break;
+        case IT_STRETCH: sprintf(v, "< %s >", onoff(c->stretch)); break;
+        case IT_VSYNC: sprintf(v, "< %s >", c->vsync == 2 ? Tr(T_VSYNC_STRICT) : onoff(c->vsync)); break;
+        case IT_DEFLICKER: sprintf(v, "< %s >", onoff(c->deflicker)); break;
+        case IT_ZOOM: sprintf(v, "< %d%% >", c->zoom); break;
+        case IT_POSX: sprintf(v, "< %+d >", c->offsetX); break;
+        case IT_POSY: sprintf(v, "< %+d >", c->offsetY); break;
+        case IT_CPU: sprintf(v, "< %s >", strcmp(c->cpu, "interp") ? Tr(T_RECOMPILER) : Tr(T_INTERPRETER)); break;
+        case IT_HLE: sprintf(v, "< %s >", c->hle ? "HLE" : "LLE"); break;
+        case IT_AUDIO: sprintf(v, "< %d ms >", c->audioMs); break;
+        case IT_FPS: sprintf(v, "< %s >", Tr(fps[c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps])); break;
+        case IT_CONTROLS:
+        {
+            int k, custom = 0;
+            for (k = 0; k < 4; k++) custom |= !h64_padmap_is_default(&c->padMap[k]);
+            strcpy(v, custom ? Tr(T_CUSTOM) : Tr(T_DEFAULT));
+            break;
+        }
+        case IT_LANGUAGE: sprintf(v, "< %s >", Tr(T_LANG_NAME)); break;
+        case IT_RA_ON: sprintf(v, "< %s >", onoff(c->achievements)); break;
+        case IT_RA_ACCOUNT:
+        {
+            int st = XbRaState();
+            UiTextFit(UI_REGULAR, 21, 300, st == XB_RA_IN ? XbRaUser() : st == XB_RA_BUSY ? Tr(T_RA_CONNECTING) : st == XB_RA_OUT ? Tr(T_RA_NOT_CONNECTED) : "-",
+                      v, sizeof(m->value[i]));
+            break;
+        }
+        case IT_ART: sprintf(v, "< %s >", onoff(c->artDownload)); break;
+        }
     }
-    sprintf(m->value[S_CPU], "< %s >", strcmp(c->cpu, "interp") ? Tr(T_RECOMPILER) : Tr(T_INTERPRETER));
-    sprintf(m->value[S_HLE], "< %s >", c->hle ? "HLE" : "LLE");
-    sprintf(m->value[S_AUDIO], "< %d ms >", c->audioMs);
-    {
-        static const int fps[4] = { T_OFF, T_FPS_ONLY, T_FPS_CPU, T_FPS_ALL };
-        sprintf(m->value[S_FPS], "< %s >", Tr(fps[c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps]));
-    }
-    {
-        int i, custom = 0;
-        for (i = 0; i < 4; i++) custom |= !h64_padmap_is_default(&c->padMap[i]);
-        strcpy(m->value[S_CONTROLS], custom ? Tr(T_CUSTOM) : Tr(T_DEFAULT));
-    }
-    sprintf(m->value[S_LANGUAGE], "< %s >", Tr(T_LANG_NAME));
-    if (s_browser) sprintf(m->value[S_ART], "< %s >", onoff(c->artDownload));
 }
 
-static void settings_main(UiMenu *m, const Config *c)
+static void row(UiMenu *m, int item, int text)
 {
-    s_graphicsPage = 0;
-    UiMenuClear(m, Tr(s_perGame ? T_SETTINGS : T_SETTINGS_ALL), Tr(T_FOOT_SELECT));
-    UiMenuAdd(m, Tr(T_CPU_NEXT), "");
-    UiMenuAdd(m, Tr(T_RSP_NEXT), "");
-    UiMenuAdd(m, Tr(T_AUDIO_MARGIN), "");
-    UiMenuAdd(m, Tr(T_SHOW_FPS), "");
-    UiMenuAdd(m, Tr(T_GRAPHICS), "");
-    UiMenuAdd(m, Tr(T_CONTROLS), "");
-    UiMenuAdd(m, Tr(T_LANGUAGE), "");
-    if (s_browser)
+    if (m->count < UI_MENU_MAX) s_item[m->count] = item;
+    UiMenuAdd(m, Tr(text), "");
+}
+
+// Shows a page (PG_*).
+static void settings_page(UiMenu *m, const Config *c, int page)
+{
+    static const int title[PG_COUNT] = { 0, T_PICTURE, T_EFFECTS, T_INTERFACE, T_ADVANCED, T_ACHIEVEMENTS };
+    s_page = page;
+    UiMenuClear(m, Tr(page == PG_MAIN ? (s_perGame ? T_SETTINGS : T_SETTINGS_ALL) : title[page]), Tr(T_FOOT_SELECT));
+    switch (page)
     {
-        UiMenuAdd(m, Tr(T_ART_DOWNLOADS), "");
-        UiMenuAdd(m, Tr(T_ART_ALL), "");
+    case PG_MAIN:
+        row(m, IT_PICTURE, T_PICTURE);
+        row(m, IT_EFFECTS, T_EFFECTS);
+        row(m, IT_CONTROLS, T_CONTROLS);
+        row(m, IT_INTERFACE, T_INTERFACE);
+        row(m, IT_ACH, T_ACHIEVEMENTS);
+        row(m, IT_ADVANCED, T_ADVANCED);
+        row(m, IT_SAVE_ALL, T_SAVE_ALL);
+        if (s_perGame) row(m, IT_SAVE_GAME, T_SAVE_GAME);
+        break;
+    case PG_PICTURE:   // what the picture is and where it sits
+        row(m, IT_RES, T_RESOLUTION);
+        row(m, IT_STRETCH, T_STRETCH);
+        row(m, IT_BRIGHT, T_BRIGHTNESS);
+        row(m, IT_ZOOM, T_PIC_SIZE);
+        row(m, IT_POSX, T_PIC_LR);
+        row(m, IT_POSY, T_PIC_UD);
+        break;
+    case PG_EFFECTS:   // how it looks (the preset sets the rows below it)
+        row(m, IT_PRESET, T_PRESET);
+        row(m, IT_FILTER, T_TEXFILTER);
+        row(m, IT_SMOOTH, T_FXAA);
+        row(m, IT_SHARPEN, T_SHARPEN);
+        row(m, IT_BLUR, T_BLUR);
+        row(m, IT_SCREEN, T_SCREEN_EFFECT);
+        row(m, IT_DEFLICKER, T_ANTIFLICKER);
+        row(m, IT_HD, T_HD_TEXTURES);
+        break;
+    case PG_INTERFACE:
+        row(m, IT_LANGUAGE, T_LANGUAGE);
+        row(m, IT_FPS, T_SHOW_FPS);
+        if (s_browser)
+        {
+            row(m, IT_ART, T_ART_DOWNLOADS);
+            row(m, IT_ART_ALL, T_ART_ALL);
+        }
+        break;
+    case PG_ACH:   // RetroAchievements: on or off, and the account
+        row(m, IT_RA_ON, T_RA_ENABLE);
+        row(m, IT_RA_ACCOUNT, T_RA_ACCOUNT);
+        break;
+    case PG_ADVANCED:
+        row(m, IT_CPU, T_CPU_NEXT);
+        row(m, IT_HLE, T_RSP_NEXT);
+        row(m, IT_AUDIO, T_AUDIO_MARGIN);
+        row(m, IT_VSYNC, T_VSYNC);
+        break;
     }
-    UiMenuAdd(m, Tr(T_SAVE_ALL), "");
-    if (s_perGame) UiMenuAdd(m, Tr(T_SAVE_GAME), "");
-    UiMenuAdd(m, Tr(T_BACK), "");
+    row(m, IT_BACK, T_BACK);
     settings_values(m, c);
 }
 
-static void settings_graphics(UiMenu *m, const Config *c)
-{
-    s_graphicsPage = 1;
-    UiMenuClear(m, Tr(T_GRAPHICS), Tr(T_FOOT_SELECT));
-    UiMenuAdd(m, Tr(T_PRESET), "");
-    UiMenuAdd(m, Tr(T_RESOLUTION), "");
-    UiMenuAdd(m, Tr(T_STRETCH), "");
-    UiMenuAdd(m, Tr(T_PIC_SIZE), "");
-    UiMenuAdd(m, Tr(T_PIC_LR), "");
-    UiMenuAdd(m, Tr(T_PIC_UD), "");
-    UiMenuAdd(m, Tr(T_BRIGHTNESS), "");
-    UiMenuAdd(m, Tr(T_VSYNC), "");
-    UiMenuAdd(m, Tr(T_ANTIFLICKER), "");
-    UiMenuAdd(m, Tr(T_TEXFILTER), "");
-    UiMenuAdd(m, Tr(T_HD_TEXTURES), "");
-    UiMenuAdd(m, Tr(T_FXAA), "");
-    UiMenuAdd(m, Tr(T_SHARPEN), "");
-    UiMenuAdd(m, Tr(T_BLUR), "");
-    UiMenuAdd(m, Tr(T_SCREEN_EFFECT), "");
-    UiMenuAdd(m, Tr(T_BACK), "");
-    settings_values(m, c);
-}
+static void settings_main(UiMenu *m, const Config *c) { settings_page(m, c, PG_MAIN); }
 
 // ---- Controls page ----
 // Which Xbox 360 input drives each N64 control, per player (LB/RB), and the
@@ -486,7 +545,7 @@ static int controls_input(UiMenu *m, Config *c, WORD down)
     if ((down & XINPUT_GAMEPAD_B) || (item == C_BACK && (down & XINPUT_GAMEPAD_A)))
     {
         settings_main(m, c);
-        m->sel = S_CONTROLS;
+        m->sel = row_of(m, IT_CONTROLS);
         return SET_NONE;
     }
     if (down & (XINPUT_GAMEPAD_LEFT_SHOULDER | XINPUT_GAMEPAD_RIGHT_SHOULDER))
@@ -815,115 +874,107 @@ void SettingsBuild(UiMenu *m, const Config *c, int perGame)
     settings_main(m, c);
 }
 
-static int graphics_input(UiMenu *m, Config *c, WORD down)
-{
-    int dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
-    UiMenuNavigate(m, down);
-    if ((down & XINPUT_GAMEPAD_B) || (m->sel == G_BACK && (down & XINPUT_GAMEPAD_A)))
-    {
-        settings_main(m, c);
-        m->sel = S_GRAPHICS;
-        return SET_NONE;
-    }
-    if (m->sel < G_BACK && (dir || (down & XINPUT_GAMEPAD_A)))
-    {
-        if (!dir) dir = 1;
-        switch (m->sel)
-        {
-        case G_PRESET:
-        {
-            int pr = current_preset(c);
-            const GfxPreset *p;
-            pr = pr < 0 ? (dir > 0 ? 0 : 3) : (pr + dir + 4) % 4;
-            p = &s_presets[pr];
-            c->texFilter = p->texFilter;
-            c->smooth = p->smooth;
-            c->sharpen = p->sharpen;
-            c->blur = p->blur;
-            c->screen = p->screen;
-            break;
-        }
-        case G_RES: c->resScale = (c->resScale - 1 + dir + 4) % 4 + 1; break;
-        case G_FILTER: c->texFilter = (c->texFilter + dir + 3) % 3; break;
-        case G_HD: c->hdTextures = !c->hdTextures; break;
-        case G_SMOOTH: c->smooth = !c->smooth; break;
-        case G_SHARPEN: c->sharpen = (c->sharpen + dir + 3) % 3; if (c->sharpen) c->blur = 0; break;
-        case G_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;
-        case G_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
-        case G_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
-        case G_STRETCH: c->stretch = !c->stretch; break;
-        case G_VSYNC: c->vsync = ((c->vsync < 0 || c->vsync > 2 ? 0 : c->vsync) + dir + 3) % 3; break;   // off, on (adaptive), strict
-        case G_DEFLICKER: c->deflicker = !c->deflicker; break;
-        case G_ZOOM: c->zoom += dir * 2; if (c->zoom < 80) c->zoom = 80; if (c->zoom > 140) c->zoom = 140; break;
-        case G_POSX: c->offsetX += dir * 4; if (c->offsetX < -160) c->offsetX = -160; if (c->offsetX > 160) c->offsetX = 160; break;
-        case G_POSY: c->offsetY += dir * 4; if (c->offsetY < -120) c->offsetY = -120; if (c->offsetY > 120) c->offsetY = 120; break;
-        }
-        settings_values(m, c);
-        return SET_CHANGED;
-    }
-    return SET_NONE;
-}
-
 int SettingsInput(UiMenu *m, Config *c, int perGame, WORD down)
 {
-    int dir, changed = 0;
+    static const int section[PG_COUNT] = { 0, IT_PICTURE, IT_EFFECTS, IT_INTERFACE, IT_ADVANCED, IT_ACH };
+    int dir, item, a = (down & XINPUT_GAMEPAD_A) != 0, changed = 1;
     s_perGame = perGame;
-    if (s_graphicsPage) return graphics_input(m, c, down);
+    XbRaPump();
+    if (XbRaBusy()) return SET_NONE;   // the Xbox keyboard has the controller
+    if (s_page == PG_ACH && m->page != UI_PAGE_CONTROLS) settings_values(m, c);   // the account row follows the connection
     if (m->page == UI_PAGE_CONTROLS) return controls_input(m, c, down);
     dir = (down & XINPUT_GAMEPAD_DPAD_RIGHT) ? 1 : (down & XINPUT_GAMEPAD_DPAD_LEFT) ? -1 : 0;
     UiMenuNavigate(m, down);
-    if (down & XINPUT_GAMEPAD_B) return SET_BACK;
-    if (m->sel == S_GRAPHICS && (down & XINPUT_GAMEPAD_A))
+    item = s_item[m->sel];
+    if ((down & XINPUT_GAMEPAD_B) || (a && item == IT_BACK))
     {
-        settings_graphics(m, c);
+        int from = s_page;
+        if (from == PG_MAIN) return SET_BACK;
+        settings_main(m, c);
+        m->sel = row_of(m, section[from]);
         return SET_NONE;
     }
-    if (m->sel == S_CONTROLS && (down & XINPUT_GAMEPAD_A))
+    if (a)
     {
-        controls_open(m, c);
-        return SET_NONE;
-    }
-    if (m->sel <= S_FPS && (dir || (down & XINPUT_GAMEPAD_A)))
-    {
-        if (!dir) dir = 1;
-        switch (m->sel)
+        switch (item)
         {
-        case S_CPU: strcpy(c->cpu, strcmp(c->cpu, "interp") ? "interp" : "dynarec"); break;
-        case S_HLE: c->hle = !c->hle; break;
-        case S_AUDIO:
-            c->audioMs += dir * 50;
-            if (c->audioMs < 50) c->audioMs = 50;
-            if (c->audioMs > 500) c->audioMs = 500;
-            break;
-        case S_FPS: c->showFps = ((c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps) + dir + 4) % 4; break;   // off, FPS, + CPU/RAM, + resolution
+        case IT_PICTURE: settings_page(m, c, PG_PICTURE); return SET_NONE;
+        case IT_EFFECTS: settings_page(m, c, PG_EFFECTS); return SET_NONE;
+        case IT_INTERFACE: settings_page(m, c, PG_INTERFACE); return SET_NONE;
+        case IT_ADVANCED: settings_page(m, c, PG_ADVANCED); return SET_NONE;
+        case IT_ACH: settings_page(m, c, PG_ACH); return SET_NONE;
+        case IT_RA_ACCOUNT:
+            if (!c->achievements) return SET_NONE;
+            XbRaAccount();   // connected: disconnects; otherwise the keyboard, then the connection
+            settings_values(m, c);
+            return SET_NONE;
+        case IT_CONTROLS: controls_open(m, c); return SET_NONE;
+        case IT_SAVE_ALL: return SET_SAVE_ALL;
+        case IT_SAVE_GAME: return SET_SAVE_GAME;
+        case IT_ART_ALL: return SET_ART_ALL;
         }
-        changed = 1;
     }
-    if (m->sel == S_LANGUAGE && (dir || (down & XINPUT_GAMEPAD_A)))
+    if (!dir && !a) return SET_NONE;
+    if (item == IT_LANGUAGE)
     {
         // From the ROM list, A opens the list with the flags; left/right (and A in game) step through the languages.
         if (s_browser && !dir) return SET_LANGUAGE;
         lang_change(c, (LangGet() + (dir ? dir : 1) + LANG_COUNT) % LANG_COUNT);
-        settings_main(m, c);
-        m->sel = S_LANGUAGE;
+        settings_page(m, c, PG_INTERFACE);
+        m->sel = row_of(m, IT_LANGUAGE);
         return SET_NONE;
     }
-    if (s_browser && m->sel == S_ART && (dir || (down & XINPUT_GAMEPAD_A)))
+    if (!dir) dir = 1;
+    switch (item)
     {
-        c->artDownload = !c->artDownload;
-        changed = 1;
+    case IT_PRESET:
+    {
+        int pr = current_preset(c);
+        const GfxPreset *p;
+        pr = pr < 0 ? (dir > 0 ? 0 : 3) : (pr + dir + 4) % 4;
+        p = &s_presets[pr];
+        c->texFilter = p->texFilter;
+        c->smooth = p->smooth;
+        c->sharpen = p->sharpen;
+        c->blur = p->blur;
+        c->screen = p->screen;
+        break;
+    }
+    case IT_RES: c->resScale = (c->resScale - 1 + dir + 4) % 4 + 1; break;
+    case IT_FILTER: c->texFilter = (c->texFilter + dir + 3) % 3; break;
+    case IT_HD: c->hdTextures = !c->hdTextures; break;
+    case IT_SMOOTH: c->smooth = !c->smooth; break;
+    case IT_SHARPEN: c->sharpen = (c->sharpen + dir + 3) % 3; if (c->sharpen) c->blur = 0; break;
+    case IT_BLUR: c->blur = (c->blur + dir + 3) % 3; if (c->blur) c->sharpen = 0; break;
+    case IT_SCREEN: c->screen = (c->screen + dir + 6) % 6; break;
+    case IT_BRIGHT: c->brightness = (c->brightness + dir + 3) % 3; break;
+    case IT_STRETCH: c->stretch = !c->stretch; break;
+    case IT_VSYNC: c->vsync = ((c->vsync < 0 || c->vsync > 2 ? 0 : c->vsync) + dir + 3) % 3; break;   // off, on (adaptive), strict
+    case IT_DEFLICKER: c->deflicker = !c->deflicker; break;
+    case IT_ZOOM: c->zoom += dir * 2; if (c->zoom < 80) c->zoom = 80; if (c->zoom > 140) c->zoom = 140; break;
+    case IT_POSX: c->offsetX += dir * 4; if (c->offsetX < -160) c->offsetX = -160; if (c->offsetX > 160) c->offsetX = 160; break;
+    case IT_POSY: c->offsetY += dir * 4; if (c->offsetY < -120) c->offsetY = -120; if (c->offsetY > 120) c->offsetY = 120; break;
+    case IT_CPU: strcpy(c->cpu, strcmp(c->cpu, "interp") ? "interp" : "dynarec"); break;
+    case IT_HLE: c->hle = !c->hle; break;
+    case IT_AUDIO:
+        c->audioMs += dir * 50;
+        if (c->audioMs < 50) c->audioMs = 50;
+        if (c->audioMs > 500) c->audioMs = 500;
+        break;
+    case IT_FPS: c->showFps = ((c->showFps < 0 || c->showFps > 3 ? 0 : c->showFps) + dir + 4) % 4; break;   // off, FPS, + CPU/RAM, + resolution
+    case IT_ART: c->artDownload = !c->artDownload; break;
+    case IT_RA_ON:
+        // For all games, kept at once (as the language is).
+        c->achievements = !c->achievements;
+        XbRaSetEnabled(c->achievements);
+        if (s_langPath[0] && !ConfigWriteKey(s_langPath, "achievements", c->achievements ? "1" : "0")) H64_WARN("[ra] cannot write %s", s_langPath);
+        changed = 0;
+        break;
+    case IT_RA_ACCOUNT: changed = 0; break;
+    default: changed = 0; break;
     }
     settings_values(m, c);
-    if (changed) return SET_CHANGED;
-    if (down & XINPUT_GAMEPAD_A)
-    {
-        int last = m->count - 1;
-        if (m->sel == last) return SET_BACK;
-        if (s_browser && m->sel == S_ART_ALL) return SET_ART_ALL;
-        if (m->sel == S_SAVE_ALL) return SET_SAVE_ALL;
-        if (perGame && m->sel == S_SAVE_ALL + 1) return SET_SAVE_GAME;
-    }
-    return SET_NONE;
+    return changed ? SET_CHANGED : SET_NONE;
 }
 
 // ---- Leaving ----
@@ -1292,8 +1343,10 @@ static int settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsP
     settings_main(&m, c);
     if (ctlTest >= 300)
     {
-        settings_graphics(&m, c);            // controlstest=300+N: the Graphics page, on item N
-        m.sel = (ctlTest - 300) % m.count;
+        // controlstest=300+N: the Picture page on item N; 400+N Effects, 500+N Interface, 600+N Advanced.
+        int pg = PG_PICTURE + (ctlTest - 300) / 100;
+        settings_page(&m, c, pg < PG_COUNT ? pg : PG_PICTURE);
+        m.sel = (ctlTest % 100) % m.count;
     }
     else if (ctlTest >= 200)
         m.sel = (ctlTest - 200) % m.count;   // controlstest=200+N: this page, on item N
@@ -1320,8 +1373,8 @@ static int settings_loop(IDirect3DDevice9 *dev, Config *c, const char *settingsP
         {
             int lang = LanguageScreen(dev, LangGet(), 0);
             if (lang >= 0) lang_change(c, lang);
-            settings_main(&m, c);
-            m.sel = S_LANGUAGE;
+            settings_page(&m, c, PG_INTERFACE);
+            m.sel = row_of(&m, IT_LANGUAGE);
             UiInputInit(&in);
             continue;
         }
@@ -2486,6 +2539,7 @@ int RomBrowser(IDirect3DDevice9 *dev, Config *c, const char *settingsPath, char 
                     if (roms[i].file == file) sel = i;
                 }
                 strncpy(msg, Tr(fav ? T_FAV_ADDED : T_FAV_REMOVED), sizeof(msg) - 1);
+                if (fav) XbAchUnlock(XB_ACH_FAVOURITE);
                 msg[sizeof(msg) - 1] = 0;
                 msgAt = GetTickCount();
                 detailsFor = lastSel = -1;   // the same ROM at another place

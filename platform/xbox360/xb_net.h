@@ -22,6 +22,11 @@
 // at once (no new wait) unless `retry` is set.
 int NetStart(int retry);
 
+// Checks (ini nonet=): 1 makes NetStart fail at once, as with no cable; 2 is
+// read by the achievements' badges only (their downloads fail). 0: normal.
+void NetTestOff(int mode);
+int NetTestMode(void);
+
 // GET https://host/path over HTTP/1.1. Redirects are followed (up to 4) when
 // `follow` is set; otherwise a redirect's Location goes to `location`. With
 // `body` NULL only the headers are read. The body (Content-Length, chunked or
@@ -31,6 +36,10 @@ int NetStart(int retry);
 // reached (no DNS answer, no connection, TLS failure, time-out).
 int NetGet(const char *host, const char *path, int follow, u8 **body, u32 *len, u32 maxLen, char *location, int locSize);
 
+// POST `data` (`type`: its Content-Type, NULL for a form) to https://host/path;
+// `agent` is added to the User-Agent (NULL: nothing). No redirects. The answer
+// and the result are as NetGet's.
+int NetPost(const char *host, const char *path, const char *data, const char *type, const char *agent, u8 **body, u32 *len, u32 maxLen);
 // Downloads https://... to `file`, following redirects. Bytes already in the
 // file (an interrupted download) are kept and the rest is asked for (Range);
 // a dropped connection is tried again a few times. `expected`: the whole

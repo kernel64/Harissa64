@@ -9,6 +9,7 @@
 #include "../../core/common/h64_log.h"
 #include "../../core/rdp/h64_hdbuild.h"
 #include "xb_hd.h"
+#include "xb_ach.h"
 #include "xb_net.h"
 
 #define HD_CATALOG_URL "https://raw.githubusercontent.com/kernel64/Harissa64/master/docs/texture-packs.json"
@@ -558,6 +559,7 @@ static void run_job(void)
     // The pack's description first (the list shows a pack once both files are there),
     // then the conversion; the archive goes once the pack is made.
     if (!write_info(info, &s_job)) { fail(HD_ERR_WRITE, "cannot write the pack's description"); return; }
+    XbAchUnlock(XB_ACH_HD_PACK);
     if (convert(zip, tmp, out) == HD_DONE) DeleteFileA(zip);
     else if (!file_size(out)) DeleteFileA(info);
 }

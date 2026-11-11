@@ -50,6 +50,7 @@ struct Config
     int offsetX, offsetY;   // posx=, posy=: picture position in output pixels (default 0)
     int stretch;        // stretch=0|1: the picture stretched to 16:9 (any resolution; HD then stretches instead of widening)
     int hdTextures;     // hdtextures=1: the game's hi-res texture pack is used when one is installed (xb_hd.h HdResolve)
+    char cheats[256];   // cheats=ID:state,...: the cheats that are on (a game's profile; set by the in-game Cheats page)
     char hdPack[48];    // hdpack=ID: which one (a game's profile; set by the HD textures page): a pack of
                         // <drive>:\hd_textures\packs\, "file" for the game's own file, empty: the first one found
     u32 hdBudget;       // hdbudget=MB: memory for its pictures (default 96)
@@ -80,6 +81,13 @@ struct Config
     u32 saveStateAt;    // savestateat=N: save a state at VI N (scripted runs)
     u32 menuAt;         // menuat=N: open the in-game menu at VI N (remote checks; does not skip the ROM browser)
     u32 aboutAt;        // aboutat=N: the same, showing the About panel
+    u32 cheatsAt;       // cheatsat=N: the same, showing the Cheats page (remote checks)
+    int cheatOn;        // cheaton=N: cheat N of the list is on from the start (remote checks; -1: none)
+    int achievements;   // achievements=1: RetroAchievements on (Settings > Achievements; all games)
+    u32 achAt;          // achat=N: the in-game menu opens at VI N on the Achievements page (remote checks)
+    u32 raToast;        // ratoast=N: at VI N, the unlock message of the game's first achievement is shown (nothing is unlocked)
+    int noNet;          // nonet=1: the network is off for this run; 2: only the achievement badges' downloads fail (checks)
+    int raTest;         // ratest=1: asks the RetroAchievements server for a game id at start-up and logs it
     int hdPage;         // hdpage=1: the ROM browser opens the HD textures page of its selection (checks); 2: and installs the first pack
     int controlsTest;   // controlstest=N: the ROM list opens Settings > Controls on item N; 100+N: also
                         // waiting for an input, again and again; 200+N: the Settings page on item N

@@ -11,52 +11,14 @@ Not sure where to begin? Leave everything as it is. The defaults are what we tes
 
 ## Main page
 
-**CPU (next start)**
-How the N64's processor is run.
-- *Recompiler*: fast. This is the one you want.
-- *Interpreter*: much slower, most games won't be playable. It's only there to compare when a game behaves strangely.
-
-**RSP (next start)**
-How the N64's graphics and sound chip is handled.
-- *HLE*: fast, recommended.
-- *LLE*: closer to the real hardware but a lot slower. Useful if a picture or a sound looks wrong and you want to see whether it's the emulator's fault.
-
-**Audio margin**
-How much sound is kept ready in advance, from 50 to 500 ms. A bigger margin means fewer crackles and cuts, a smaller one means the sound follows the action a bit more closely. The default (500 ms) suits most games. If you hear crackling, don't lower it.
-
-**Show FPS**
-Shows the speed in a corner of the screen. 60 means full speed (50 for European games).
-- *Off* (the default): nothing shown.
-- *FPS*: the speed only.
-- *FPS, CPU, RAM*: also how busy the emulator is (CPU, in %) and how much of the console's memory is in use.
-- *FPS, CPU, RAM, resolution*: also the resolution the game is drawn at, and the N64's own picture size.
-
-**Graphics** and **Controls** open their own pages, described below.
-
-**Language**
-The language of the menus: English, Spanish, German, French, Arabic, Portuguese (Brazil) or Russian. Left and right change it straight away. From the game list, A opens the list with the flags. The choice is kept for every game, without saving. Game names and game info stay as they are (mostly in English), and so does the About page.
-
-These two are only there when you open the settings from the game list:
-
-**Box art downloads**
-*On* (the default): when you select a game that has no box art or info yet, Harissa64 fetches them from the internet, once, and keeps them in `art\games`. *Off*: it only shows what is already in that folder. If the console has no internet, nothing bad happens either way: the game just shows its initials.
-
-**Get box art for all games**
-Downloads the box art and info of every game in your list in one go. You can keep browsing while it works: the progress shows at the bottom right. At the end a message says how many games got a picture. Games it couldn't find before are tried again. Without internet, a message tells you so and nothing changes. On a PC, `tools/fetch_game_art.py` does the same thing (see the README).
+The settings are sorted into sections. **Picture**, **Effects**, **Controls**, **Interface**, **Achievements** and **Advanced** each open their own page, described below.
 
 **Save for all games / Save for this game only**
 Keeps your changes for next time. If you leave without saving, they last until you quit the game.
 
-## Graphics
+## Picture
 
-**Preset**
-A quick way to set the look in one go. It changes the texture filter, smoothing, sharpening, blur and screen effect, but leaves the resolution and brightness alone.
-- *Original*: the plain N64 picture, with crisp pixels.
-- *N64 Enhanced*: smoother textures and a touch of sharpening. A good everyday choice, and the default.
-- *N64 Smooth*: the same, with light scanlines.
-- *N64 CRT*: looks like an old TV, with scanlines and a soft glow.
-
-If you change one of those settings yourself, the preset shows *Custom*.
+What the picture is and where it sits on your screen.
 
 **Resolution**
 How many pixels the games are drawn with. More pixels give a sharper picture but ask more of the console. The resolution also sets the shape of the picture.
@@ -70,20 +32,6 @@ With the 4:3 resolutions you get the original shape, with black bars on the side
 **Stretch to 16:9**
 Pulls the 4:3 picture wider to fill a wide TV, at any resolution. Everything looks a bit wider, but nothing is missing. With HD 1280x720 it replaces the widescreen view, which helps games that look wrong in widescreen.
 
-**Picture size, Picture left/right, Picture up/down**
-Fit the picture to your TV. *Picture size* makes it bigger or smaller (100% is the normal size): go a little above 100% if your TV shows black borders around the picture, or below if it cuts the edges. The two others move the picture, if it is not centred on your screen.
-
-**V-Sync**
-Stops the image from tearing (a line cutting through the picture when the camera moves).
-- *Off* (the default): no waiting, the fastest.
-- *On*: each picture waits for the TV to be ready. When a game is late on a picture, that picture is shown at once instead of waiting; you may see a tear on that picture only.
-- *Strict*: every picture waits for the TV, so you never see a tear. Busy games can run slower, because a late picture waits for the next refresh.
-
-Turn it on per game where tearing bothers you.
-
-**Anti-flicker**
-Off by default. Some N64 games make an effect see-through by drawing it only every other picture (a shadow, a glow, the disc under the character you're looking at in Smash Remix). On an old TV this looked like a soft, see-through effect; on a modern screen it flickers. With this on, each picture is mixed with the one before, so those effects look as they did on an old TV. Fast motion gets a little softer.
-
 **Brightness**
 Some games are very dark on a modern TV (Doom 64, for example). This lifts the dark parts of the picture without washing out the bright ones.
 - *Normal*: the picture as the console sends it.
@@ -92,14 +40,27 @@ Some games are very dark on a modern TV (Doom 64, for example). This lifts the d
 
 Like the other settings, you can keep it for one game only.
 
+**Picture size, Picture left/right, Picture up/down**
+Fit the picture to your TV. *Picture size* makes it bigger or smaller (100% is the normal size): go a little above 100% if your TV shows black borders around the picture, or below if it cuts the edges. The two others move the picture, if it is not centred on your screen.
+
+## Effects
+
+How the picture looks.
+
+**Preset**
+A quick way to set the look in one go. It changes the texture filter, smoothing, sharpening, blur and screen effect, but leaves the resolution and brightness alone.
+- *Original*: the plain N64 picture, with crisp pixels.
+- *N64 Enhanced*: smoother textures and a touch of sharpening. A good everyday choice, and the default.
+- *N64 Smooth*: the same, with light scanlines.
+- *N64 CRT*: looks like an old TV, with scanlines and a soft glow.
+
+If you change one of those settings yourself, the preset shows *Custom*.
+
 **Texture filter**
 How textures look up close.
 - *N64 3-point*: the N64's own smoothing, slightly soft. The most faithful, and the default.
 - *Bilinear*: a bit smoother.
 - *Nearest*: no smoothing at all, sharp square pixels.
-
-**HD textures**
-Uses the game's HD texture pack, if one is installed (RT in the game list, see the README). *Off* shows the game's own textures. The change shows at once. The HD textures page (RT) also turns it on or off for one game, and chooses the pack when there are several.
 
 **Edge smoothing (FXAA)**
 Softens the jagged edges of 3D objects. On by default.
@@ -121,6 +82,12 @@ Imitates a type of screen.
 
 The CRT effects look best with smoothing, sharpening and blur turned off. That's what the *N64 CRT* preset does.
 
+**Anti-flicker**
+Off by default. Some N64 games make an effect see-through by drawing it only every other picture (a shadow, a glow, the disc under the character you're looking at in Smash Remix). On an old TV this looked like a soft, see-through effect; on a modern screen it flickers. With this on, each picture is mixed with the one before, so those effects look as they did on an old TV. Fast motion gets a little softer.
+
+**HD textures**
+Uses the game's HD texture pack, if one is installed (RT in the game list, see the README). *Off* shows the game's own textures. The change shows at once. The HD textures page (RT) also turns it on or off for one game, and chooses the pack when there are several.
+
 ## Controls
 
 This page shows which Xbox 360 button does what on the N64 controller, for each player. A picture of the N64 controller shows the button you're on, and it blinks while it waits for you to press something.
@@ -137,3 +104,55 @@ This page shows which Xbox 360 button does what on the N64 controller, for each 
 - **Reset to default**: back to the usual layout.
 
 The **BACK** button always stays reserved for the emulator's menu. Your layout is saved like the other settings, for all games or for one game.
+
+## Interface
+
+**Language**
+The language of the menus: English, Spanish, German, French, Arabic, Portuguese (Brazil) or Russian. Left and right change it straight away. From the game list, A opens the list with the flags. The choice is kept for every game, without saving. Game names and game info stay as they are (mostly in English), and so does the About page.
+
+These two are only there when you open the settings from the game list:
+
+**Show FPS**
+Shows the speed in a corner of the screen. 60 means full speed (50 for European games).
+- *Off* (the default): nothing shown.
+- *FPS*: the speed only.
+- *FPS, CPU, RAM*: also how busy the emulator is (CPU, in %) and how much of the console's memory is in use.
+- *FPS, CPU, RAM, resolution*: also the resolution the game is drawn at, and the N64's own picture size.
+
+**Box art downloads**
+*On* (the default): when you select a game that has no box art or info yet, Harissa64 fetches them from the internet, once, and keeps them in `art\games`. *Off*: it only shows what is already in that folder. If the console has no internet, nothing bad happens either way: the game just shows its initials.
+
+**Get box art for all games**
+Downloads the box art and info of every game in your list in one go. You can keep browsing while it works: the progress shows at the bottom right. At the end a message says how many games got a picture. Games it couldn't find before are tried again. Without internet, a message tells you so and nothing changes. On a PC, `tools/fetch_game_art.py` does the same thing (see the README).
+
+## Achievements
+
+- **RetroAchievements**: on or off (off by default). For all games; kept at once.
+- **Account**: shows the connected account. Pick it to connect (user name, then password, on the Xbox keyboard) or to disconnect.
+
+See the README for how achievements work.
+
+## Advanced
+
+You can leave these alone: the defaults suit almost every game.
+
+**CPU (next start)**
+How the N64's processor is run.
+- *Recompiler*: fast. This is the one you want.
+- *Interpreter*: much slower, most games won't be playable. It's only there to compare when a game behaves strangely.
+
+**RSP (next start)**
+How the N64's graphics and sound chip is handled.
+- *HLE*: fast, recommended.
+- *LLE*: closer to the real hardware but a lot slower. Useful if a picture or a sound looks wrong and you want to see whether it's the emulator's fault.
+
+**Audio margin**
+How much sound is kept ready in advance, from 50 to 500 ms. A bigger margin means fewer crackles and cuts, a smaller one means the sound follows the action a bit more closely. The default (500 ms) suits most games. If you hear crackling, don't lower it.
+
+**V-Sync**
+Stops the image from tearing (a line cutting through the picture when the camera moves).
+- *Off* (the default): no waiting, the fastest.
+- *On*: each picture waits for the TV to be ready. When a game is late on a picture, that picture is shown at once instead of waiting; you may see a tear on that picture only.
+- *Strict*: every picture waits for the TV, so you never see a tear. Busy games can run slower, because a late picture waits for the next refresh.
+
+Turn it on per game where tearing bothers you.

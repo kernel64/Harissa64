@@ -800,6 +800,28 @@ void UiToast(const char *text, float age, float life)
     UiText(UI_REGULAR, 21, x + 46, y + h * 0.5f, with_alpha(UI_COL_TEXT, a), text, UI_LEFT);
 }
 
+void UiToastBadge(const char *text, IDirect3DTexture9 *badge, float age, float life)
+{
+    const float pic = 56, pad = 10;
+    float in = age / 200.0f, out = (life - age) / 350.0f, a, slide, w, h = pic + 2 * pad, x, y;
+    if (age < 0 || age > life) return;
+    if (in > 1) in = 1;
+    if (out > 1) out = 1;
+    if (out < 0) out = 0;
+    a = in < out ? in : out;
+    slide = (1.0f - in) * (1.0f - in) * 18.0f;
+    w = pad + pic + 18 + UiTextWidth(UI_REGULAR, 21, text) + 30;
+    x = (UI_WIDTH - w) * 0.5f;
+    y = UI_HEIGHT - UI_SAFE_Y - 40 - h + slide;
+    UiShadow(x, y + 6, w, h, 20, 22, with_alpha(D3DCOLOR_ARGB(150, 0, 0, 0), a));
+    UiRoundRect(x, y, w, h, 20, with_alpha(D3DCOLOR_ARGB(240, 40, 42, 54), a), with_alpha(D3DCOLOR_ARGB(240, 30, 32, 42), a));
+    UiRoundRing(x, y, w, h, 20, 1.0f, with_alpha(UI_COL_LINE, a));
+    UiRoundRect(x + pad, y + pad, pic, pic, 12, with_alpha(D3DCOLOR_ARGB(255, 22, 23, 30), a), with_alpha(D3DCOLOR_ARGB(255, 22, 23, 30), a));
+    if (badge) UiImage(badge, x + pad, y + pad, pic, pic, 12, with_alpha(D3DCOLOR_ARGB(255, 255, 255, 255), a));
+    UiRoundRing(x + pad, y + pad, pic, pic, 12, 1.0f, with_alpha(UI_COL_ACCENT, a));
+    UiText(UI_REGULAR, 21, x + pad + pic + 18, y + h * 0.5f, with_alpha(UI_COL_TEXT, a), text, UI_LEFT);
+}
+
 void UiFpsBadge(const char *text)
 {
     float w = UiTextWidth(UI_BOLD, 17, text) + 26, h = 32, x = UI_WIDTH - UI_SAFE_X - w, y = UI_SAFE_Y;

@@ -235,7 +235,7 @@ def main():
         onoff = [t["ON"], t["OFF"]]
         menus = {
             "settings": [("CPU_NEXT", [t["RECOMPILER"], t["INTERPRETER"]], 1), ("RSP_NEXT", ["HLE"], 1), ("AUDIO_MARGIN", ["500 ms"], 1),
-                         ("SHOW_FPS", [t["OFF"], t["FPS_ONLY"], t["FPS_CPU"], t["FPS_ALL"]], 1), ("GRAPHICS", [], 1), ("CONTROLS", [t["CUSTOM"], t["DEFAULT"]], 0),
+                         ("SHOW_FPS", [t["OFF"], t["FPS_ONLY"], t["FPS_CPU"], t["FPS_ALL"]], 1), ("PICTURE", [], 1), ("EFFECTS", [], 1), ("INTERFACE", [], 1), ("ADVANCED", [], 1), ("ACHIEVEMENTS", [], 1), ("RA_ENABLE", onoff, 1), ("RA_ACCOUNT", [t["RA_NOT_CONNECTED"], t["RA_CONNECTING"]], 0), ("CONTROLS", [t["CUSTOM"], t["DEFAULT"]], 0),
                          ("LANGUAGE", names, 1), ("ART_DOWNLOADS", onoff, 1), ("ART_ALL", [], 1), ("SAVE_ALL", [], 1),
                          ("SAVE_GAME", [], 1), ("BACK", [], 1)],
             "graphics": [("PRESET", [t["PRESET_ORIGINAL"], t["PRESET_ENHANCED"], t["PRESET_SMOOTH"], t["PRESET_CRT"], t["CUSTOM"]], 1),
@@ -246,7 +246,7 @@ def main():
                          ("SHARPEN", [t["OFF"], t["LOW"], t["HIGH"]], 1), ("BLUR", [t["OFF"], t["SOFT"], t["STRONG"]], 1),
                          ("SCREEN_EFFECT", [t["SCREEN_NONE"], t["SCANLINES"], t["CRT"], t["CRT_CURVED"], t["LCD_GRID"], t["LIGHT_SCANLINES"]], 1),
                          ("BACK", [], 1)],
-            "pause": [("RESUME", [], 1), ("SAVE_STATE", [], 1), ("LOAD_STATE", [], 1), ("STATE_SLOT", ["9"], 1), ("SETTINGS", [], 1),
+            "pause": [("RESUME", [], 1), ("SAVE_STATE", [], 1), ("LOAD_STATE", [], 1), ("STATE_SLOT", ["9"], 1), ("CHEATS", [], 1), ("ACHIEVEMENTS", [], 1), ("SETTINGS", [], 1),
                       ("RESET_GAME", [], 1), ("BACK_TO_LIST", [], 1), ("QUIT_DASHBOARD", [], 1)],
         }
         # UiMenuDraw: a 660-pixel panel, labels 44 pixels in, values 40 from the right, some room between.
@@ -255,7 +255,7 @@ def main():
                 lw = width(t[key], 22, True)
                 vw = max([value_width(v) if chev else width(v, 21, False) for v in values] + [0])
                 check(code, "%s row %s with its widest value" % (menu, key), lw + vw + (24 if values else 0), 660 - 84)
-        for key in ("SETTINGS", "SETTINGS_ALL", "GRAPHICS", "CONTROLS", "PAUSED"):
+        for key in ("SETTINGS", "SETTINGS_ALL", "PICTURE", "EFFECTS", "INTERFACE", "ADVANCED", "ACHIEVEMENTS", "CONTROLS", "PAUSED"):
             check(code, "title " + key, width(t[key], 30, True), 660 - 80)
         for key in ("FOOT_SELECT", "FOOT_PAUSED"):
             check(code, key, footer_width(t[key]), 660 - 80)

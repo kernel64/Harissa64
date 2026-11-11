@@ -35,9 +35,20 @@ endif()
 
 # ---- Portable core ----
 file(GLOB_RECURSE H64_CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/core/*.cpp")
+# ---- rcheevos (RetroAchievements' runtime and client, MIT) ----
+file(GLOB H64_RCHEEVOS_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/third_party/rcheevos/src/*/*.c")
+add_library(h64rcheevos STATIC ${H64_RCHEEVOS_SOURCES})
+target_include_directories(h64rcheevos PUBLIC "${CMAKE_SOURCE_DIR}/third_party/rcheevos/include" PRIVATE "${CMAKE_SOURCE_DIR}/third_party/rcheevos/src")
+target_compile_definitions(h64rcheevos PUBLIC RC_DISABLE_LUA)
+if(MSVC)
+  target_compile_options(h64rcheevos PRIVATE /W0)
+else()
+  target_compile_options(h64rcheevos PRIVATE -w)
+endif()
+
 add_library(h64core STATIC ${H64_CORE_SOURCES})
 target_compile_definitions(h64core PUBLIC H64_VERSION=${H64_VERSION})
-target_link_libraries(h64core PUBLIC h64zlib)
+target_link_libraries(h64core PUBLIC h64zlib h64rcheevos)
 
 # ---- Unit tests (linked into every runner) ----
 file(GLOB H64_UNIT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/unit/*.cpp")

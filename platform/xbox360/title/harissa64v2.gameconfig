@@ -1,31 +1,314 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
 <!-- Harissa64 V2 title data, compiled by the XDK's spac into spa.bin and embedded in the XEX
      as the section named after the title ID (48413632, see harissa64v2.vcxproj AdditionalSections).
-     Dashboards (Aurora, the stock dashboard) read the title name (X_STRINGID_TITLENAME) and the
-     title image (X_IMAGEID_GAME, 64x64 PNG, made by tools/gen_title_art.py) from it. -->
+     Dashboards (Aurora, the stock dashboard) read the title name (X_STRINGID_TITLENAME), the
+     title image (X_IMAGEID_GAME, 64x64 PNG, made by tools/gen_title_art.py) and the achievements
+     from it. Written by tools/gen_achievements.py: edit the table there, not this file. -->
 <XboxLiveSubmissionProject Version="2.0.60117.01" xmlns="http://www.xboxlive.com/xlast">
   <GameConfigProject name="Harissa64" titleName="Harissa64" projectVersion="2.00.0000.0" schemaVersion="1.08.0000.0" classification="BaseGame" titleId="0x48413632" multiplayer="false" titleType="1" arn="0x0">
     <ProductInformation>
       <Platform name="Xbox 360" id="2" />
     </ProductInformation>
     <Privileges />
-    <LocalizedStrings defaultLocale="en-US" nextId="2">
+    <LocalizedStrings defaultLocale="en-US" nextId="400">
       <SupportedLocale locale="en-US" />
+      <SupportedLocale locale="fr-FR" />
       <LocalizedString id="32768" friendlyName="X_STRINGID_TITLENAME">
         <Translation locale="en-US">Harissa64</Translation>
+        <Translation locale="fr-FR">Harissa64</Translation>
       </LocalizedString>
       <LocalizedString id="1" friendlyName="STR_PLAYING">
         <Translation locale="en-US">Playing</Translation>
+        <Translation locale="fr-FR">En jeu</Translation>
         <Presence />
       </LocalizedString>
       <LocalizedString id="32512" friendlyName="X_STRINGID_GAMETYPE">
         <Translation locale="en-US">Game Type</Translation>
+        <Translation locale="fr-FR">Type de partie</Translation>
       </LocalizedString>
       <LocalizedString id="32513" friendlyName="X_STRINGID_RANKED">
         <Translation locale="en-US">Ranked Match</Translation>
+        <Translation locale="fr-FR">Partie classée</Translation>
       </LocalizedString>
       <LocalizedString id="32514" friendlyName="X_STRINGID_STANDARD">
         <Translation locale="en-US">Player Match</Translation>
+        <Translation locale="fr-FR">Partie libre</Translation>
+      </LocalizedString>
+      <LocalizedString id="101" friendlyName="ACH_FIRST_NAME">
+        <Translation locale="en-US">First Step</Translation>
+        <Translation locale="fr-FR">Premier pas</Translation>
+      </LocalizedString>
+      <LocalizedString id="201" friendlyName="ACH_FIRST_DESC">
+        <Translation locale="en-US">Unlocked a first RetroAchievements achievement.</Translation>
+        <Translation locale="fr-FR">Premier succès RetroAchievements débloqué.</Translation>
+      </LocalizedString>
+      <LocalizedString id="301" friendlyName="ACH_FIRST_HOWTO">
+        <Translation locale="en-US">Unlock a RetroAchievements achievement in any game.</Translation>
+        <Translation locale="fr-FR">Débloquez un succès RetroAchievements dans un jeu.</Translation>
+      </LocalizedString>
+      <LocalizedString id="102" friendlyName="ACH_COLLECT_10_NAME">
+        <Translation locale="en-US">Collector I</Translation>
+        <Translation locale="fr-FR">Collectionneur I</Translation>
+      </LocalizedString>
+      <LocalizedString id="202" friendlyName="ACH_COLLECT_10_DESC">
+        <Translation locale="en-US">Unlocked 10 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">10 succès RetroAchievements débloqués.</Translation>
+      </LocalizedString>
+      <LocalizedString id="302" friendlyName="ACH_COLLECT_10_HOWTO">
+        <Translation locale="en-US">Unlock 10 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">Débloquez 10 succès RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="103" friendlyName="ACH_COLLECT_50_NAME">
+        <Translation locale="en-US">Collector II</Translation>
+        <Translation locale="fr-FR">Collectionneur II</Translation>
+      </LocalizedString>
+      <LocalizedString id="203" friendlyName="ACH_COLLECT_50_DESC">
+        <Translation locale="en-US">Unlocked 50 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">50 succès RetroAchievements débloqués.</Translation>
+      </LocalizedString>
+      <LocalizedString id="303" friendlyName="ACH_COLLECT_50_HOWTO">
+        <Translation locale="en-US">Unlock 50 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">Débloquez 50 succès RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="104" friendlyName="ACH_COLLECT_100_NAME">
+        <Translation locale="en-US">Collector III</Translation>
+        <Translation locale="fr-FR">Collectionneur III</Translation>
+      </LocalizedString>
+      <LocalizedString id="204" friendlyName="ACH_COLLECT_100_DESC">
+        <Translation locale="en-US">Unlocked 100 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">100 succès RetroAchievements débloqués.</Translation>
+      </LocalizedString>
+      <LocalizedString id="304" friendlyName="ACH_COLLECT_100_HOWTO">
+        <Translation locale="en-US">Unlock 100 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">Débloquez 100 succès RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="105" friendlyName="ACH_COLLECT_250_NAME">
+        <Translation locale="en-US">Collector IV</Translation>
+        <Translation locale="fr-FR">Collectionneur IV</Translation>
+      </LocalizedString>
+      <LocalizedString id="205" friendlyName="ACH_COLLECT_250_DESC">
+        <Translation locale="en-US">Unlocked 250 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">250 succès RetroAchievements débloqués.</Translation>
+      </LocalizedString>
+      <LocalizedString id="305" friendlyName="ACH_COLLECT_250_HOWTO">
+        <Translation locale="en-US">Unlock 250 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">Débloquez 250 succès RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="106" friendlyName="ACH_COLLECT_500_NAME">
+        <Translation locale="en-US">Collector V</Translation>
+        <Translation locale="fr-FR">Collectionneur V</Translation>
+      </LocalizedString>
+      <LocalizedString id="206" friendlyName="ACH_COLLECT_500_DESC">
+        <Translation locale="en-US">Unlocked 500 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">500 succès RetroAchievements débloqués.</Translation>
+      </LocalizedString>
+      <LocalizedString id="306" friendlyName="ACH_COLLECT_500_HOWTO">
+        <Translation locale="en-US">Unlock 500 RetroAchievements achievements.</Translation>
+        <Translation locale="fr-FR">Débloquez 500 succès RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="107" friendlyName="ACH_POINTS_100_NAME">
+        <Translation locale="en-US">Scorer I</Translation>
+        <Translation locale="fr-FR">Marqueur I</Translation>
+      </LocalizedString>
+      <LocalizedString id="207" friendlyName="ACH_POINTS_100_DESC">
+        <Translation locale="en-US">Earned 100 RetroAchievements points.</Translation>
+        <Translation locale="fr-FR">100 points RetroAchievements gagnés.</Translation>
+      </LocalizedString>
+      <LocalizedString id="307" friendlyName="ACH_POINTS_100_HOWTO">
+        <Translation locale="en-US">Earn 100 RetroAchievements points.</Translation>
+        <Translation locale="fr-FR">Gagnez 100 points RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="108" friendlyName="ACH_POINTS_1000_NAME">
+        <Translation locale="en-US">Scorer II</Translation>
+        <Translation locale="fr-FR">Marqueur II</Translation>
+      </LocalizedString>
+      <LocalizedString id="208" friendlyName="ACH_POINTS_1000_DESC">
+        <Translation locale="en-US">Earned 1,000 RetroAchievements points.</Translation>
+        <Translation locale="fr-FR">1 000 points RetroAchievements gagnés.</Translation>
+      </LocalizedString>
+      <LocalizedString id="308" friendlyName="ACH_POINTS_1000_HOWTO">
+        <Translation locale="en-US">Earn 1,000 RetroAchievements points.</Translation>
+        <Translation locale="fr-FR">Gagnez 1 000 points RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="109" friendlyName="ACH_POINTS_5000_NAME">
+        <Translation locale="en-US">Scorer III</Translation>
+        <Translation locale="fr-FR">Marqueur III</Translation>
+      </LocalizedString>
+      <LocalizedString id="209" friendlyName="ACH_POINTS_5000_DESC">
+        <Translation locale="en-US">Earned 5,000 RetroAchievements points.</Translation>
+        <Translation locale="fr-FR">5 000 points RetroAchievements gagnés.</Translation>
+      </LocalizedString>
+      <LocalizedString id="309" friendlyName="ACH_POINTS_5000_HOWTO">
+        <Translation locale="en-US">Earn 5,000 RetroAchievements points.</Translation>
+        <Translation locale="fr-FR">Gagnez 5 000 points RetroAchievements.</Translation>
+      </LocalizedString>
+      <LocalizedString id="110" friendlyName="ACH_GAMES_3_NAME">
+        <Translation locale="en-US">Explorer I</Translation>
+        <Translation locale="fr-FR">Explorateur I</Translation>
+      </LocalizedString>
+      <LocalizedString id="210" friendlyName="ACH_GAMES_3_DESC">
+        <Translation locale="en-US">Unlocked achievements in 3 different games.</Translation>
+        <Translation locale="fr-FR">Succès débloqués dans 3 jeux différents.</Translation>
+      </LocalizedString>
+      <LocalizedString id="310" friendlyName="ACH_GAMES_3_HOWTO">
+        <Translation locale="en-US">Unlock achievements in 3 different games.</Translation>
+        <Translation locale="fr-FR">Débloquez des succès dans 3 jeux différents.</Translation>
+      </LocalizedString>
+      <LocalizedString id="111" friendlyName="ACH_GAMES_10_NAME">
+        <Translation locale="en-US">Explorer II</Translation>
+        <Translation locale="fr-FR">Explorateur II</Translation>
+      </LocalizedString>
+      <LocalizedString id="211" friendlyName="ACH_GAMES_10_DESC">
+        <Translation locale="en-US">Unlocked achievements in 10 different games.</Translation>
+        <Translation locale="fr-FR">Succès débloqués dans 10 jeux différents.</Translation>
+      </LocalizedString>
+      <LocalizedString id="311" friendlyName="ACH_GAMES_10_HOWTO">
+        <Translation locale="en-US">Unlock achievements in 10 different games.</Translation>
+        <Translation locale="fr-FR">Débloquez des succès dans 10 jeux différents.</Translation>
+      </LocalizedString>
+      <LocalizedString id="112" friendlyName="ACH_GAMES_25_NAME">
+        <Translation locale="en-US">Explorer III</Translation>
+        <Translation locale="fr-FR">Explorateur III</Translation>
+      </LocalizedString>
+      <LocalizedString id="212" friendlyName="ACH_GAMES_25_DESC">
+        <Translation locale="en-US">Unlocked achievements in 25 different games.</Translation>
+        <Translation locale="fr-FR">Succès débloqués dans 25 jeux différents.</Translation>
+      </LocalizedString>
+      <LocalizedString id="312" friendlyName="ACH_GAMES_25_HOWTO">
+        <Translation locale="en-US">Unlock achievements in 25 different games.</Translation>
+        <Translation locale="fr-FR">Débloquez des succès dans 25 jeux différents.</Translation>
+      </LocalizedString>
+      <LocalizedString id="113" friendlyName="ACH_MASTER_1_NAME">
+        <Translation locale="en-US">Perfectionist I</Translation>
+        <Translation locale="fr-FR">Perfectionniste I</Translation>
+      </LocalizedString>
+      <LocalizedString id="213" friendlyName="ACH_MASTER_1_DESC">
+        <Translation locale="en-US">Unlocked every achievement of a game.</Translation>
+        <Translation locale="fr-FR">Tous les succès d'un jeu débloqués.</Translation>
+      </LocalizedString>
+      <LocalizedString id="313" friendlyName="ACH_MASTER_1_HOWTO">
+        <Translation locale="en-US">Unlock every achievement of a game.</Translation>
+        <Translation locale="fr-FR">Débloquez tous les succès d'un jeu.</Translation>
+      </LocalizedString>
+      <LocalizedString id="114" friendlyName="ACH_MASTER_3_NAME">
+        <Translation locale="en-US">Perfectionist II</Translation>
+        <Translation locale="fr-FR">Perfectionniste II</Translation>
+      </LocalizedString>
+      <LocalizedString id="214" friendlyName="ACH_MASTER_3_DESC">
+        <Translation locale="en-US">Unlocked every achievement of 3 games.</Translation>
+        <Translation locale="fr-FR">Tous les succès de 3 jeux débloqués.</Translation>
+      </LocalizedString>
+      <LocalizedString id="314" friendlyName="ACH_MASTER_3_HOWTO">
+        <Translation locale="en-US">Unlock every achievement of 3 games.</Translation>
+        <Translation locale="fr-FR">Débloquez tous les succès de 3 jeux.</Translation>
+      </LocalizedString>
+      <LocalizedString id="115" friendlyName="ACH_SM64_NAME">
+        <Translation locale="en-US">Super Mario 64</Translation>
+        <Translation locale="fr-FR">Super Mario 64</Translation>
+      </LocalizedString>
+      <LocalizedString id="215" friendlyName="ACH_SM64_DESC">
+        <Translation locale="en-US">Unlocked 10 achievements in Super Mario 64.</Translation>
+        <Translation locale="fr-FR">10 succès débloqués dans Super Mario 64.</Translation>
+      </LocalizedString>
+      <LocalizedString id="315" friendlyName="ACH_SM64_HOWTO">
+        <Translation locale="en-US">Unlock 10 achievements in Super Mario 64.</Translation>
+        <Translation locale="fr-FR">Débloquez 10 succès dans Super Mario 64.</Translation>
+      </LocalizedString>
+      <LocalizedString id="116" friendlyName="ACH_OOT_NAME">
+        <Translation locale="en-US">Ocarina of Time</Translation>
+        <Translation locale="fr-FR">Ocarina of Time</Translation>
+      </LocalizedString>
+      <LocalizedString id="216" friendlyName="ACH_OOT_DESC">
+        <Translation locale="en-US">Unlocked 10 achievements in Ocarina of Time.</Translation>
+        <Translation locale="fr-FR">10 succès débloqués dans Ocarina of Time.</Translation>
+      </LocalizedString>
+      <LocalizedString id="316" friendlyName="ACH_OOT_HOWTO">
+        <Translation locale="en-US">Unlock 10 achievements in The Legend of Zelda: Ocarina of Time.</Translation>
+        <Translation locale="fr-FR">Débloquez 10 succès dans The Legend of Zelda: Ocarina of Time.</Translation>
+      </LocalizedString>
+      <LocalizedString id="117" friendlyName="ACH_MK64_NAME">
+        <Translation locale="en-US">Mario Kart 64</Translation>
+        <Translation locale="fr-FR">Mario Kart 64</Translation>
+      </LocalizedString>
+      <LocalizedString id="217" friendlyName="ACH_MK64_DESC">
+        <Translation locale="en-US">Unlocked 10 achievements in Mario Kart 64.</Translation>
+        <Translation locale="fr-FR">10 succès débloqués dans Mario Kart 64.</Translation>
+      </LocalizedString>
+      <LocalizedString id="317" friendlyName="ACH_MK64_HOWTO">
+        <Translation locale="en-US">Unlock 10 achievements in Mario Kart 64.</Translation>
+        <Translation locale="fr-FR">Débloquez 10 succès dans Mario Kart 64.</Translation>
+      </LocalizedString>
+      <LocalizedString id="118" friendlyName="ACH_GE007_NAME">
+        <Translation locale="en-US">GoldenEye 007</Translation>
+        <Translation locale="fr-FR">GoldenEye 007</Translation>
+      </LocalizedString>
+      <LocalizedString id="218" friendlyName="ACH_GE007_DESC">
+        <Translation locale="en-US">Unlocked 10 achievements in GoldenEye 007.</Translation>
+        <Translation locale="fr-FR">10 succès débloqués dans GoldenEye 007.</Translation>
+      </LocalizedString>
+      <LocalizedString id="318" friendlyName="ACH_GE007_HOWTO">
+        <Translation locale="en-US">Unlock 10 achievements in GoldenEye 007.</Translation>
+        <Translation locale="fr-FR">Débloquez 10 succès dans GoldenEye 007.</Translation>
+      </LocalizedString>
+      <LocalizedString id="119" friendlyName="ACH_BANJO_NAME">
+        <Translation locale="en-US">Banjo-Kazooie</Translation>
+        <Translation locale="fr-FR">Banjo-Kazooie</Translation>
+      </LocalizedString>
+      <LocalizedString id="219" friendlyName="ACH_BANJO_DESC">
+        <Translation locale="en-US">Unlocked 10 achievements in Banjo-Kazooie.</Translation>
+        <Translation locale="fr-FR">10 succès débloqués dans Banjo-Kazooie.</Translation>
+      </LocalizedString>
+      <LocalizedString id="319" friendlyName="ACH_BANJO_HOWTO">
+        <Translation locale="en-US">Unlock 10 achievements in Banjo-Kazooie.</Translation>
+        <Translation locale="fr-FR">Débloquez 10 succès dans Banjo-Kazooie.</Translation>
+      </LocalizedString>
+      <LocalizedString id="120" friendlyName="ACH_SAVE_STATE_NAME">
+        <Translation locale="en-US">Quick Save</Translation>
+        <Translation locale="fr-FR">Sauvegarde éclair</Translation>
+      </LocalizedString>
+      <LocalizedString id="220" friendlyName="ACH_SAVE_STATE_DESC">
+        <Translation locale="en-US">Saved a state in a game.</Translation>
+        <Translation locale="fr-FR">Un état sauvegardé dans un jeu.</Translation>
+      </LocalizedString>
+      <LocalizedString id="320" friendlyName="ACH_SAVE_STATE_HOWTO">
+        <Translation locale="en-US">Save a state in a game.</Translation>
+        <Translation locale="fr-FR">Sauvegardez un état dans un jeu.</Translation>
+      </LocalizedString>
+      <LocalizedString id="121" friendlyName="ACH_HD_PACK_NAME">
+        <Translation locale="en-US">High Definition</Translation>
+        <Translation locale="fr-FR">Haute définition</Translation>
+      </LocalizedString>
+      <LocalizedString id="221" friendlyName="ACH_HD_PACK_DESC">
+        <Translation locale="en-US">Installed an HD texture pack.</Translation>
+        <Translation locale="fr-FR">Un pack de textures HD installé.</Translation>
+      </LocalizedString>
+      <LocalizedString id="321" friendlyName="ACH_HD_PACK_HOWTO">
+        <Translation locale="en-US">Install an HD texture pack.</Translation>
+        <Translation locale="fr-FR">Installez un pack de textures HD.</Translation>
+      </LocalizedString>
+      <LocalizedString id="122" friendlyName="ACH_FAVOURITE_NAME">
+        <Translation locale="en-US">My Favourites</Translation>
+        <Translation locale="fr-FR">Mes préférés</Translation>
+      </LocalizedString>
+      <LocalizedString id="222" friendlyName="ACH_FAVOURITE_DESC">
+        <Translation locale="en-US">Added a game to your favourites.</Translation>
+        <Translation locale="fr-FR">Un jeu ajouté à vos favoris.</Translation>
+      </LocalizedString>
+      <LocalizedString id="322" friendlyName="ACH_FAVOURITE_HOWTO">
+        <Translation locale="en-US">Add a game to your favourites.</Translation>
+        <Translation locale="fr-FR">Ajoutez un jeu à vos favoris.</Translation>
+      </LocalizedString>
+      <LocalizedString id="123" friendlyName="ACH_LANGUAGE_NAME">
+        <Translation locale="en-US">Polyglot</Translation>
+        <Translation locale="fr-FR">Polyglotte</Translation>
+      </LocalizedString>
+      <LocalizedString id="223" friendlyName="ACH_LANGUAGE_DESC">
+        <Translation locale="en-US">Changed the language of the menus.</Translation>
+        <Translation locale="fr-FR">Langue des menus changée.</Translation>
+      </LocalizedString>
+      <LocalizedString id="323" friendlyName="ACH_LANGUAGE_HOWTO">
+        <Translation locale="en-US">Change the language of the menus.</Translation>
+        <Translation locale="fr-FR">Changez la langue des menus.</Translation>
       </LocalizedString>
     </LocalizedStrings>
     <Presence>
@@ -38,8 +321,101 @@
         <ContextValue stringId="32514" value="1" friendlyName="STANDARD" />
       </Context>
     </Contexts>
-    <Achievements nextId="1" />
+    <Achievements nextId="24">
+      <Achievement id="1" friendlyName="FIRST" titleStringId="101" descriptionStringId="201" unachievedStringId="301" showUnachieved="true" achievementType="Other" cred="10" imageId="1" />
+      <Achievement id="2" friendlyName="COLLECT_10" titleStringId="102" descriptionStringId="202" unachievedStringId="302" showUnachieved="true" achievementType="Other" cred="20" imageId="2" />
+      <Achievement id="3" friendlyName="COLLECT_50" titleStringId="103" descriptionStringId="203" unachievedStringId="303" showUnachieved="true" achievementType="Other" cred="40" imageId="3" />
+      <Achievement id="4" friendlyName="COLLECT_100" titleStringId="104" descriptionStringId="204" unachievedStringId="304" showUnachieved="true" achievementType="Other" cred="60" imageId="4" />
+      <Achievement id="5" friendlyName="COLLECT_250" titleStringId="105" descriptionStringId="205" unachievedStringId="305" showUnachieved="true" achievementType="Other" cred="80" imageId="5" />
+      <Achievement id="6" friendlyName="COLLECT_500" titleStringId="106" descriptionStringId="206" unachievedStringId="306" showUnachieved="true" achievementType="Other" cred="100" imageId="6" />
+      <Achievement id="7" friendlyName="POINTS_100" titleStringId="107" descriptionStringId="207" unachievedStringId="307" showUnachieved="true" achievementType="Other" cred="20" imageId="7" />
+      <Achievement id="8" friendlyName="POINTS_1000" titleStringId="108" descriptionStringId="208" unachievedStringId="308" showUnachieved="true" achievementType="Other" cred="50" imageId="8" />
+      <Achievement id="9" friendlyName="POINTS_5000" titleStringId="109" descriptionStringId="209" unachievedStringId="309" showUnachieved="true" achievementType="Other" cred="100" imageId="9" />
+      <Achievement id="10" friendlyName="GAMES_3" titleStringId="110" descriptionStringId="210" unachievedStringId="310" showUnachieved="true" achievementType="Other" cred="20" imageId="10" />
+      <Achievement id="11" friendlyName="GAMES_10" titleStringId="111" descriptionStringId="211" unachievedStringId="311" showUnachieved="true" achievementType="Other" cred="50" imageId="11" />
+      <Achievement id="12" friendlyName="GAMES_25" titleStringId="112" descriptionStringId="212" unachievedStringId="312" showUnachieved="true" achievementType="Other" cred="80" imageId="12" />
+      <Achievement id="13" friendlyName="MASTER_1" titleStringId="113" descriptionStringId="213" unachievedStringId="313" showUnachieved="true" achievementType="Other" cred="80" imageId="13" />
+      <Achievement id="14" friendlyName="MASTER_3" titleStringId="114" descriptionStringId="214" unachievedStringId="314" showUnachieved="true" achievementType="Other" cred="100" imageId="14" />
+      <Achievement id="15" friendlyName="SM64" titleStringId="115" descriptionStringId="215" unachievedStringId="315" showUnachieved="true" achievementType="Other" cred="30" imageId="15" />
+      <Achievement id="16" friendlyName="OOT" titleStringId="116" descriptionStringId="216" unachievedStringId="316" showUnachieved="true" achievementType="Other" cred="30" imageId="16" />
+      <Achievement id="17" friendlyName="MK64" titleStringId="117" descriptionStringId="217" unachievedStringId="317" showUnachieved="true" achievementType="Other" cred="30" imageId="17" />
+      <Achievement id="18" friendlyName="GE007" titleStringId="118" descriptionStringId="218" unachievedStringId="318" showUnachieved="true" achievementType="Other" cred="30" imageId="18" />
+      <Achievement id="19" friendlyName="BANJO" titleStringId="119" descriptionStringId="219" unachievedStringId="319" showUnachieved="true" achievementType="Other" cred="30" imageId="19" />
+      <Achievement id="20" friendlyName="SAVE_STATE" titleStringId="120" descriptionStringId="220" unachievedStringId="320" showUnachieved="true" achievementType="Other" cred="10" imageId="20" />
+      <Achievement id="21" friendlyName="HD_PACK" titleStringId="121" descriptionStringId="221" unachievedStringId="321" showUnachieved="true" achievementType="Other" cred="10" imageId="21" />
+      <Achievement id="22" friendlyName="FAVOURITE" titleStringId="122" descriptionStringId="222" unachievedStringId="322" showUnachieved="true" achievementType="Other" cred="10" imageId="22" />
+      <Achievement id="23" friendlyName="LANGUAGE" titleStringId="123" descriptionStringId="223" unachievedStringId="323" showUnachieved="true" achievementType="Other" cred="10" imageId="23" />
+    </Achievements>
     <Images>
+      <Image id="1" friendlyName="IMG_FIRST">
+        <Path>art\ach\01.png</Path>
+      </Image>
+      <Image id="2" friendlyName="IMG_COLLECT_10">
+        <Path>art\ach\02.png</Path>
+      </Image>
+      <Image id="3" friendlyName="IMG_COLLECT_50">
+        <Path>art\ach\03.png</Path>
+      </Image>
+      <Image id="4" friendlyName="IMG_COLLECT_100">
+        <Path>art\ach\04.png</Path>
+      </Image>
+      <Image id="5" friendlyName="IMG_COLLECT_250">
+        <Path>art\ach\05.png</Path>
+      </Image>
+      <Image id="6" friendlyName="IMG_COLLECT_500">
+        <Path>art\ach\06.png</Path>
+      </Image>
+      <Image id="7" friendlyName="IMG_POINTS_100">
+        <Path>art\ach\07.png</Path>
+      </Image>
+      <Image id="8" friendlyName="IMG_POINTS_1000">
+        <Path>art\ach\08.png</Path>
+      </Image>
+      <Image id="9" friendlyName="IMG_POINTS_5000">
+        <Path>art\ach\09.png</Path>
+      </Image>
+      <Image id="10" friendlyName="IMG_GAMES_3">
+        <Path>art\ach\10.png</Path>
+      </Image>
+      <Image id="11" friendlyName="IMG_GAMES_10">
+        <Path>art\ach\11.png</Path>
+      </Image>
+      <Image id="12" friendlyName="IMG_GAMES_25">
+        <Path>art\ach\12.png</Path>
+      </Image>
+      <Image id="13" friendlyName="IMG_MASTER_1">
+        <Path>art\ach\13.png</Path>
+      </Image>
+      <Image id="14" friendlyName="IMG_MASTER_3">
+        <Path>art\ach\14.png</Path>
+      </Image>
+      <Image id="15" friendlyName="IMG_SM64">
+        <Path>art\ach\15.png</Path>
+      </Image>
+      <Image id="16" friendlyName="IMG_OOT">
+        <Path>art\ach\16.png</Path>
+      </Image>
+      <Image id="17" friendlyName="IMG_MK64">
+        <Path>art\ach\17.png</Path>
+      </Image>
+      <Image id="18" friendlyName="IMG_GE007">
+        <Path>art\ach\18.png</Path>
+      </Image>
+      <Image id="19" friendlyName="IMG_BANJO">
+        <Path>art\ach\19.png</Path>
+      </Image>
+      <Image id="20" friendlyName="IMG_SAVE_STATE">
+        <Path>art\ach\20.png</Path>
+      </Image>
+      <Image id="21" friendlyName="IMG_HD_PACK">
+        <Path>art\ach\21.png</Path>
+      </Image>
+      <Image id="22" friendlyName="IMG_FAVOURITE">
+        <Path>art\ach\22.png</Path>
+      </Image>
+      <Image id="23" friendlyName="IMG_LANGUAGE">
+        <Path>art\ach\23.png</Path>
+      </Image>
       <Image id="32768" friendlyName="X_IMAGEID_GAME">
         <Path>art\icon.png</Path>
       </Image>
