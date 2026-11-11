@@ -44,6 +44,7 @@
 #include "xb_audio.h"
 #include "xb_hd.h"
 #include "xb_ach.h"
+#include "xb_net.h"
 #include "xb_ra.h"
 
 // ---- Recompiler code memory (M0.3 result: only an image section linked
@@ -1979,6 +1980,7 @@ int __cdecl main()
     // Xbox achievements: not in Xenia, and not during scripted checks (they would unlock on the tester's profile).
     XbAchInit(!cfg.xenia && !cfg.input.count && !cfg.exitAfter && !cfg.shotCount && !cfg.saveStateAt && cfg.controlsTest < 0 && !cfg.hdPage);
     // RetroAchievements: off until a settings file or the menu turns it on.
+    NetTestOff(cfg.noNet);
     XbRaInit(s_logDrive, 0, OsdText);
     if (cfg.raTest) XbRaSelfTest();
     s_jitNoFpu = !cfg.jitFpu;

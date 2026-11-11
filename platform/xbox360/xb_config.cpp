@@ -41,6 +41,7 @@ void ConfigDefaults(Config *c)
     c->achievements = 0;
     c->achAt = 0;
     c->raTest = 0;
+    c->noNet = 0;
     c->raToast = 0;
     c->hdPage = 0;
     c->controlsTest = -1;
@@ -167,6 +168,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "achievements")) c->achievements = atoi(eq + 1);
         else if (!strcmp(line, "achat")) c->achAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "ratest")) c->raTest = atoi(eq + 1);
+        else if (!strcmp(line, "nonet")) c->noNet = atoi(eq + 1);
         else if (!strcmp(line, "ratoast")) c->raToast = (u32)atoi(eq + 1);
         else if (!strcmp(line, "hdpage")) c->hdPage = atoi(eq + 1);
         else if (!strcmp(line, "controlstest")) c->controlsTest = atoi(eq + 1);

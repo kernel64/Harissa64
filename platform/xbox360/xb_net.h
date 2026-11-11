@@ -22,6 +22,11 @@
 // at once (no new wait) unless `retry` is set.
 int NetStart(int retry);
 
+// Checks (ini nonet=): 1 makes NetStart fail at once, as with no cable; 2 is
+// read by the achievements' badges only (their downloads fail). 0: normal.
+void NetTestOff(int mode);
+int NetTestMode(void);
+
 // GET https://host/path over HTTP/1.1. Redirects are followed (up to 4) when
 // `follow` is set; otherwise a redirect's Location goes to `location`. With
 // `body` NULL only the headers are read. The body (Content-Length, chunked or

@@ -215,7 +215,7 @@ static u8 *badge_load(const char *name, const char *host, const char *path, int 
     {
         free(data);
         data = NULL;
-        if (!NetStart(0) || NetGet(host, path, 1, &data, &len, 1024 * 1024, NULL, 0) != 200 || !len)
+        if (NetTestMode() == 2 || !NetStart(0) || NetGet(host, path, 1, &data, &len, 1024 * 1024, NULL, 0) != 200 || !len)
         {
             free(data);
             return NULL;

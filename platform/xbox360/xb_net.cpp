@@ -40,8 +40,13 @@ static int wait_network(void)
     return r != XNET_GET_XNADDR_PENDING && r != XNET_GET_XNADDR_NONE;
 }
 
+static int s_testOff;
+void NetTestOff(int mode) { s_testOff = mode; }
+int NetTestMode(void) { return s_testOff; }
+
 int NetStart(int retry)
 {
+    if (s_testOff == 1) return 0;
     for (;;)
     {
         LONG st = InterlockedCompareExchange(&s_netState, 1, 0);
