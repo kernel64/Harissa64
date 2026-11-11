@@ -755,11 +755,14 @@ uint32_t rc_read_memory(uint32_t address, uint8_t size, rc_read_memory_func_t re
 
   read_memory(address, value.u8, num_bytes, ud);
 
+  /* Harissa64: the bytes are in little-endian order. Upstream rebuilt the value
+   * on a big-endian host from u8[0] << 24 ... u8[3], which is what the union
+   * already holds there: every 8-bit read gave 0 on the Xbox 360. */
   if (rc_is_host_bigendian()) {
-    value.u32 = value.u8[0] << 24 |
-                value.u8[1] << 16 |
-                value.u8[2] << 8 |
-                value.u8[3];
+    value.u32 = (uint32_t)value.u8[3] << 24 |
+                (uint32_t)value.u8[2] << 16 |
+                (uint32_t)value.u8[1] << 8 |
+                (uint32_t)value.u8[0];
   }
 
   value.u32 &= rc_memref_masks[size]; /* rc_memref_bytes ensures this index exists */
