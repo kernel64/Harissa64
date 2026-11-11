@@ -446,7 +446,8 @@ int XbRaState(void) { return s_enabled ? s_state : XB_RA_OFF; }
 const char *XbRaUser(void) { return s_enabled && s_state == XB_RA_IN ? s_user : ""; }
 
 // ---- The Xbox keyboard: name, then password ----
-static int s_kb;   // 0: closed, 1: the name, 2: the password
+static int s_kb;   // 0: closed, 1: the name, 2: the password, 3: the password, once the name's keyboard is gone
+static DWORD s_kbSince;   // when the wait of 3 began
 static WCHAR s_kbText[128], s_kbTitle[96], s_kbDesc[160];
 static XOVERLAPPED s_kbOv;
 static char s_kbUser[64];
@@ -459,14 +460,24 @@ static void kb_open(int which)
     MultiByteToWideChar(CP_UTF8, 0, Tr(which == 1 ? T_RA_USER_TITLE : T_RA_PASS_TITLE), -1, s_kbTitle, 95);
     MultiByteToWideChar(CP_UTF8, 0, Tr(T_RA_KB_DESC), -1, s_kbDesc, 159);
     r = XShowKeyboardUI(0, which == 1 ? VKBD_DEFAULT : VKBD_LATIN_PASSWORD, L"", s_kbTitle, s_kbDesc, s_kbText, 127, &s_kbOv);
-    s_kb = r == ERROR_IO_PENDING ? which : 0;
-    if (!s_kb) H64_WARN("[ra] the keyboard did not open (%lu)", r);
+    if (r == ERROR_IO_PENDING) { s_kb = which; return; }
+    // Right after the name, the system still has its keyboard up and refuses
+    // another (error 5, seen on the console): asked again for a few seconds.
+    if (which == 2 && r == ERROR_ACCESS_DENIED && (s_kb != 3 || GetTickCount() - s_kbSince < 8000))
+    {
+        if (s_kb != 3) s_kbSince = GetTickCount();
+        s_kb = 3;
+        return;
+    }
+    s_kb = 0;
+    H64_WARN("[ra] the keyboard did not open (%lu)", r);
 }
 
 static void kb_pump(void)
 {
     DWORD r;
     char text[256];
+    if (s_kb == 3) { kb_open(2); return; }
     if (!s_kb || !XHasOverlappedIoCompleted(&s_kbOv)) return;
     r = XGetOverlappedResult(&s_kbOv, NULL, TRUE);
     text[0] = 0;
