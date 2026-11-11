@@ -563,6 +563,21 @@ static void vi_hook(H64System *sys)
     }
     if (s_cheated) rc_client_idle(s_client);
     else rc_client_do_frame(s_client);
+    // What the site shows of the game in progress, in the log when it changes
+    // (looked at every 5 s or so): it is computed from the game's memory, so a
+    // sensible text says the achievements read the right bytes.
+    if (sys->vi.frames % 300 == 0)
+    {
+        static char s_presence[256];
+        char now[256];
+        now[0] = 0;
+        rc_client_get_rich_presence_message(s_client, now, sizeof(now));
+        if (strcmp(now, s_presence))
+        {
+            strcpy(s_presence, now);
+            H64_INFO("[ra] presence: %s", now);
+        }
+    }
 }
 
 void XbRaGameStart(H64System *sys)
