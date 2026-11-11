@@ -1016,6 +1016,7 @@ static int SaveStateNow(H64System *sys, H64Renderer *renderer)
     if (f) fclose(f);
     OsdT(ok ? T_STATE_SAVED : T_STATE_WRITE_FAILED, s_stateSlot);
     if (ok) XbAchUnlock(XB_ACH_SAVE_STATE);
+    if (ok) XbRaStateSaved(path);
     return 1;
 }
 
@@ -1031,7 +1032,7 @@ static void LoadStateNow(H64System *sys)
     else
     {
         OsdT(T_STATE_LOADED, s_stateSlot);
-        XbRaReset();   // achievement conditions in progress start again
+        XbRaStateLoaded(path);   // the achievement conditions as they were at the save
     }
     free(data);
 }

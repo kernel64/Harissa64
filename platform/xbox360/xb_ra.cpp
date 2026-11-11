@@ -594,6 +594,62 @@ void XbRaReset(void)
     if (s_cheated && !(s_sys->cheats && h64_cheat_active(s_sys->cheats)) && s_sys->vi.frames < 2) s_cheated = 0;
 }
 
+// ---- Save states ----
+// The conditions in progress (hit counts, steps of a cup...) are kept in
+// "<state file>.ra" beside each save state, as RetroAchievements asks of
+// emulators: without them a loaded state started every achievement again.
+static void state_side(char *out, size_t size, const char *statePath)
+{
+    _snprintf(out, size, "%s.ra", statePath);
+    out[size - 1] = 0;
+}
+
+void XbRaStateSaved(const char *statePath)
+{
+    char path[200];
+    size_t size;
+    u8 *buf;
+    FILE *f;
+    state_side(path, sizeof(path), statePath);
+    // A state saved without achievements must not keep an older state's progress.
+    if (!s_client || !s_enabled || !s_sys || !s_gameAsked) { DeleteFileA(path); return; }
+    size = rc_client_progress_size(s_client);
+    buf = size ? (u8 *)malloc(size) : NULL;
+    if (!buf || rc_client_serialize_progress_sized(s_client, buf, size) != RC_OK) { free(buf); DeleteFileA(path); return; }
+    f = fopen(path, "wb");
+    if (f)
+    {
+        if (fwrite(buf, 1, size, f) != size) { fclose(f); f = NULL; DeleteFileA(path); }
+        else fclose(f);
+    }
+    free(buf);
+}
+
+void XbRaStateLoaded(const char *statePath)
+{
+    char path[200];
+    u8 *buf = NULL;
+    long size = 0;
+    FILE *f;
+    int r;
+    if (!s_client || !s_enabled || !s_sys) return;
+    state_side(path, sizeof(path), statePath);
+    f = fopen(path, "rb");
+    if (f)
+    {
+        fseek(f, 0, SEEK_END);
+        size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        buf = size > 0 ? (u8 *)malloc((size_t)size) : NULL;
+        if (buf && fread(buf, 1, (size_t)size, f) != (size_t)size) { free(buf); buf = NULL; }
+        fclose(f);
+    }
+    // No file (an older state): rcheevos starts the conditions again.
+    r = rc_client_deserialize_progress_sized(s_client, buf, buf ? (size_t)size : 0);
+    H64_INFO("[ra] state loaded: achievement progress %s (%d)", buf ? "restored" : "reset", r);
+    free(buf);
+}
+
 // ---- The list for the menu ----
 static rc_client_achievement_list_t *s_list;
 #define RA_LIST_MAX 1024

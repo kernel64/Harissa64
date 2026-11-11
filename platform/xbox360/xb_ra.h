@@ -36,6 +36,10 @@ void XbRaGameStart(H64System *sys);
 void XbRaGameEnd(H64System *sys);
 // After a reset or a loaded state: conditions in progress start again.
 void XbRaReset(void);
+// A save state was written to / loaded from statePath: the achievements'
+// progress is kept beside it ("<statePath>.ra") and put back.
+void XbRaStateSaved(const char *statePath);
+void XbRaStateLoaded(const char *statePath);
 
 // The running game's achievements for the menu: Begin returns their number
 // (0: none, not connected or off) and holds the list until End.
