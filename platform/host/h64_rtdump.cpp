@@ -315,7 +315,8 @@ int h64_rtdump_play(int argc, char **argv)
     std::string dump, out;
     std::set<u32> frames;
     std::vector<u8> data;
-    int all = 0, last = 1, i, rc, probe = 0;
+    int all = 0, last = 1, i, rc, probe = 0, cvgStats = 0;
+    H64RdpCvgStats cs;
     u32 probeX = 0, probeY = 0, probeFrame = 0;
     FILE *f;
     long n;
@@ -323,6 +324,7 @@ int h64_rtdump_play(int argc, char **argv)
     H64System *sys;
     for (i = 0; i < argc; i++)
     {
+        if (!strcmp(argv[i], "--cvg-stats")) { cvgStats = 1; continue; }
         if (!strcmp(argv[i], "--probe") && i + 1 < argc)
         {
             // Every software-RDP write to pixel X,Y during scene frame FRAME (mode, colours, before/after).
@@ -359,6 +361,8 @@ int h64_rtdump_play(int argc, char **argv)
     sys = (H64System *)calloc(1, sizeof(H64System));
     sys->rdram = (u8 *)calloc(1, H64_RDRAM_SIZE);
     h64_rdp_state(sys);   // allocates the hidden RDRAM too
+    memset(&cs, 0, sizeof(cs));
+    if (cvgStats) h64_rdp_state(sys)->cvgStats = &cs;
     for (;;)
     {
         if (probe)
@@ -386,6 +390,21 @@ int h64_rtdump_play(int argc, char **argv)
         write_out(out + "/soft_last.hidden", sys->rdramHidden, HIDDEN_SIZE);
     }
     printf("[rt-play] %u frames, %u commands\n", sc.frame, sc.commands);
+    if (cvgStats)
+    {
+        // What a GPU renderer without coverage gets wrong, in pixels.
+        double n = cs.pixels ? (double)cs.pixels : 1.0;
+        printf("[cvg] pixels %llu | partial coverage %.2f %% | colour-on-coverage kept memory %llu (%.2f %%, %llu of them fully covered)"
+               " | edge blends %llu (%.2f %%) | unblended overflows %llu\n",
+               (unsigned long long)cs.pixels, 100.0 * (double)(cs.pixels - cs.pixCov[8]) / n,
+               (unsigned long long)cs.cocSuppressed, 100.0 * (double)cs.cocSuppressed / n, (unsigned long long)cs.cocSuppressedFull,
+               (unsigned long long)cs.edgeBlend, 100.0 * (double)cs.edgeBlend / n, (unsigned long long)cs.unblendedOverflow);
+        printf("[cvg] pixel coverage 0..8:");
+        for (i = 0; i < 9; i++) printf(" %llu", (unsigned long long)cs.pixCov[i]);
+        printf(" | memory coverage of the kept ones 0..7:");
+        for (i = 0; i < 8; i++) printf(" %llu", (unsigned long long)cs.cocMemCov[i]);
+        printf("\n");
+    }
     h64_rdp_free(sys);
     free(sys->rdram);
     free(sys);

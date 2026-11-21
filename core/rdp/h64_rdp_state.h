@@ -114,6 +114,20 @@ struct H64RdpState
     // Debug probe (h64test --probe X,Y,FRAME): every pixel write at (x, y) is logged.
     int probeOn;
     u32 probeX, probeY;
+    // Coverage statistics (h64test --rt-play --cvg-stats; NULL: none): what the
+    // coverage rules change, for a GPU renderer that keeps no coverage.
+    struct H64RdpCvgStats *cvgStats;
+};
+
+struct H64RdpCvgStats
+{
+    u64 pixels;              // pixels past the depth test (blender modes, not fill/copy)
+    u64 pixCov[9];           // their pixel coverage (0..8 samples)
+    u64 cocSuppressed;       // colour on coverage, no overflow: the memory colour kept
+    u64 cocSuppressedFull;   // ... of which pixel coverage 8 (inside the triangle)
+    u64 cocMemCov[8];        // memory coverage of the suppressed ones
+    u64 edgeBlend;           // blended because of a partial coverage (AA, no force blend)
+    u64 unblendedOverflow;   // AA without force blend, overflow: written unblended
 };
 
 // Texture unit (h64_rdp_tex.cpp)

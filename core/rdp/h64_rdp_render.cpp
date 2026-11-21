@@ -795,6 +795,21 @@ static H64_INLINE void depth_blend(H64RdpState *st, const Derived *d, Pixel *p, 
         return;
     if ((st->depthBlendFlags & DB_AA) && coverageCount == 0)
         return;
+    if (st->cvgStats)
+    {
+        H64RdpCvgStats *cs = st->cvgStats;
+        int forceBlend = (st->depthBlendFlags & DB_FORCE_BLEND) != 0;
+        cs->pixels++;
+        cs->pixCov[coverageCount > 8 ? 8 : coverageCount < 0 ? 0 : coverageCount]++;
+        if ((st->depthBlendFlags & DB_COLOR_ON_CVG) && !coverageWrap)
+        {
+            cs->cocSuppressed++;
+            if (coverageCount >= 8) cs->cocSuppressedFull++;
+            cs->cocMemCov[memCov & 7]++;
+        }
+        else if (blendEn && !forceBlend) cs->edgeBlend++;
+        else if ((st->depthBlendFlags & DB_AA) && !forceBlend && coverageWrap) cs->unblendedOverflow++;
+    }
     pr = combined[0] & 0xFF; pg = combined[1] & 0xFF; pb = combined[2] & 0xFF; pa = combined[3] & 0xFF;
     if (st->depthBlendFlags & DB_MULTI_CYCLE)
     {
