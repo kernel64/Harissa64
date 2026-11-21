@@ -49,6 +49,11 @@ int h64_xenos_save_frame(H64Renderer *r, const char *path);
 // worker must be idle and the device this thread's.
 int h64_xenos_shown_frame_to_rdram(H64Renderer *r, u32 *addr, u32 *bytes, u8 *before, u32 beforeSize);
 
+// Render tests (rendertest=): every image the GPU drew since its last copy
+// back is written into RDRAM in its own format (as copy backs do). Returns how
+// many, with their RDRAM ranges in addr/bytes (at most max). Waits for the GPU.
+u32 h64_xenos_copy_back_all(H64Renderer *r, u32 *addr, u32 *bytes, u32 max);
+
 // Debug output of combined primitives: 0 normal, 1 solid red, 2 shade
 // colour only, 3 texture 0 only.
 void h64_xenos_set_debug(H64Renderer *r, int mode);

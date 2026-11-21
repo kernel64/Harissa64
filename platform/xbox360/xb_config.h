@@ -21,6 +21,8 @@ struct Config
     int hle;            // hle=0: RSP tasks on the LLE RSP
     int softRenderer;   // renderer=soft: the software RDP draws into RDRAM, Xenos only shows RDRAM (diagnosis)
     int xenosDebug;     // xenosdebug=1..4: renderer debug output (h64_xenos_set_debug)
+    char renderTest[256];   // rendertest=FOLDER: draw every FOLDER\<case>\scene.rdp with Xenos, then the dashboard
+    int renderTestScale;    // rendertestscale=N: internal resolution for them (default 0: from the widest image, 1:1 at least)
     u32 pauseAt;        // pauseat=N: hold the frame shown at VI N for 20 s (window captures in Xenia)
     H64InputScript input;   // input=SCRIPT: scripted controller 1 (h64test --input syntax) instead of the pad
     u32 shots[64];      // shots=f1,f2,...: save the frame shown at these VIs (debug, scripted runs)

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../../core/rdp/h64_rdp.h"
+#include "../../core/rtest/h64_rtscene.h"
 #include "../../core/rdp/h64_rdp_state.h"
 #include "../../core/system/h64_system.h"
 #include "../../render/api.h"
@@ -230,9 +231,7 @@ void h64_rtdump_close(void)
            s_rec.frames, s_rec.commands, s_rec.triangles, s_rec.ramBytes);
 }
 
-// ---- Replay with the software RDP --------------------------------------------
-
-static int rd(FILE *f, u32 *v) { return fread(v, 4, 1, f) == 1; }
+// ---- Replay with the software RDP (core/rtest/h64_rtscene.h) -----------------
 
 static int write_out(const std::string &path, const u8 *data, u32 size)
 {
@@ -247,14 +246,12 @@ int h64_rtdump_play(int argc, char **argv)
 {
     std::string dump, out;
     std::set<u32> frames;
-    int all = 0, last = 1, i;
+    std::vector<u8> data;
+    int all = 0, last = 1, i, rc;
     FILE *f;
-    char magic[8];
-    u32 ramSize, hidSize, frame = 0, commands = 0, cmd;
+    long n;
+    H64RtScene sc;
     H64System *sys;
-    std::vector<u32> words;
-    std::vector<u64> w64;
-    u8 buf[4096];
     for (i = 0; i < argc; i++)
     {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc)
@@ -273,81 +270,38 @@ int h64_rtdump_play(int argc, char **argv)
         else if (dump.empty()) dump = argv[i];
         else if (out.empty()) out = argv[i];
     }
-    if (dump.empty() || out.empty()) { fprintf(stderr, "usage: h64test --rt-play DUMP OUTDIR [--frames all|last|N,..]\n"); return 3; }
+    if (dump.empty() || out.empty()) { fprintf(stderr, "usage: h64test --rt-play SCENE OUTDIR [--frames all|last|N,..]\n"); return 3; }
     f = fopen(dump.c_str(), "rb");
-    if (!f || fread(magic, 1, 8, f) != 8 || memcmp(magic, "RDPDUMP2", 8) || !rd(f, &ramSize) || !rd(f, &hidSize) ||
-        ramSize != H64_RDRAM_SIZE || hidSize != HIDDEN_SIZE)
-    {
-        fprintf(stderr, "not an 8 MB RDPDUMP2 scene: %s\n", dump.c_str());
-        return 3;
-    }
+    if (!f) { fprintf(stderr, "cannot read %s\n", dump.c_str()); return 3; }
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    data.resize(n > 0 ? (size_t)n : 1);
+    if (n <= 0 || fread(&data[0], 1, (size_t)n, f) != (size_t)n) { fclose(f); fprintf(stderr, "cannot read %s\n", dump.c_str()); return 3; }
+    fclose(f);
+    if (h64_rtscene_open(&sc, &data[0], (u32)n)) { fprintf(stderr, "not an 8 MB RDPDUMP2 scene: %s\n", dump.c_str()); return 3; }
     sys = (H64System *)calloc(1, sizeof(H64System));
     sys->rdram = (u8 *)calloc(1, H64_RDRAM_SIZE);
     h64_rdp_state(sys);   // allocates the hidden RDRAM too
-    for (;;)
+    while ((rc = h64_rtscene_play_frame(&sc, sys, 0)) == 1)
     {
-        u32 a, b, k;
-        if (!rd(f, &cmd)) break;
-        if (cmd == REC_EOF) break;
-        switch (cmd)
+        u32 fr = sc.frame - 1;
+        if (all || frames.count(fr))
         {
-        case REC_UPDATE_DRAM:
-            if (!rd(f, &a) || !rd(f, &b) || a + b > H64_RDRAM_SIZE || (a | b) & 3) { fprintf(stderr, "bad RDRAM record\n"); return 1; }
-            while (b)
-            {
-                u32 n = b < sizeof(buf) ? b : (u32)sizeof(buf);
-                if (fread(buf, 1, n, f) != n) { fprintf(stderr, "short RDRAM record\n"); return 1; }
-                for (k = 0; k < n; k += 4)
-                {
-                    sys->rdram[a + k] = buf[k + 3]; sys->rdram[a + k + 1] = buf[k + 2];
-                    sys->rdram[a + k + 2] = buf[k + 1]; sys->rdram[a + k + 3] = buf[k];
-                }
-                a += n;
-                b -= n;
-            }
-            break;
-        case REC_UPDATE_HIDDEN:
-            if (!rd(f, &a) || !rd(f, &b) || a + b > HIDDEN_SIZE || fread(sys->rdramHidden + a, 1, b, f) != b)
-            { fprintf(stderr, "bad hidden RDRAM record\n"); return 1; }
-            break;
-        case H64_RT_HLE_TRIANGLE:
-            for (k = 0; k < 33; k++) if (!rd(f, &a)) { fprintf(stderr, "short triangle record\n"); return 1; }
-            break;
-        case REC_RDP_COMMAND:
-            if (!rd(f, &a) || !rd(f, &b) || b < 2 || b > 44 || (b & 1)) { fprintf(stderr, "bad command record\n"); return 1; }
-            words.resize(b);
-            if (fread(&words[0], 4, b, f) != b) { fprintf(stderr, "short command\n"); return 1; }
-            w64.resize(b / 2);
-            for (k = 0; k < b / 2; k++) w64[k] = (u64)words[k * 2] << 32 | words[k * 2 + 1];
-            h64_rdp_command(sys, &w64[0], b / 2);
-            commands++;
-            break;
-        case REC_SET_VI:
-            if (!rd(f, &a) || !rd(f, &b)) break;
-            if (a < 14) sys->vi.regs[a] = b;
-            break;
-        case REC_END_FRAME:
-            if (all || frames.count(frame))
-            {
-                char tag[32];
-                sprintf(tag, "/soft_f%u", frame);
-                write_out(out + tag + ".rdram", sys->rdram, H64_RDRAM_SIZE);
-                write_out(out + tag + ".hidden", sys->rdramHidden, HIDDEN_SIZE);
-                printf("[rt-play] wrote f%u\n", frame);
-            }
-            frame++;
-            break;
-        case REC_UPDATE_DRAM_FLUSH: case REC_UPDATE_HIDDEN_FLUSH: case REC_SIGNAL_COMPLETE: break;
-        default: fprintf(stderr, "unknown record %u\n", cmd); return 1;
+            char tag[32];
+            sprintf(tag, "/soft_f%u", fr);
+            write_out(out + tag + ".rdram", sys->rdram, H64_RDRAM_SIZE);
+            write_out(out + tag + ".hidden", sys->rdramHidden, HIDDEN_SIZE);
+            printf("[rt-play] wrote f%u\n", fr);
         }
     }
-    fclose(f);
+    if (rc < 0) { fprintf(stderr, "bad scene data at byte %u\n", sc.pos); return 1; }
     if (last)
     {
         write_out(out + "/soft_last.rdram", sys->rdram, H64_RDRAM_SIZE);
         write_out(out + "/soft_last.hidden", sys->rdramHidden, HIDDEN_SIZE);
     }
-    printf("[rt-play] %u frames, %u commands\n", frame, commands);
+    printf("[rt-play] %u frames, %u commands\n", sc.frame, sc.commands);
     h64_rdp_free(sys);
     free(sys->rdram);
     free(sys);

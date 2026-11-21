@@ -7,11 +7,15 @@ software RDP (h64test --rt-play) and the oracles (rdp-oracle: ParaLLEl-RDP and
 Angrylion), and compare every image drawn (tools/rt_compare.py).
 
   python tools/rt_states.py OUTDIR [--only NAME ...] [--frames 4] [--oracle EXE] [--png] [--keep]
+                             [--jobs 6] [--baseline SUMMARY]
+
+Ends with tools/rt_report.py (OUTDIR/summary.json; --baseline compares).
 
 Scenes and RDRAM files hold game data: keep OUTDIR outside the repository.
 Without --keep, the RDRAM files are deleted after the comparison (12 MB each).
 """
 import argparse
+import concurrent.futures
 import glob
 import os
 import subprocess
@@ -48,11 +52,23 @@ def main():
     ap.add_argument('--oracle', default=ORACLE)
     ap.add_argument('--png', action='store_true')
     ap.add_argument('--keep', action='store_true')
+    ap.add_argument('--jobs', type=int, default=6)
+    ap.add_argument('--baseline')
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    for c in cases():
-        if a.only and c['name'] not in a.only:
-            continue
+    todo = [c for c in cases() if not a.only or c['name'] in a.only]
+    with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
+        for text in ex.map(lambda c: one(c, a), todo):
+            print(text)
+    rep = [sys.executable, os.path.join(ROOT, 'tools', 'rt_report.py'), a.out]
+    if a.baseline:
+        rep += ['--baseline', a.baseline]
+    sys.exit(subprocess.run(rep).returncode)
+
+
+def one(c, a):
+    """Records, replays and compares one case; returns its report text."""
+    if True:
         d = os.path.join(a.out, c['name'])
         os.makedirs(d, exist_ok=True)
         scene = os.path.join(d, 'scene.rdp')
@@ -63,22 +79,19 @@ def main():
         rc, log = run(cmd)
         rec = [l for l in log.splitlines() if l.startswith('[rtdump]')]
         if rc or not os.path.exists(scene):
-            print('%-16s record failed: %s' % (c['name'], log.strip().splitlines()[-1:]))
-            continue
+            return '%-16s record failed: %s' % (c['name'], log.strip().splitlines()[-1:])
         rc1, log1 = run([H64TEST, '--rt-play', scene, d, '--frames', 'all'])
         rc2, log2 = run([a.oracle, scene, d, '--frames', 'all'])
         if rc1 or rc2:
-            print('%-16s replay failed: soft %d oracle %d %s' % (c['name'], rc1, rc2, (log1 + log2).strip().splitlines()[-2:]))
-            continue
+            return '%-16s replay failed: soft %d oracle %d %s' % (c['name'], rc1, rc2, (log1 + log2).strip().splitlines()[-2:])
         cmp = [sys.executable, os.path.join(ROOT, 'tools', 'rt_compare.py'), scene, d]
         if a.png:
             cmp.append('--png')
         rc3, log3 = run(cmp)
-        print('== %s  %s' % (c['name'], rec[-1] if rec else ''))
-        print(log3.rstrip())
         if not a.keep:
             for p in glob.glob(os.path.join(d, '*.rdram')) + glob.glob(os.path.join(d, '*.hidden')):
                 os.remove(p)
+        return '== %s  %s\n%s' % (c['name'], rec[-1] if rec else '', log3.rstrip())
 
 
 if __name__ == '__main__':

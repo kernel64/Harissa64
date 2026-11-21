@@ -52,6 +52,8 @@ void ConfigDefaults(Config *c)
     c->shotCount = 0;
     c->softRenderer = 0;
     c->xenosDebug = 0;
+    c->renderTest[0] = 0;
+    c->renderTestScale = 0;
     c->pauseAt = 0;
     memset(&c->input, 0, sizeof(c->input));
     c->trace = c->traceStep = 0;
@@ -223,6 +225,8 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "lateparse")) c->lateParse = atoi(eq + 1);
         else if (!strcmp(line, "cpi")) { c->cpi = atoi(eq + 1); c->cpiSet = 1; }
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
+        else if (!strcmp(line, "rendertest")) { strncpy(c->renderTest, eq + 1, sizeof(c->renderTest) - 1); c->renderTest[sizeof(c->renderTest) - 1] = 0; }
+        else if (!strcmp(line, "rendertestscale")) c->renderTestScale = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);
         else if (!strcmp(line, "input")) h64_input_script_parse(&c->input, eq + 1);
         else if (!strcmp(line, "tracestep")) c->traceStep = (u32)strtoul(eq + 1, NULL, 10);

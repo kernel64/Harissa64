@@ -152,6 +152,31 @@ def heat(err, bits):
     return out
 
 
+def far_pct(m, kind, steps):
+    """Percent of pixels at least `steps` histogram bins away (bin 1 = the smallest error)."""
+    hist = m['histogram']
+    total = sum(hist)
+    if kind == 'depth':
+        return 100.0 * (total - hist[0]) / total if total else 0.0
+    return 100.0 * sum(hist[steps:]) / total if total else 0.0
+
+
+def verdict(row, xenos_bins, xenos_max_pct):
+    """PASS, ORACLES_DIFFER (ParaLLEl against Angrylion), SOFT_PORT (our software RDP
+    against Angrylion), XENOS (beyond its tolerance: errors in histogram bin
+    `xenos_bins` or above), in that order; NO_REFERENCE without Angrylion."""
+    vs = row['vs']
+    if row.get('ref') != 'angrylion':
+        return 'NO_REFERENCE'
+    if 'parallel' in vs and far_pct(vs['parallel'], row['kind'], 1) > 0:
+        return 'ORACLES_DIFFER'
+    if 'soft' in vs and far_pct(vs['soft'], row['kind'], 1) > 0:
+        return 'SOFT_PORT'
+    if 'xenos' in vs and far_pct(vs['xenos'], row['kind'], xenos_bins) > xenos_max_pct:
+        return 'XENOS'
+    return 'PASS'
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('scene')
@@ -159,6 +184,11 @@ def main():
     ap.add_argument('--ref', default='angrylion')
     ap.add_argument('--png', action='store_true')
     ap.add_argument('--frames', default='')
+    ap.add_argument('--xenos-bins', type=int, default=3,
+                    help='Xenos errors from this histogram bin on count (3: 4+ steps for 16-bit images, 9+ for 32-bit: '
+                         'Xenos draws in floating point without the RDP dither, 1-3 steps are expected)')
+    ap.add_argument('--xenos-max-pct', type=float, default=0.5,
+                    help='XENOS when more pixels than this percent are that far')
     a = ap.parse_args()
     scene = parse_scene(a.scene)
     renderers = ['angrylion', 'parallel', 'soft', 'xenos']
@@ -167,21 +197,28 @@ def main():
         if a.frames and str(fr) not in a.frames.split(','):
             continue
         rams = {}
+        covers = {}
         for r in renderers:
             p = os.path.join(a.dir, '%s_f%d.rdram' % (r, fr))
             if os.path.exists(p):
                 with open(p, 'rb') as f:
                     rams[r] = f.read()
+        cp = os.path.join(a.dir, 'xenos_f%d.cover' % fr)   # tools/rt_console.py: the ranges Xenos read back
+        if os.path.exists(cp):
+            with open(cp) as f:
+                covers[fr] = json.load(f)
         if a.ref not in rams:
             continue
         for kind, addr, fmt, size, width, height in sorted(scene[fr], key=lambda x: x[1]):
             ref_rgba, ref_v, bits = decode(rams[a.ref], kind, addr, fmt, size, width, height)
             row = {'frame': fr, 'kind': kind, 'addr': '%06X' % addr, 'width': width, 'height': ref_v.shape[0],
-                   'size': size, 'vs': {}}
+                   'size': size, 'ref': a.ref, 'vs': {}}
             tiles = [ref_rgba[..., :3]]
             for r in renderers:
                 if r == a.ref or r not in rams:
                     continue
+                if r == 'xenos' and (kind == 'depth' or not any(c[0] <= addr < c[0] + c[1] for c in covers.get(fr, []))):
+                    continue   # Xenos's depth stays in EDRAM; images it did not read back are not compared
                 rgba, v, _ = decode(rams[r], kind, addr, fmt, size, width, height)
                 d = np.abs(v.astype(np.int64) - ref_v.astype(np.int64))
                 err = d.max(axis=-1) if d.ndim == 3 else d
@@ -196,8 +233,11 @@ def main():
                 }
                 tiles.append(rgba[..., :3])
                 tiles.append(heat(err, bits))
+            row['verdict'] = verdict(row, a.xenos_bins, a.xenos_max_pct)
+            if 'xenos' in row['vs']:
+                row['xenos_far_pct'] = round(far_pct(row['vs']['xenos'], kind, a.xenos_bins), 4)
             report.append(row)
-            line = 'f%d %-5s %s %dx%d %d-bit:' % (fr, kind, row['addr'], width, row['height'], 4 << size)
+            line = 'f%d %-5s %s %dx%d %d-bit %s:' % (fr, kind, row['addr'], width, row['height'], 4 << size, row['verdict'])
             for r, m in row['vs'].items():
                 line += '  %s %.2f%% max %d hist %s' % (r, m['identical_pct'], m['max_error'], m['histogram'])
             print(line)

@@ -4272,6 +4272,25 @@ void h64_xenos_free(H64Renderer *r)
     delete x;
 }
 
+u32 h64_xenos_copy_back_all(H64Renderer *r, u32 *addr, u32 *bytes, u32 max)
+{
+    Xenos *x = X(r);
+    u32 i, n = 0;
+    for (i = 0; i < FB_SLOTS; i++)
+    {
+        FbSlot *s = &x->fb[i];
+        u32 w, h;
+        if (!s->valid || !s->gpuDirty || s->fmt == FB_I4) continue;
+        copy_back(x, (int)i);
+        w = s->width ? s->width : 320;
+        h = s->height ? s->height : 240;
+        if (s->drawnH && s->drawnH < h) h = s->drawnH;
+        if (n < max) { addr[n] = s->addr; bytes[n] = w * h * s->bytes; }
+        n++;
+    }
+    return n < max ? n : max;
+}
+
 int h64_xenos_shown_frame_to_rdram(H64Renderer *r, u32 *addr, u32 *bytes, u8 *before, u32 beforeSize)
 {
     // A game saved while it shows a still picture (Top Gear Rally 2's pause

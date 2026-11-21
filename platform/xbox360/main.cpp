@@ -46,6 +46,7 @@
 #include "xb_ach.h"
 #include "xb_net.h"
 #include "xb_ra.h"
+#include "xb_rtest.h"
 
 // ---- Recompiler code memory (M0.3 result: only an image section linked
 // writable + executable runs generated code; /SECTION:.jitc,ERW in the project) ----
@@ -2034,6 +2035,11 @@ int __cdecl main()
         RunDynarecTest(&cfg, jitReport, sizeof(jitReport));
         MessageScreen(dev, status, jitReport,
                       strstr(jitReport, "DIVERGED") ? D3DCOLOR_XRGB(240, 60, 60) : D3DCOLOR_XRGB(200, 200, 120));
+    }
+    else if (cfg.renderTest[0] && dev)
+    {
+        // Render tests: scenes drawn by Xenos, images written next to them (xb_rtest.h), then the dashboard.
+        XbRenderTest(dev, cfg.renderTest, cfg.renderTestScale);
     }
     else if (dev)
     {

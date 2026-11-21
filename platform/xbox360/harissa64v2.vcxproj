@@ -131,6 +131,7 @@
     </ClCompile>
     <ClCompile Include="xb_update.cpp" />
     <ClCompile Include="xb_hd.cpp" />
+    <ClCompile Include="xb_rtest.cpp" />
     <ClCompile Include="xb_ach.cpp" />
     <ClCompile Include="xb_ra.cpp">
       <AdditionalIncludeDirectories>..\..\third_party\rcheevos\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
