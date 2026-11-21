@@ -509,7 +509,42 @@ def tri_detail_shift(filt):
     return build
 
 
+def fmt_ci4_pal(s, rnd):
+    """CI4 through palette 1 (TLUT entries 16..31): format_ci4 only uses palette 0."""
+    s.clear(0x0001)
+    s.tlut(TEXBASE + 0x8000, [rnd.randrange(65536) | 1 for _ in range(32)])
+    s.texture(TEXBASE, tex_bytes(32 * 16 // 2, rnd), FMT_CI, SZ_4, 32, 16, palette=1)
+    s.other_modes(filt=FILT_POINT, tlut=1)
+    s.combine(*TEX0_ONLY)
+    s.sync()
+    s.texrect(0, 16 * 4, 16 * 4, (16 + 256) * 4, (16 + 128) * 4, 0, 0, 1024 // 8, 1024 // 8)
+
+
+def tri_detail_ci(filt):
+    """tri_detail_shift with ISS 64's own formats: tile 0 CI4 palette 1 (shift 1), tile 1 CI4 palette 0
+    (shift 12), the palette in TMEM's upper half."""
+    def build(s, rnd):
+        s.clear(0x0001)
+        s.tlut(TEXBASE + 0x8000, [rnd.randrange(65536) | 1 for _ in range(32)])
+        s.texture(TEXBASE, tex_bytes(32 * 32 // 2, rnd), FMT_CI, SZ_4, 32, 32, tile=0, tmem=0,
+                  masks=5, maskt=5, shifts=1, shiftt=1, palette=1)
+        s.texture(TEXBASE + 0x1000, tex_bytes(32 * 32 // 2, rnd), FMT_CI, SZ_4, 32, 32, tile=1, tmem=0xC0,
+                  masks=5, maskt=5, shifts=12, shiftt=12, palette=0)
+        s.put(0x3A000000, 0x808080E8)
+        s.other_modes(cycle=1, filt=filt, persp=1, tlut=1)
+        s.combine((A_TEX0, B_TEX1, C_SHADE, D_TEX1), (AA_ZERO, AA_ZERO, AA_ZERO, AA_ONE),
+                  (A_COMB, B_TEX1, C_PRIM, D_TEX1), (AA_ZERO, AA_ZERO, AA_ZERO, AA_COMB))
+        s.sync()
+        quad_persp(s, rnd, 10, 20, 310, 236, 1.0, 0.3, texels=128, shade=True)
+    return build
+
+
 CASES = [
+    ('format_ci4_pal1', 'format', 'CI 4-bit through palette 1', fmt_ci4_pal),
+    ('tri_detail_ci_point', 'combiner', 'ISS 64 grass with its CI4 textures (palettes 1 and 0), point',
+     tri_detail_ci(FILT_POINT)),
+    ('tri_detail_ci_bilerp', 'combiner', 'ISS 64 grass with its CI4 textures (palettes 1 and 0), 3-point filter',
+     tri_detail_ci(FILT_BILERP)),
     ('tri_detail_point', 'combiner', 'two textures blended by shade, the second shifted x16 (ISS 64 grass), point',
      tri_detail_shift(FILT_POINT)),
     ('tri_detail_bilerp', 'combiner', 'two textures blended by shade, the second shifted x16, 3-point filter',
