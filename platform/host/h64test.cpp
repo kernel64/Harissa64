@@ -1221,6 +1221,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
     if (argc < 2) { usage(); return 2; }
     if (!strcmp(argv[1], "--rt-play")) return h64_rtdump_play(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "--rt-tris")) return h64_rtdump_tris(argc - 2, argv + 2);
     if (!strcmp(argv[1], "--version") || !strcmp(argv[1], "--unit"))
     {
         printf("Harissa64 V2 %s, %s-endian host, %d-bit pointers\n", H64_VERSION_STRING,

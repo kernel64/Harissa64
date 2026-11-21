@@ -42,4 +42,9 @@ void h64_rtdump_close(void);
 // writes OUTDIR/soft_f<N>.rdram (N64 byte order) and .hidden, as rdp-oracle does.
 int h64_rtdump_play(int argc, char **argv);
 
+// Synthetic scenes (tools/rt_gen.py): after each HLE triangle record with no
+// RDP command, inserts the one h64_rdp_build_triangle makes
+// (h64test --rt-tris IN OUT).
+int h64_rtdump_tris(int argc, char **argv);
+
 #endif

@@ -23,7 +23,7 @@ import os
 import random
 import struct
 
-COLOR, TEXBASE, RTT = 0x100000, 0x400000, 0x300000
+COLOR, TEXBASE, RTT, ZBUF = 0x100000, 0x400000, 0x300000, 0x200000
 W, H = 320, 240
 
 # Combiner inputs (n64brew "Color Combiner")
@@ -57,11 +57,12 @@ class Scene:
 
     def other_modes(self, cycle=0, filt=FILT_POINT, tlut=0, tlut_ia=0, persp=0, blend=0, rgb_dither=3, alpha_dither=3,
                     force_blend=0, alpha_compare=0, cvg_times_alpha=0, alpha_cvg_select=0, image_read=0,
-                    cvg_dest=0, aa=0, color_on_cvg=0, z=0):
+                    cvg_dest=0, aa=0, color_on_cvg=0, z=0, z_mode=0):
+        """z: 1 compare and update (per-pixel depth)."""
         hi = (cycle << 20 | persp << 19 | tlut << 15 | tlut_ia << 14 | filt << 12 | 6 << 9 |
               rgb_dither << 6 | alpha_dither << 4)
-        lo = (blend << 16 | force_blend << 14 | alpha_cvg_select << 13 | cvg_times_alpha << 12 | cvg_dest << 8 |
-              color_on_cvg << 7 | image_read << 6 | aa << 3 | alpha_compare)
+        lo = (blend << 16 | force_blend << 14 | alpha_cvg_select << 13 | cvg_times_alpha << 12 | z_mode << 10 |
+              cvg_dest << 8 | color_on_cvg << 7 | image_read << 6 | (z << 5) | (z << 4) | aa << 3 | alpha_compare)
         self.put(0x2F000000 | hi, lo)
 
     def combine(self, c0, a0, c1=None, a1=None):
@@ -104,6 +105,24 @@ class Scene:
         # one command of two 64-bit words
         self.put(0x24000000 | x1 << 12 | y1, tile << 24 | x0 << 12 | y0,
                  (s & 0xFFFF) << 16 | (t & 0xFFFF), (dsdx & 0xFFFF) << 16 | (dtdy & 0xFFFF))
+
+    def depth_image(self, addr=ZBUF):
+        self.put(0x3E000000, addr)
+
+    def clear_depth(self, addr=ZBUF):
+        """Fills the depth image with the farthest depth (0xFFFC), through a fill into it."""
+        self.color_image(addr)
+        self.other_modes(cycle=3)
+        self.fill_color(0xFFFCFFFC)
+        self.fill(0, 0, W - 1, H - 1)
+        self.sync()
+        self.color_image()
+
+    def tri(self, v0, v1, v2, shade=True, texture=False, zbuf=False, tile=0):
+        """An HLE triangle record (render/api.h vertices: x, y in pixels, z 0..0x7FFF, invw, r g b a 0..255,
+        s, t in s10.5 units before perspective). h64test --rt-tris adds the RDP command after it."""
+        flags = (1 if zbuf else 0) | (2 if texture else 0) | (4 if shade else 0)
+        self.cmds.append({'tri': (v0, v1, v2), 'flags': flags, 'tile': tile})
 
     # ---- textures
     def texture(self, addr, data, fmt, size, width, height, tile=0, tmem=0, cs=0, ms=0, masks=0, ct=0, mt=0, maskt=0,
@@ -150,6 +169,13 @@ class Scene:
                 out.extend(data[i:i + 4][::-1])   # N64 order -> PC words
         word(7)
         for c in self.cmds + [[0x29000000, 0]]:
+            if isinstance(c, dict):
+                word(0x48); word(c['flags']); word(c['tile']); word(1)
+                for v in c['tri']:
+                    out.extend(struct.pack('<10f', v['x'], v['y'], v.get('z', 0.0), v.get('invw', 1.0),
+                                           v.get('r', 255.0), v.get('g', 255.0), v.get('b', 255.0), v.get('a', 255.0),
+                                           v.get('s', 0.0), v.get('t', 0.0)))
+                continue
             word(2); word((c[0] >> 24) & 0x3F); word(len(c))
             for v in c:
                 word(v)
@@ -321,7 +347,118 @@ def rtt_case(s, rnd):
     s.texrect(0, 20 * 4, 20 * 4, 300 * 4, 160 * 4, 0, 0, 230, 230)
 
 
+SHADE_ONLY = ((A_ZERO, B_ZERO, C_ZERO, D_SHADE), (AA_ZERO, AA_ZERO, AA_ZERO, AA_SHADE))
+TEX0_TIMES_SHADE = ((A_TEX0, B_ZERO, C_SHADE, D_ZERO), (AA_TEX0, AA_ZERO, AA_SHADE, AA_ZERO))
+# blender (other_modes' `blend`: m1a_0<<14 m1a_1<<12 m1b_0<<10 m1b_1<<8 m2a_0<<6 m2a_1<<4 m2b_0<<2 m2b_1)
+BL_FOG_SHADE = 3 << 14 | 0 << 12 | 2 << 10 | 3 << 8 | 0 << 6 | 0 << 4 | 0 << 2 | 2   # fog*shade a + in*(1-a), then in
+BL_AA_OPA = 1 << 6 | 1 << 4 | 1 << 2 | 1                                               # in*cvg + mem*(1-cvg)
+
+
+def vtx(rnd, x0=0, y0=0, x1=W, y1=H, z=None, alpha=255):
+    return {'x': rnd.uniform(x0, x1), 'y': rnd.uniform(y0, y1), 'z': z if z is not None else rnd.uniform(0, 0x7FFF),
+            'r': float(rnd.randrange(256)), 'g': float(rnd.randrange(256)), 'b': float(rnd.randrange(256)),
+            'a': float(alpha)}
+
+
+def tri_shade(s, rnd):
+    s.clear(0x0001)
+    s.other_modes()
+    s.combine(*SHADE_ONLY)
+    s.sync()
+    for _ in range(24):
+        s.tri(vtx(rnd), vtx(rnd), vtx(rnd))
+
+
+def tri_zbuffer(s, rnd):
+    s.depth_image()
+    s.clear_depth()
+    s.clear(0x0001)
+    s.other_modes(z=1)
+    s.combine(*SHADE_ONLY)
+    s.sync()
+    for _ in range(16):
+        s.tri(vtx(rnd), vtx(rnd), vtx(rnd), zbuf=True)
+
+
+def quad_persp(s, rnd, x0, y0, x1, y1, near, far, texels=32, shade=False):
+    """A floor-like quad: the top edge far (small 1/w), the bottom near."""
+    def v(x, y, w, sc, tc):
+        return {'x': x, 'y': y, 'z': 0x7FFF * (1 - w), 'invw': w, 's': sc * 32.0, 't': tc * 32.0,
+                'r': 255.0, 'g': 255.0, 'b': 255.0, 'a': 255.0}
+    inset = (x1 - x0) * 0.3
+    a = v(x0 + inset, y0, far, 0, 0)
+    b = v(x1 - inset, y0, far, texels, 0)
+    c = v(x1, y1, near, texels, texels)
+    d = v(x0, y1, near, 0, texels)
+    s.tri(a, b, c, shade=shade, texture=True)
+    s.tri(a, c, d, shade=shade, texture=True)
+
+
+def tri_persp(filt):
+    def build(s, rnd):
+        s.clear(0x0001)
+        s.texture(TEXBASE, tex_rgba16(32, 32, rnd, 'checker'), FMT_RGBA, SZ_16, 32, 32, masks=5, maskt=5)
+        s.other_modes(filt=filt, persp=1)
+        s.combine(*TEX0_ONLY)
+        s.sync()
+        quad_persp(s, rnd, 10, 10, 310, 115, 1.0, 0.25, texels=64)
+        quad_persp(s, rnd, 40, 125, 280, 230, 0.9, 0.6, texels=32)
+    return build
+
+
+def tri_fog(s, rnd):
+    s.clear(0x0001)
+    s.put(0x38000000, rgba(rnd, 255))   # SET_FOG_COLOR
+    s.other_modes(cycle=1, blend=BL_FOG_SHADE, force_blend=1)
+    s.combine((A_ZERO, B_ZERO, C_ZERO, D_SHADE), (AA_ZERO, AA_ZERO, AA_ZERO, AA_SHADE),
+              (A_ZERO, B_ZERO, C_ZERO, D_COMB), (AA_ZERO, AA_ZERO, AA_ZERO, AA_COMB))
+    s.sync()
+    for _ in range(16):
+        s.tri(vtx(rnd, alpha=rnd.randrange(256)), vtx(rnd, alpha=rnd.randrange(256)), vtx(rnd, alpha=rnd.randrange(256)))
+
+
+def tri_aa(s, rnd):
+    s.clear(0x0001)
+    s.other_modes(aa=1, image_read=1, alpha_cvg_select=1, blend=BL_AA_OPA, cvg_dest=0)
+    s.combine(*SHADE_ONLY)
+    s.sync()
+    for _ in range(20):
+        s.tri(vtx(rnd), vtx(rnd), vtx(rnd))
+
+
+def tri_tex_shade(s, rnd):
+    s.clear(0x0001)
+    s.texture(TEXBASE, tex_rgba16(32, 32, rnd, 'gradient'), FMT_RGBA, SZ_16, 32, 32, masks=5, maskt=5)
+    s.other_modes(filt=FILT_BILERP)
+    s.combine(*TEX0_TIMES_SHADE)
+    s.sync()
+    for _ in range(12):
+        v = [vtx(rnd) for _ in range(3)]
+        for p in v:
+            p['s'] = rnd.uniform(0, 64) * 32
+            p['t'] = rnd.uniform(0, 64) * 32
+        s.tri(v[0], v[1], v[2], texture=True)
+
+
+def tri_small(s, rnd):
+    s.clear(0x0001)
+    s.other_modes()
+    s.combine(*SHADE_ONLY)
+    s.sync()
+    for i in range(300):
+        cx, cy = rnd.uniform(4, W - 4), rnd.uniform(4, H - 4)
+        s.tri(*[dict(vtx(rnd), x=cx + rnd.uniform(-3, 3), y=cy + rnd.uniform(-3, 3)) for _ in range(3)])
+
+
 CASES = [
+    ('tri_shade', 'triangle', 'Gouraud-shaded triangles, 1 cycle', tri_shade),
+    ('tri_zbuffer', 'triangle', 'shaded triangles through each other, depth compare and update', tri_zbuffer),
+    ('tri_persp_point', 'triangle', 'perspective-corrected textured floors, point sampling', tri_persp(FILT_POINT)),
+    ('tri_persp_bilerp', 'triangle', 'perspective-corrected textured floors, 3-point filter', tri_persp(FILT_BILERP)),
+    ('tri_fog', 'triangle', 'fog colour blended by shade alpha (2 cycles)', tri_fog),
+    ('tri_aa', 'triangle', 'antialiased edges: coverage blended with memory', tri_aa),
+    ('tri_tex_shade', 'triangle', 'texture times shade, 3-point filter', tri_tex_shade),
+    ('tri_small', 'triangle', '300 triangles of a few pixels (edge rules, sub-pixel positions)', tri_small),
     ('filter_point_up', 'filter', 'point sampling, magnified 3-4x at fractional texels', filt_case(FILT_POINT, 3.5)),
     ('filter_bilerp_up', 'filter', '3-point filter, magnified 3-4x', filt_case(FILT_BILERP, 3.5)),
     ('filter_average_up', 'filter', 'average filter (box), magnified', filt_case(FILT_AVERAGE, 3.5)),
@@ -367,6 +504,15 @@ def main():
             d = os.path.join(a.out, cname)
             os.makedirs(d, exist_ok=True)
             s.write(os.path.join(d, 'scene.rdp'))
+            if any(isinstance(c, dict) for c in s.cmds):
+                # the RDP triangle commands, built by our triangle setup as on the HLE path
+                import subprocess
+                root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                p = os.path.join(d, 'scene.rdp')
+                r = subprocess.run([os.path.join(root, 'build-msvc', 'h64test.exe'), '--rt-tris', p, p],
+                                   capture_output=True, text=True)
+                if r.returncode:
+                    raise SystemExit('h64test --rt-tris failed: ' + r.stdout + r.stderr)
             json.dump({'name': cname, 'category': cat, 'description': desc, 'seed': seed},
                       open(os.path.join(d, 'case.json'), 'w'), indent=1)
             n += 1

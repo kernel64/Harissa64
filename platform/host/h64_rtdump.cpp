@@ -231,6 +231,74 @@ void h64_rtdump_close(void)
            s_rec.frames, s_rec.commands, s_rec.triangles, s_rec.ramBytes);
 }
 
+// ---- Triangle commands for synthetic scenes ----------------------------------
+
+static u32 le32(const std::vector<u8> &d, size_t p)
+{
+    return (u32)d[p] | (u32)d[p + 1] << 8 | (u32)d[p + 2] << 16 | (u32)d[p + 3] << 24;
+}
+
+static void put_le32(std::vector<u8> &d, u32 v)
+{
+    d.push_back((u8)v); d.push_back((u8)(v >> 8)); d.push_back((u8)(v >> 16)); d.push_back((u8)(v >> 24));
+}
+
+int h64_rtdump_tris(int argc, char **argv)
+{
+    std::vector<u8> in, out;
+    FILE *f;
+    long n;
+    size_t p = 16;
+    u32 added = 0;
+    if (argc < 2) { fprintf(stderr, "usage: h64test --rt-tris IN OUT\n"); return 3; }
+    f = fopen(argv[0], "rb");
+    if (!f) { fprintf(stderr, "cannot read %s\n", argv[0]); return 3; }
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    in.resize(n > 16 ? (size_t)n : 16);
+    if (n < 16 || fread(&in[0], 1, (size_t)n, f) != (size_t)n || memcmp(&in[0], "RDPDUMP2", 8)) { fclose(f); fprintf(stderr, "not a scene\n"); return 3; }
+    fclose(f);
+    out.assign(in.begin(), in.begin() + 16);
+    while (p + 4 <= in.size())
+    {
+        u32 cmd = le32(in, p);
+        size_t len = 4;
+        if (cmd == 1 || cmd == 8) len = 12 + le32(in, p + 8);
+        else if (cmd == 2) len = 12 + 4 * (size_t)le32(in, p + 8);
+        else if (cmd == 3) len = 12;
+        else if (cmd == H64_RT_HLE_TRIANGLE) len = 4 + 33 * 4;
+        if (p + len > in.size()) { fprintf(stderr, "truncated record at %u\n", (u32)p); return 1; }
+        out.insert(out.end(), in.begin() + p, in.begin() + p + len);
+        // A recorded scene has the triangle command (0x08-0x0F) right after; any other command
+        // (the scene's last SYNC_FULL...) means it is missing.
+        if (cmd == H64_RT_HLE_TRIANGLE &&
+            !(p + len + 8 <= in.size() && le32(in, p + len) == 2 && (le32(in, p + len + 4) & 0x38) == 0x08))
+        {
+            // No RDP command after it: the one our triangle setup builds (as the HLE path does).
+            H64RenderVertex v[3];
+            u32 w[30], k, flags = le32(in, p + 4), tile = le32(in, p + 8), levels = le32(in, p + 12), cnt;
+            u64 words[22];
+            for (k = 0; k < 30; k++) w[k] = le32(in, p + 16 + 4 * k);
+            memcpy(v, w, sizeof(w));
+            cnt = h64_rdp_build_triangle(&v[0], &v[1], &v[2], flags, tile, levels, words);
+            put_le32(out, 2);
+            put_le32(out, (u32)(words[0] >> 56) & 0x3F);
+            put_le32(out, cnt * 2);
+            for (k = 0; k < cnt; k++) { put_le32(out, (u32)(words[k] >> 32)); put_le32(out, (u32)words[k]); }
+            added++;
+        }
+        p += len;
+        if (cmd == 6) break;
+    }
+    f = fopen(argv[1], "wb");
+    if (!f) { fprintf(stderr, "cannot write %s\n", argv[1]); return 3; }
+    fwrite(&out[0], 1, out.size(), f);
+    fclose(f);
+    printf("[rt-tris] %u triangle commands built\n", added);
+    return 0;
+}
+
 // ---- Replay with the software RDP (core/rtest/h64_rtscene.h) -----------------
 
 static int write_out(const std::string &path, const u8 *data, u32 size)
