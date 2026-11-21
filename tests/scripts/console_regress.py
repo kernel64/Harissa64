@@ -268,13 +268,16 @@ def run_case(con, c, update, log):
     t0 = time.time()
     while time.time() - t0 < 18:
         p = os.path.join(tmp, '%03d.bmp' % len(caps))
-        if con.capture(p):
-            full = Image.open(p)
-            cw, ch = full.size
-            centre = full.crop((cw // 2 - 160, ch // 2 - 90, cw // 2 + 160, ch // 2 + 90))
-            caps.append(None if noisy(centre) else small(p))
-        else:
-            caps.append(None)
+        try:
+            if con.capture(p):
+                full = Image.open(p)
+                cw, ch = full.size
+                centre = full.crop((cw // 2 - 160, ch // 2 - 90, cw // 2 + 160, ch // 2 + 90))
+                caps.append(None if noisy(centre) else small(p))
+            else:
+                caps.append(None)
+        except (OSError, ValueError):
+            caps.append(None)   # a capture xbcapture left truncated (the title was quitting): skipped
         time.sleep(0.5)
     con.xb('xbreboot.exe')
     con.wait_ftp()
@@ -349,7 +352,14 @@ def run():
         sys.exit('console not answering')
     # The user's ini: a test ini left by an interrupted run (pauseat=,
     # exitafter=) is never taken for it; the last clean copy is kept locally.
-    user_ini = con.get('harissa64v2.ini')
+    for attempt in range(3):   # Aurora's FTP may time out just after the return to the dashboard
+        try:
+            user_ini = con.get('harissa64v2.ini')
+            break
+        except Exception as e:
+            if attempt == 2:
+                sys.exit('cannot read the user ini (%s): nothing was changed on the console' % e)
+            time.sleep(10)
     keep = os.path.join(DATA, 'user_ini.txt')
     if user_ini is not None and (b'pauseat=' in user_ini or b'exitafter=' in user_ini or b'loadstate=' in user_ini):
         log('the console has a test ini: the saved copy of the user ini will be put back')

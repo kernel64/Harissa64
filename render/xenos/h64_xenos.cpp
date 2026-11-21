@@ -112,6 +112,15 @@ struct TexBinding
     int clampS, clampT, mirrorS, mirrorT, wrapS, wrapT;
 };
 
+// A mip chain (texture LOD): its levels side by side in one linear texture (an
+// atlas; linear textures have no GPU mip levels on the Xbox 360), each at a
+// horizontal offset, level 0's height. The shader addresses the texels itself.
+// Per entry (tile): ea = (x offset, width, height, S addressing + 4 * T
+// addressing), eb = (a.s, a.t, b.s, b.t) with entry coordinate = base tile
+// coordinate * a + b (the tiles' shifts and lo); raw = units before the tile
+// shift per base texel (S, T). Unused entries repeat the last one.
+struct MipEntry { IDirect3DTexture9 *tex; u32 bytes; float ea[32], eb[32]; u32 aw, ah; float raw[2]; };
+
 struct Xenos
 {
     H64Renderer api;
@@ -151,6 +160,16 @@ struct Xenos
     std::map<u64, IDirect3DPixelShader9 *> shaders;
     std::map<u64, int> shaderT1;   // per combiner shader: whether it samples t1 (unit 1)
     int usesT1;                    // the shader set by the last setup_combined
+    // Texture LOD (mip-mapping): a chain of tiles (each half the previous)
+    // decoded into one texture with mip levels, sampled per pixel at the
+    // RDP's level (KEY_LOD). curLevels: the levels of the triangles the next
+    // setup_combined draws (HLE triangles; 1 = no mip-mapping).
+    u32 curLevels, batchLevels;
+    int mipWarned;                 // the atlas creation failure is logged once
+    u32 mipRejectLogs;             // chains not used, logged so far (8 at most)
+    std::map<u64, MipEntry> mips;
+    u32 mipBytes;
+    struct { u32 gen, tile, levels, rf; IDirect3DTexture9 *tex; TexBinding b; u32 n; MipEntry e; } mipMemo;
     std::map<u64, TexEntry> textures;
     u32 textureBytes;   // memory held by the texture cache
     // Free textures by size (w << 16 | h), for reuse: CreateTexture is slow on
@@ -455,7 +474,7 @@ static const char *a_c(u32 s)
     return t[s & 7];
 }
 
-enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16 };
+enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16, KEY_LOD = 32 };
 #define TRI_ZOUT 0x100   // batch flag beside H64_TRI_*: a vertex Z outside the RDP range
 
 // In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
@@ -471,6 +490,81 @@ enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHE
 static const char s_psWrap9Source[] =
     "float4 w9n(float4 x) { float4 t = x * 255.0 - 128.0; t -= 512.0 * floor((t + 256.0) / 512.0); return (t + 128.0) / 255.0; }\n"
     "float4 w9(float4 x) { return saturate(w9n(x)); }\n";
+
+// Texture LOD (KEY_LOD), after the RDP (h64_rdp_compute_lod, ParaLLEl-RDP
+// texture.h): lod = the largest of the four derivatives of the texture
+// coordinates before the tile shift, in texels; level floor(log2(lod)),
+// LOD fraction lod / 2^level - 1; past the last level: the last one, fraction
+// 1; magnified (lod < 1): level 0 on both units and fraction 0 (1 with a
+// single level), or with detail or sharpen the base tile and the next, the
+// fraction max(min level, lod) (minus 1 for sharpen). Detail: the base tile is
+// the detail texture, the chain starts at the next tile (TEXEL0 = level + 1).
+// TEXEL0 and TEXEL1 are atlas entries k0 and k1.
+// The tiles sit side by side in one texture (MipEntry), each entry with its
+// own transform from the base tile's coordinates (p = sb * a + b: the tile's
+// shift and lo), size and addressing, so the shader filters (point, bilinear
+// or the RDP's 3-point) in each tile's own texel coordinates.
+// Constants: c10 lodc = (last level, filter, mode, min level); c11..c18 per
+// entry (x offset, width, height, S addressing + 4 * T addressing: 0 wrap,
+// 1 clamp, 2 mirror); c19..c26 per entry (a.s, a.t, b.s, b.t); c27 = (atlas
+// width, height, raw units per base texel S, T).
+static const char s_psLodSource[] =
+    "float4 mA0 : register(c11); float4 mA1 : register(c12); float4 mA2 : register(c13); float4 mA3 : register(c14);\n"
+    "float4 mA4 : register(c15); float4 mA5 : register(c16); float4 mA6 : register(c17); float4 mA7 : register(c18);\n"
+    "float4 mB0 : register(c19); float4 mB1 : register(c20); float4 mB2 : register(c21); float4 mB3 : register(c22);\n"
+    "float4 mB4 : register(c23); float4 mB5 : register(c24); float4 mB6 : register(c25); float4 mB7 : register(c26);\n"
+    "float4 atl : register(c27);\n"
+    "float4 lodA(float k) {\n"
+    "  return k < 0.5 ? mA0 : k < 1.5 ? mA1 : k < 2.5 ? mA2 : k < 3.5 ? mA3 : k < 4.5 ? mA4 : k < 5.5 ? mA5 : k < 6.5 ? mA6 : mA7;\n"
+    "}\n"
+    "float4 lodB(float k) {\n"
+    "  return k < 0.5 ? mB0 : k < 1.5 ? mB1 : k < 2.5 ? mB2 : k < 3.5 ? mB3 : k < 4.5 ? mB4 : k < 5.5 ? mB5 : k < 6.5 ? mB6 : mB7;\n"
+    "}\n"
+    "float lodaddr(float i, float sz, float mode) {\n"
+    "  float w = i - sz * floor(i / sz);\n"
+    "  float m = i - 2.0 * sz * floor(i / (2.0 * sz));\n"
+    "  m = m < sz ? m : 2.0 * sz - 1.0 - m;\n"
+    "  return mode < 0.5 ? w : (mode < 1.5 ? clamp(i, 0.0, sz - 1.0) : m);\n"
+    "}\n"
+    "float4 lodtap(sampler s, float2 i, float4 e, float ms, float mt) {\n"
+    "  float ax = lodaddr(i.x, e.y, ms), ay = lodaddr(i.y, e.z, mt);\n"
+    "  return tex2Dlod(s, float4((e.x + ax + 0.5) / atl.x, (ay + 0.5) / atl.y, 0.0, 0.0));\n"
+    "}\n"
+    "float4 lodfetch(sampler s, float2 sb, float k, float mode) {\n"
+    "  float4 e = lodA(k), t = lodB(k);\n"
+    "  float mt = floor(e.w / 4.0), ms = e.w - 4.0 * mt;\n"
+    "  float2 p = sb * t.xy + t.zw;\n"
+    "  float2 b = floor(p);\n"
+    "  float4 c00 = lodtap(s, b, e, ms, mt);\n"
+    "  if (mode < 0.5) return c00;\n"
+    "  float2 f = p - b;\n"
+    "  float4 c10 = lodtap(s, b + float2(1.0, 0.0), e, ms, mt);\n"
+    "  float4 c01 = lodtap(s, b + float2(0.0, 1.0), e, ms, mt);\n"
+    "  float4 c11 = lodtap(s, b + float2(1.0, 1.0), e, ms, mt);\n"
+    "  if (mode < 1.5) return lerp(lerp(c00, c10, f.x), lerp(c01, c11, f.x), f.y);\n"
+    "  return (f.x + f.y < 1.0) ? c00 + f.x * (c10 - c00) + f.y * (c01 - c00)\n"
+    "                           : c11 + (1.0 - f.x) * (c01 - c11) + (1.0 - f.y) * (c10 - c11);\n"
+    "}\n";
+// KEY_LOD's TEXEL0/TEXEL1; lodc2 (c28): x 0 plain, 1 detail, 2 sharpen.
+static const char s_psLodMain[] =
+    "  float2 sb = tc.xy * tsize0.xy - 0.5;\n"   // base tile texel coordinates (tex_coord adds half a texel)
+    "  float2 ddxs = ddx(sb) * atl.zw, ddys = ddy(sb) * atl.zw;\n"   // in texels before the tile shift
+    "  float lodm = max(max(abs(ddxs.x), abs(ddxs.y)), max(abs(ddys.x), abs(ddys.y)));\n"
+    "  float lv0 = 0.0, k0 = 0.0, k1 = 0.0, lfr = lodc.x < 0.5 ? 1.0 : 0.0;\n"
+    "  bool dist = false;\n"
+    "  if (lodm >= 1.0) {\n"
+    "    lv0 = floor(log2(lodm));\n"
+    "    if (lv0 >= lodc.x) { lv0 = lodc.x; dist = true; lfr = 1.0; }\n"
+    "    else lfr = saturate(lodm * exp2(-lv0) - 1.0);\n"
+    "    k0 = lv0; k1 = dist ? lv0 : lv0 + 1.0;\n"
+    "    if (lodc2.x > 0.5 && lodc2.x < 1.5) { k0 = lv0 + 1.0; k1 = dist ? lv0 + 1.0 : lv0 + 2.0; }\n"   // detail
+    "  } else if (lodc2.x > 0.5) {\n"   // magnified, detail or sharpen
+    "    k0 = 0.0; k1 = 1.0;\n"
+    "    lfr = max(lodc.w, lodm) - (lodc2.x > 1.5 ? 1.0 : 0.0);\n"
+    "  }\n"
+    "  float4 t0 = lodfetch(s0, sb, k0, lodc.y);\n"
+    "  float4 t1 = lodfetch(s1, sb, k1, lodc.y);\n"
+    "  float4 lodv = lfr.xxxx;\n";
 
 static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int second, int last)
 {
@@ -514,7 +608,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
 {
     u64 key = (x->combineRaw & 0x00FFFFFFFFFFFFFFull) | ((u64)flags << 56);
     std::map<u64, IDirect3DPixelShader9 *>::iterator it = x->shaders.find(key);
-    char src[6144], c0[512], c1[512], dbg[256];
+    char src[8192], c0[512], c1[512], dbg[256], texs[2048];
     IDirect3DPixelShader9 *ps;
     if (it != x->shaders.end())
     {
@@ -526,6 +620,21 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
     else c1[0] = 0;
     x->usesT1 = strstr(c0, "t1.") || strstr(c1, "t1.");
     x->shaderT1[key] = x->usesT1;
+    if (flags & KEY_LOD)
+    {
+        // The combiner's LOD fraction (misc.w, a constant) becomes the pixel's (lodv.w).
+        char *p;
+        for (p = strstr(c0, "misc.w"); p; p = strstr(p + 4, "misc.w")) memcpy(p, "lodv", 4);
+        for (p = strstr(c1, "misc.w"); p; p = strstr(p + 4, "misc.w")) memcpy(p, "lodv", 4);
+    }
+    {
+        // TEXEL0/TEXEL1: one tile each, or (texture LOD) the pixel's levels of the mip chain.
+        if (flags & KEY_LOD) strcpy(texs, s_psLodMain);
+        else
+            sprintf_s(texs, sizeof(texs), "  float4 t0 = %s;\n  float4 t1 = %s;\n",
+                      (flags & KEY_3POINT) ? "tex3p(s0, tc.xy, tsize0)" : "tex2D(s0, tc.xy)",
+                      (flags & KEY_3POINT) ? "tex3p(s1, tc.zw, tsize1)" : "tex2D(s1, tc.zw)");
+    }
     if (x->debug == 1) { strcpy(c0, "  comb = float4(1.0, 0.0, 0.0, 1.0);\n"); c1[0] = 0; }
     if (x->debug == 2) { strcpy(c0, "  comb = float4(shade.rgb, 1.0);\n"); c1[0] = 0; }
     if (x->debug == 3) { strcpy(c0, "  comb = float4(t0.rgb, 1.0);\n"); c1[0] = 0; }
@@ -550,13 +659,14 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "float4 zbias : register(c7);\n"
               "float4 tsize0 : register(c8);\n"
               "float4 tsize1 : register(c9);\n"
-              "%s%s"
+              "float4 lodc : register(c10);\n"
+              "float4 lodc2 : register(c28);\n"
+              "%s%s%s"
               "struct PSOUT { float4 c : COLOR; %s };\n"
               "PSOUT main(float4 col : COLOR0, float4 tc : TEXCOORD0, float4 lcol : TEXCOORD1, float4 lw : TEXCOORD2, float2 vpos : VPOS) {\n"
               "  PSOUT o;\n"
               "  float4 shade = saturate(lcol / lw.x);\n"
-              "  float4 t0 = %s;\n"
-              "  float4 t1 = %s;\n"
+              "%s"
               "  float4 noise = frac(sin(dot(vpos, float2(12.9898, 78.233))) * 43758.5453);\n"
               "  float4 comb = float4(0.0, 0.0, 0.0, 0.0);\n"
               "%s%s%s%s"
@@ -564,10 +674,9 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "%s%s"
               "  return o;\n"
               "}\n",
-              s_psWrap9Source, (flags & KEY_3POINT) ? s_ps3PointSource : "",
+              s_psWrap9Source, (flags & KEY_3POINT) ? s_ps3PointSource : "", (flags & KEY_LOD) ? s_psLodSource : "",
               (flags & KEY_DEPTH) ? "float d : DEPTH;" : "",
-              (flags & KEY_3POINT) ? "tex3p(s0, tc.xy, tsize0)" : "tex2D(s0, tc.xy)",
-              (flags & KEY_3POINT) ? "tex3p(s1, tc.zw, tsize1)" : "tex2D(s1, tc.zw)",
+              texs,
               c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
               // Dithered alpha compare: the RDP keeps a pixel whose alpha is at
               // least a random threshold (pixel noise): a grainy translucency.
@@ -614,6 +723,15 @@ static void retire_all_textures(Xenos *x)
     }
     x->textures.clear();
     x->textureBytes = 0;
+    {
+        std::map<u64, MipEntry>::iterator mi;
+        for (mi = x->mips.begin(); mi != x->mips.end(); ++mi)
+            if (mi->second.tex) mi->second.tex->Release();
+        x->mips.clear();
+        x->mipBytes = 0;
+        x->mipMemo.gen = 0xFFFFFFFFu;
+        x->mipMemo.tex = NULL;
+    }
     {
         u32 c, k;
         for (c = 0; c < ARENA_CHUNKS; c++)
@@ -1358,6 +1476,162 @@ static IDirect3DTexture9 *lookup_texture(Xenos *x, u32 tileIndex, TexBinding *b)
         x->stats.bigRect = x->win.active;
     }
     return e.tex;
+}
+
+// Texture LOD: tiles tile .. tile + n - 1 (n = levels, + 1 with detail: the
+// detail tile first) decoded side by side into one atlas texture (MipEntry),
+// each with its own coordinate transform, size and addressing, so any chain
+// the RDP can sample is sampled the same way. Returns NULL (the caller keeps
+// the per-tile path) for windows, YUV or an atlas over 4096 texels.
+// *b: the base tile's layout; *n: the entries.
+static float tile_scale(u32 shift)
+{
+    // Tile coordinate per unit before the shift: shift 1..10 divides, 11..15 multiplies by 2^(16 - shift).
+    return shift == 0 ? 1.0f : shift <= 10 ? 1.0f / (float)(1 << shift) : (float)(1 << (16 - shift));
+}
+
+static IDirect3DTexture9 *get_mip_texture(Xenos *x, u32 tile, u32 levels, int detail, TexBinding *b, u32 *n)
+{
+    const H64RdpState *st = x->st;
+    int tlut = (st->rasterFlags & RS_TLUT) != 0, tlutType = (st->rasterFlags & RS_TLUT_TYPE) != 0;
+    u32 rf = (st->rasterFlags & (RS_TLUT | RS_TLUT_TYPE)) | (detail ? 0x80000000u : 0u), i, lv, count;
+    const H64RdpTile *t0 = &st->tiles[tile & 7];
+    TexBinding lb[8];
+    u64 key = 0x84222325CBF29CE4ull;
+    std::map<u64, MipEntry>::iterator it;
+    IDirect3DTexture9 *tex = NULL;
+    count = levels + (detail ? 1 : 0);
+    if (count > 8) count = 8;
+    if (count < 2) return NULL;
+    if (x->mipMemo.gen == x->tmemGen && x->mipMemo.tile == (tile & 7) && x->mipMemo.levels == count && x->mipMemo.rf == rf)
+    {
+        if (!x->mipMemo.tex) return NULL;
+        *b = x->mipMemo.b;
+        *n = x->mipMemo.n;
+        return x->mipMemo.tex;
+    }
+    x->mipMemo.gen = x->tmemGen;
+    x->mipMemo.tile = tile & 7;
+    x->mipMemo.levels = count;
+    x->mipMemo.rf = rf;
+    x->mipMemo.tex = NULL;
+    for (lv = 0; lv < count; lv++)
+    {
+        const H64RdpTile *t = &st->tiles[(tile + lv) & 7];
+        tile_layout(t, &lb[lv], 0, x->sys->options.gfxMaskToTile, tlut);
+        if (lb[lv].ox || lb[lv].oy || t->fmt == 1 || lb[lv].w > 1024 || lb[lv].h > 1024)
+        {
+            if (x->mipRejectLogs < 8)
+            {
+                x->mipRejectLogs++;
+                H64_INFO("[xenos] mip chain not used: tile %u entry %u of %u: fmt %u %ux%u window %d,%d", tile & 7, lv, count,
+                         t->fmt, lb[lv].w, lb[lv].h, lb[lv].ox, lb[lv].oy);
+            }
+            return NULL;
+        }
+    }
+    // Key: every entry's descriptor, the palette and detail modes and TMEM (4 KB:
+    // the memo above keeps it to once per TMEM change).
+    for (lv = 0; lv < count; lv++)
+    {
+        const H64RdpTile *t = &st->tiles[(tile + lv) & 7];
+        u32 k[6];
+        k[0] = t->offset | t->stride << 16;
+        k[1] = (u32)t->fmt | (u32)t->size << 8 | (u32)t->palette << 16;
+        k[2] = (u32)t->maskS | (u32)t->maskT << 8 | (u32)t->flags << 16;
+        k[3] = lb[lv].w | lb[lv].h << 16;
+        k[4] = t->slo | t->tlo << 16;
+        k[5] = (u32)t->shiftS | (u32)t->shiftT << 8;
+        key = fnv64(key, (const u8 *)k, sizeof(k));
+    }
+    key = fnv64(key, (const u8 *)&rf, sizeof(rf));
+    key = mem_hash(key, st->tmem, 4096);
+    it = x->mips.find(key);
+    if (it != x->mips.end() && x->debug != 12)
+        x->mipMemo.e = it->second;
+    else
+    {
+        MipEntry e;
+        u32 aw = 0, ah = 0, y, xx;
+        float fs0 = tile_scale(t0->shiftS), ft0 = tile_scale(t0->shiftT);
+        u64 d0 = h64_prof_now(x->sys);
+        D3DLOCKED_RECT lr;
+        if (x->mips.size() >= 256 || x->mipBytes > 16u << 20) retire_all_textures(x);
+        memset(&e, 0, sizeof(e));
+        for (lv = 0; lv < count; lv++)
+        {
+            const H64RdpTile *t = &st->tiles[(tile + lv) & 7];
+            float as = tile_scale(t->shiftS) / fs0, at = tile_scale(t->shiftT) / ft0;
+            e.ea[lv * 4] = (float)aw;
+            e.ea[lv * 4 + 1] = (float)lb[lv].w;
+            e.ea[lv * 4 + 2] = (float)lb[lv].h;
+            e.ea[lv * 4 + 3] = (float)((lb[lv].clampS ? 1 : lb[lv].mirrorS ? 2 : 0) + 4 * (lb[lv].clampT ? 1 : lb[lv].mirrorT ? 2 : 0));
+            e.eb[lv * 4] = as;
+            e.eb[lv * 4 + 1] = at;
+            e.eb[lv * 4 + 2] = (float)t0->slo / 4.0f * as - (float)t->slo / 4.0f;
+            e.eb[lv * 4 + 3] = (float)t0->tlo / 4.0f * at - (float)t->tlo / 4.0f;
+            aw += lb[lv].w;
+            if (lb[lv].h > ah) ah = lb[lv].h;
+        }
+        for (; lv < 8; lv++)
+            for (i = 0; i < 4; i++)
+            {
+                e.ea[lv * 4 + i] = e.ea[(count - 1) * 4 + i];
+                e.eb[lv * 4 + i] = e.eb[(count - 1) * 4 + i];
+            }
+        e.raw[0] = 1.0f / fs0;
+        e.raw[1] = 1.0f / ft0;
+        if (aw > 4096 || ah > 4096) return NULL;
+        if (FAILED(x->dev->CreateTexture(aw, ah, 1, 0, D3DFMT_LIN_A8R8G8B8, D3DPOOL_DEFAULT, &tex, NULL)) || !tex)
+        {
+            if (!x->mipWarned) { x->mipWarned = 1; H64_WARN("[xenos] mip chain atlas %ux%u: CreateTexture failed", aw, ah); }
+            return NULL;
+        }
+        if (x->decodeBuf.size() < aw * ah) x->decodeBuf.resize(aw * ah);
+        memset(&x->decodeBuf[0], 0, aw * ah * 4);
+        for (lv = 0; lv < count; lv++)
+        {
+            const H64RdpTile *t = &st->tiles[(tile + lv) & 7];
+            u32 w = lb[lv].w, h = lb[lv].h, ox = (u32)e.ea[lv * 4];
+            for (y = 0; y < h; y++)
+            {
+                u32 *row = &x->decodeBuf[y * aw + ox];
+                s32 ty = mask_coord(t->maskT, (t->flags & TILE_MIRROR_T) != 0, (s32)y);
+                if (h64_rdp_fetch_row_argb(st, t, 0, (u32)ty, w, tlut, row)) continue;
+                for (xx = 0; xx < w; xx++)
+                {
+                    H64RdpTexel tx;
+                    s32 sx = mask_coord(t->maskS, (t->flags & TILE_MIRROR_S) != 0, (s32)xx);
+                    h64_rdp_fetch_texel(st, t, (u32)sx, (u32)ty, tlut, tlutType, &tx);
+                    if (t->fmt == 2 && !tlut) tx.c[3] = tx.c[0];
+                    row[xx] = ((u32)(tx.c[3] & 0xFF) << 24) | ((u32)(tx.c[0] & 0xFF) << 16) |
+                              ((u32)(tx.c[1] & 0xFF) << 8) | (u32)(tx.c[2] & 0xFF);
+                }
+            }
+        }
+        if (SUCCEEDED(tex->LockRect(0, &lr, NULL, 0)))
+        {
+            for (y = 0; y < ah; y++) memcpy((u8 *)lr.pBits + y * lr.Pitch, &x->decodeBuf[y * aw], aw * 4);
+            tex->UnlockRect(0);
+        }
+        e.tex = tex;
+        e.bytes = aw * ah * 4;
+        e.aw = aw;
+        e.ah = ah;
+        if (!x->mips.size())
+            H64_INFO("[xenos] mip chain: %u entries from tile %u%s, atlas %ux%u", count, tile & 7, detail ? " (detail)" : "", aw, ah);
+        x->mips[key] = e;
+        x->mipMemo.e = e;
+        x->mipBytes += e.bytes;
+        x->stats.tDecode += h64_prof_now(x->sys) - d0;
+        x->stats.textureUploads++;
+    }
+    *b = lb[0];
+    *n = count;
+    x->mipMemo.tex = x->mipMemo.e.tex;
+    x->mipMemo.b = lb[0];
+    x->mipMemo.n = count;
+    return x->mipMemo.tex;
 }
 
 // The tile texel 1 is sampled from: tile + 1, or with texture LOD on
@@ -2652,6 +2926,16 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     if (x->texFilter == 0 && (st->rasterFlags & RS_SAMPLE_QUAD) && !(st->rasterFlags & RS_COPY)) flags |= KEY_3POINT;
     if (x->sys->options.gfxAlphaDither && (st->rasterFlags & (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER)) == (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER))
         flags |= KEY_ADITHER;
+    // Texture LOD with a mip chain the GPU can sample (get_mip_texture);
+    // detail and sharpen modes keep the per-tile path.
+    IDirect3DTexture9 *mipTex = NULL;
+    TexBinding mipB;
+    u32 mipN = 0;
+    int lodMode = (st->rasterFlags & RS_DETAIL_LOD) ? 1 : (st->rasterFlags & RS_SHARPEN_LOD) ? 2 : 0;
+    if ((st->rasterFlags & RS_TEX_LOD) && !(st->rasterFlags & RS_COPY) && x->curLevels > 1 &&
+        !x->hdOn && x->debug != 21)   // xenosdebug=21: no mip-mapping (diagnosis)
+        mipTex = get_mip_texture(x, tile, x->curLevels, lodMode == 1, &mipB, &mipN);
+    if (mipTex) flags |= KEY_LOD;
     ps = combiner_shader(x, flags);
     x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);
@@ -2674,6 +2958,41 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
         // dummy (white) texture on both units: if that happened for unit 1,
         // unit 0 must be bound again (OoT's title logo: one white strip for a frame).
         u32 retires = x->retires;
+        if (mipTex)
+        {
+            // Both units: the chain's atlas, point sampled and clamped: the
+            // shader addresses (wrap, mirror, clamp) and filters each level itself.
+            u32 u;
+            const MipEntry *me = &x->mipMemo.e;
+            float sz[4], lc[4], at[4], lc2[4];
+            sz[0] = (float)mipB.w; sz[1] = (float)mipB.h; sz[2] = 1.0f / sz[0]; sz[3] = 1.0f / sz[1];
+            lc[0] = (float)(x->curLevels - 1);   // the last mip level (the triangle's level count - 1)
+            lc[1] = !(st->rasterFlags & RS_SAMPLE_QUAD) || x->texFilter == 2 ? 0.0f : x->texFilter == 0 ? 2.0f : 1.0f;
+            lc[2] = 0.0f;
+            lc[3] = (float)st->primMinLevel / 32.0f;   // in texels, as h64_rdp_compute_lod's minLod
+            at[0] = (float)me->aw; at[1] = (float)me->ah; at[2] = me->raw[0]; at[3] = me->raw[1];
+            lc2[0] = (float)lodMode; lc2[1] = lc2[2] = lc2[3] = 0.0f;
+            for (u = 0; u < 2; u++)
+            {
+                x->dev->SetTexture(u, mipTex);
+                x->dev->SetSamplerState(u, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+                x->dev->SetSamplerState(u, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP);
+                x->dev->SetSamplerState(u, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+                x->dev->SetSamplerState(u, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+                x->dev->SetSamplerState(u, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+                x->dev->SetPixelShaderConstantF(8 + u, sz, 1);
+            }
+            x->dev->SetPixelShaderConstantF(10, lc, 1);
+            x->dev->SetPixelShaderConstantF(11, me->ea, 8);   // c11..c18: each entry's place, size and addressing
+            x->dev->SetPixelShaderConstantF(19, me->eb, 8);   // c19..c26: each entry's coordinate transform
+            x->dev->SetPixelShaderConstantF(27, at, 1);
+            x->dev->SetPixelShaderConstantF(28, lc2, 1);
+            *tb0 = mipB;
+            *tb1 = mipB;
+            x->stats.mipDraws++;
+        }
+        else
+        {
         bind_texture(x, 0, tile, tb0);
         if (x->usesT1)
             bind_texture(x, 1, tile1_of(x, tile), tb1);
@@ -2685,6 +3004,7 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
             x->dev->SetTexture(1, x->dummy);
         }
         if (x->retires != retires) bind_texture(x, 0, tile, tb0);
+        }
     }
     set_blend(x, two ? 1 : 0);
     set_depth(x, hasDepth);
@@ -2784,7 +3104,6 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         xenos_rdp(user, w, n);
         return;
     }
-    (void)levels;
     if (st->rasterFlags & (RS_FILL | RS_COPY)) return;
     if (!st->usePrimDepth)
         for (i = 0; i < 3; i++)
@@ -2811,9 +3130,13 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
             if (vz > x->dzMax) x->dzMax = vz;
         }
     }
-    if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || x->batchN + 3 > BATCH_VERTICES)
+    if (levels < 1) levels = 1;
+    if (x->stateDirty || flags != x->batchFlags || tile != x->batchTile || levels != x->batchLevels ||
+        x->batchN + 3 > BATCH_VERTICES)
     {
         flush_batch(x);
+        x->curLevels = levels;   // setup_combined: mip chain over `levels` tiles when texture LOD is on
+        x->batchLevels = levels;
         // TMEM as the loads left it (copy backs put off) before a texture is decoded from it.
         if (x->staleCount && (tile_reads_stale(x, tile) || tile_reads_stale(x, tile + 1)))
             resolve_loads(x);
@@ -2849,59 +3172,58 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
     // magnified or 1:1 texture was sampled on its texel boundaries (render
     // tests, tri_persp_point: every checker edge one pixel off). Not for
     // slivers (under half a square pixel), whose gradients are meaningless.
-    float as[3], at[3], am[3], ac[3][4];
+    // Scalars only (in registers): small arrays written then read back cost a
+    // load-hit-store stall each on the in-order Xenon (+0.4 ms a frame on DK64).
+    float k1 = 0.0f, k2 = 0.0f;   // half-pixel shift of a plane = k1 * (A1 - A0) + k2 * (A2 - A0)
+    float dm = 0.0f, ds = 0.0f, dt = 0.0f, dr = 0.0f, dg = 0.0f, db = 0.0f, da = 0.0f;
     {
         float x0 = v[0]->x, y0 = v[0]->y;
         float dx1 = v[1]->x - x0, dy1 = v[1]->y - y0, dx2 = v[2]->x - x0, dy2 = v[2]->y - y0;
         float det = dx1 * dy2 - dx2 * dy1;
-        int shift = det > 1.0f || det < -1.0f;
-        float k1 = 0.0f, k2 = 0.0f;   // half-pixel shift of a plane = k1 * (A1 - A0) + k2 * (A2 - A0)
-        if (shift)
+        if (fabsf(det) > 1.0f)
         {
             // dA/dx + dA/dy = ((A1-A0)(dy2-dx2) + (A2-A0)(dx1-dy1)) / det
             float inv = -0.5f / det;
             k1 = (dy2 - dx2) * inv;
             k2 = (dx1 - dy1) * inv;
-        }
-        for (i = 0; i < 3; i++)
-        {
-            float m = persp && v[i]->invw > 0 ? v[i]->invw : 1.0f;
-            am[i] = m;
-            as[i] = v[i]->s * m;
-            at[i] = v[i]->t * m;
-            ac[i][0] = v[i]->r; ac[i][1] = v[i]->g; ac[i][2] = v[i]->b; ac[i][3] = v[i]->a;
-        }
-        if (shift)
-        {
-            float dm = k1 * (am[1] - am[0]) + k2 * (am[2] - am[0]);
-            float ds = k1 * (as[1] - as[0]) + k2 * (as[2] - as[0]);
-            float dt = k1 * (at[1] - at[0]) + k2 * (at[2] - at[0]);
-            float dc[4];
-            int k;
-            for (k = 0; k < 4; k++) dc[k] = k1 * (ac[1][k] - ac[0][k]) + k2 * (ac[2][k] - ac[0][k]);
-            if (am[0] + dm > 0.0f && am[1] + dm > 0.0f && am[2] + dm > 0.0f)
-                for (i = 0; i < 3; i++) { am[i] += dm; as[i] += ds; at[i] += dt; }
-            for (i = 0; i < 3; i++)
-                for (k = 0; k < 4; k++) ac[i][k] += dc[k];
+            if (flags & H64_TRI_TEXTURE)
+            {
+                float m0 = persp && v[0]->invw > 0 ? v[0]->invw : 1.0f;
+                float m1 = persp && v[1]->invw > 0 ? v[1]->invw : 1.0f;
+                float m2 = persp && v[2]->invw > 0 ? v[2]->invw : 1.0f;
+                float s0 = v[0]->s * m0, t0 = v[0]->t * m0;
+                dm = k1 * (m1 - m0) + k2 * (m2 - m0);
+                ds = k1 * (v[1]->s * m1 - s0) + k2 * (v[2]->s * m2 - s0);
+                dt = k1 * (v[1]->t * m1 - t0) + k2 * (v[2]->t * m2 - t0);
+                if (m0 + dm <= 0.0f || m1 + dm <= 0.0f || m2 + dm <= 0.0f) dm = ds = dt = 0.0f;
+            }
+            if (flags & H64_TRI_SHADE)
+            {
+                dr = k1 * (v[1]->r - v[0]->r) + k2 * (v[2]->r - v[0]->r);
+                dg = k1 * (v[1]->g - v[0]->g) + k2 * (v[2]->g - v[0]->g);
+                db = k1 * (v[1]->b - v[0]->b) + k2 * (v[2]->b - v[0]->b);
+                da = k1 * (v[1]->a - v[0]->a) + k2 * (v[2]->a - v[0]->a);
+            }
         }
     }
     q = &x->batch[x->batchN];
     x->batchN += 3;
     for (i = 0; i < 3; i++)
     {
-        float w = persp ? 1.0f / am[i] : 1.0f;
-        float vs = as[i] / am[i], vt = at[i] / am[i];
+        float m = persp && v[i]->invw > 0 ? v[i]->invw : 1.0f;
+        float w = 1.0f / (m + dm);   // 1 without perspective (dm is 0 then)
+        float vs = (v[i]->s * m + ds) * w, vt = (v[i]->t * m + dt) * w;
         float z = st->usePrimDepth ? (float)(st->primDepth >> 16) : v[i]->z;
         q[i].x = wsFull ? v[i]->x : ws_x(x, v[i]->x, (float)(st->colorWidth ? st->colorWidth : 320));
         q[i].y = v[i]->y;
         q[i].z = z / 32767.0f;
-        q[i].w = w;
+        q[i].w = persp ? w : 1.0f;
         if (flags & H64_TRI_SHADE)
         {
-            q[i].col[0] = ac[i][0] * (1.0f / 255.0f);
-            q[i].col[1] = ac[i][1] * (1.0f / 255.0f);
-            q[i].col[2] = ac[i][2] * (1.0f / 255.0f);
-            q[i].col[3] = ac[i][3] * (1.0f / 255.0f);
+            q[i].col[0] = (v[i]->r + dr) * (1.0f / 255.0f);
+            q[i].col[1] = (v[i]->g + dg) * (1.0f / 255.0f);
+            q[i].col[2] = (v[i]->b + db) * (1.0f / 255.0f);
+            q[i].col[3] = (v[i]->a + da) * (1.0f / 255.0f);
         }
         else
             q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 0.0f;
@@ -3337,6 +3659,8 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         int filter = x->texFilter;
         if (x->sys->options.gfxRectPoint && !fbSrc && (dsdx == 1.0f || dsdx == -1.0f) && (dtdy == 1.0f || dtdy == -1.0f))
             x->texFilter = 2;
+        x->curLevels = 1;   // rectangles: no mip chain
+        x->batchLevels = 0; // the next triangle batch sets its state up again
         setup_combined(x, 1, &tb0, &tb1, tile, 0);
         x->texFilter = filter;
         if ((st->rasterFlags & RS_SAMPLE_QUAD) && !flip && !t0->shiftS && !t0->shiftT)
@@ -4117,6 +4441,12 @@ H64Renderer *h64_xenos_create(H64System *sys, IDirect3DDevice9 *dev)
     sys->options.rdpStateOnly = 1;
     x->st = h64_rdp_state(sys);
     x->combineRaw = 0;
+    x->curLevels = x->batchLevels = 1;
+    x->mipWarned = 0;
+    x->mipRejectLogs = 0;
+    x->mipBytes = 0;
+    memset(&x->mipMemo, 0, sizeof(x->mipMemo));
+    x->mipMemo.gen = 0xFFFFFFFFu;
     x->textureBytes = 0;
     x->poolBytes = 0;
     x->retires = 0;

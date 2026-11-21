@@ -57,9 +57,9 @@ class Scene:
 
     def other_modes(self, cycle=0, filt=FILT_POINT, tlut=0, tlut_ia=0, persp=0, blend=0, rgb_dither=3, alpha_dither=3,
                     force_blend=0, alpha_compare=0, cvg_times_alpha=0, alpha_cvg_select=0, image_read=0,
-                    cvg_dest=0, aa=0, color_on_cvg=0, z=0, z_mode=0):
-        """z: 1 compare and update (per-pixel depth)."""
-        hi = (cycle << 20 | persp << 19 | tlut << 15 | tlut_ia << 14 | filt << 12 | 6 << 9 |
+                    cvg_dest=0, aa=0, color_on_cvg=0, z=0, z_mode=0, tex_lod=0):
+        """z: 1 compare and update (per-pixel depth); tex_lod: texture LOD (mip-mapping, bit 16 of the high word)."""
+        hi = (cycle << 20 | persp << 19 | tex_lod << 16 | tlut << 15 | tlut_ia << 14 | filt << 12 | 6 << 9 |
               rgb_dither << 6 | alpha_dither << 4)
         lo = (blend << 16 | force_blend << 14 | alpha_cvg_select << 13 | cvg_times_alpha << 12 | z_mode << 10 |
               cvg_dest << 8 | color_on_cvg << 7 | image_read << 6 | (z << 5) | (z << 4) | aa << 3 | alpha_compare)
@@ -118,15 +118,15 @@ class Scene:
         self.sync()
         self.color_image()
 
-    def tri(self, v0, v1, v2, shade=True, texture=False, zbuf=False, tile=0):
+    def tri(self, v0, v1, v2, shade=True, texture=False, zbuf=False, tile=0, levels=1):
         """An HLE triangle record (render/api.h vertices: x, y in pixels, z 0..0x7FFF, invw, r g b a 0..255,
-        s, t in s10.5 units before perspective). h64test --rt-tris adds the RDP command after it."""
+        s, t in s10.5 units before perspective; levels: mip-map levels). h64test --rt-tris adds the RDP command."""
         flags = (1 if zbuf else 0) | (2 if texture else 0) | (4 if shade else 0)
-        self.cmds.append({'tri': (v0, v1, v2), 'flags': flags, 'tile': tile})
+        self.cmds.append({'tri': (v0, v1, v2), 'flags': flags, 'tile': tile, 'levels': levels})
 
     # ---- textures
     def texture(self, addr, data, fmt, size, width, height, tile=0, tmem=0, cs=0, ms=0, masks=0, ct=0, mt=0, maskt=0,
-                palette=0):
+                palette=0, shifts=0, shiftt=0):
         """Puts `data` in RDRAM, loads it with LOAD_TILE (LOAD_BLOCK for 4-bit as 8-bit pairs) and sets the tile."""
         self.ram[addr] = bytes(data)
         bpl = (width << size) >> 1
@@ -140,7 +140,8 @@ class Scene:
         self.put(0x34000000, 7 << 24 | ((load_w - 1) * 4) << 12 | ((height - 1) * 4))
         self.sync(0x26)
         self.put(0x35000000 | fmt << 21 | size << 19 | line << 9 | tmem,
-                 tile << 24 | palette << 20 | ct << 19 | mt << 18 | maskt << 14 | cs << 9 | ms << 8 | masks << 4)
+                 tile << 24 | palette << 20 | ct << 19 | mt << 18 | maskt << 14 | shiftt << 10 | cs << 9 | ms << 8 |
+                 masks << 4 | shifts)
         self.put(0x32000000, tile << 24 | ((width - 1) * 4) << 12 | ((height - 1) * 4))
 
     def tlut(self, addr, entries16, tmem=256):
@@ -170,7 +171,7 @@ class Scene:
         word(7)
         for c in self.cmds + [[0x29000000, 0]]:
             if isinstance(c, dict):
-                word(0x48); word(c['flags']); word(c['tile']); word(1)
+                word(0x48); word(c['flags']); word(c['tile']); word(c.get('levels', 1))
                 for v in c['tri']:
                     out.extend(struct.pack('<10f', v['x'], v['y'], v.get('z', 0.0), v.get('invw', 1.0),
                                            v.get('r', 255.0), v.get('g', 255.0), v.get('b', 255.0), v.get('a', 255.0),
@@ -450,7 +451,42 @@ def tri_small(s, rnd):
         s.tri(*[dict(vtx(rnd), x=cx + rnd.uniform(-3, 3), y=cy + rnd.uniform(-3, 3)) for _ in range(3)])
 
 
+def tri_mip(filt):
+    """A receding floor with 6 mip levels (32x32 down to 1x1, tiles 0-5, each level its own tint over a checker),
+    LOD on, 2 cycles: (TEXEL1 - TEXEL0) * LOD_FRAC + TEXEL0, then the combined colour."""
+    def build(s, rnd):
+        s.clear(0x0001)
+        tints = [(31, 31, 31), (31, 8, 8), (8, 31, 8), (8, 8, 31), (31, 31, 8), (8, 31, 31)]
+        tmem = 0
+        for lv in range(6):
+            n = 32 >> lv
+            px = []
+            for y in range(n):
+                for xx in range(n):
+                    tr, tg, tb = tints[lv]
+                    k = 1 if ((xx // max(1, n // 8)) + (y // max(1, n // 8))) & 1 else 2
+                    px.append((tr // k) << 11 | (tg // k) << 6 | (tb // k) << 1 | 1)
+            data = b''.join(struct.pack('>H', p) for p in px)
+            s.texture(TEXBASE + lv * 0x1000, data, FMT_RGBA, SZ_16, n, n, tile=lv, tmem=tmem, masks=5 - lv, maskt=5 - lv,
+                      shifts=lv, shiftt=lv)
+            tmem += max(1, (n * 2 + 7) // 8) * n
+        s.other_modes(cycle=1, filt=filt, persp=1, tex_lod=1)
+        lerp = ((A_TEX1, B_TEX0, 13, D_TEX0), (AA_TEX1, AA_TEX0, 0, AA_TEX0))   # c 13 / alpha c 0: LOD fraction
+        s.combine(lerp[0], lerp[1], (A_ZERO, B_ZERO, C_ZERO, D_COMB), (AA_ZERO, AA_ZERO, AA_ZERO, AA_COMB))
+        s.sync()
+
+        def v(x, y, w, sc, tc):
+            return {'x': x, 'y': y, 'z': 0x7FFF * (1 - w), 'invw': w, 's': sc * 32.0, 't': tc * 32.0}
+        a, b = v(150, 8, 0.03, 0, 0), v(170, 8, 0.03, 256, 0)
+        c, d = v(318, 236, 1.0, 256, 256), v(2, 236, 1.0, 0, 256)
+        s.tri(a, b, c, shade=False, texture=True, levels=6)
+        s.tri(a, c, d, shade=False, texture=True, levels=6)
+    return build
+
+
 CASES = [
+    ('tri_mip_point', 'lod', 'mip-mapped receding floor, 6 levels, point sampling', tri_mip(FILT_POINT)),
+    ('tri_mip_bilerp', 'lod', 'mip-mapped receding floor, 6 levels, 3-point filter', tri_mip(FILT_BILERP)),
     ('tri_shade', 'triangle', 'Gouraud-shaded triangles, 1 cycle', tri_shade),
     ('tri_zbuffer', 'triangle', 'shaded triangles through each other, depth compare and update', tri_zbuffer),
     ('tri_persp_point', 'triangle', 'perspective-corrected textured floors, point sampling', tri_persp(FILT_POINT)),

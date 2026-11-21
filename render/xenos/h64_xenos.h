@@ -64,6 +64,7 @@ struct H64XenosStats
     u32 textureUploads, textureCreates, shaderCompiles, presents, copyBacks, fbSwitches;
     u32 texelsDecoded;
     u32 fbTexRects;   // rectangles textured straight from a frame the GPU drew
+    u32 mipDraws;     // state setups drawing with a mip chain (texture LOD)
     u64 tCopyBack;    // copy-backs (GPU wait, readback, conversion)
     u64 tCopyBackWait;   // inside tCopyBack: waiting for the GPU
     u64 tLoads;       // texture loads in the software RDP (inside tState)

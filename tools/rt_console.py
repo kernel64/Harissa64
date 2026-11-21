@@ -23,6 +23,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 H64TEST = os.path.join(ROOT, 'build-msvc', 'h64test.exe')
@@ -52,6 +53,84 @@ def prepare(a):
         shutil.copyfile(p, os.path.join(d, 'scene.rdp'))
         n += 1
     print('%d cases in %s' % (n, a.out))
+
+
+def run_console(a):
+    """Uploads OUT over FTP (files whose size differs), launches default.xex with the XDK's
+    xbreboot, waits for the return to the dashboard, then fetches every xenos_f*.img into BACK.
+    The caller holds the console lock (xbox_lock) and the debugger is detached."""
+    sys.path.insert(0, os.path.join(ROOT, 'tests', 'scripts'))
+    import console_regress as cr
+    import ftplib
+    cfg = cr.load_settings()
+    cfg = dict(cfg, dir=cfg['dir'].rsplit('/', 1)[0] + '/Harissa64v2_rtest',
+               xdir=cfg['xdir'].rsplit('\\', 1)[0] + '\\Harissa64v2_rtest')
+    con = cr.Console(cfg)
+    if not con.wait_ftp(limit=60):
+        sys.exit('console FTP not answering')
+
+    def remote_sizes():
+        g = con.ftp()
+        out = {}
+
+        def walk(path, rel):
+            g.cwd(path)
+            lines = []
+            g.retrlines('LIST', lines.append)
+            for l in lines:
+                p = l.split(None, 8)
+                if len(p) < 9:
+                    continue
+                if p[0].startswith('d'):
+                    walk(path + '/' + p[8], rel + p[8] + '/')
+                else:
+                    out[rel + p[8]] = int(p[4])
+        try:
+            walk(cfg['dir'], '')
+        except ftplib.error_perm:
+            pass
+        g.quit()
+        return out
+    sizes = remote_sizes()
+    sent = 0
+    for d, _, files in os.walk(a.out):
+        for fn in files:
+            p = os.path.join(d, fn)
+            rel = os.path.relpath(p, a.out).replace(os.sep, '/')
+            # The xex and the ini always (two builds can have the same size), scenes when their size differs.
+            if '/' not in rel or sizes.get(rel) != os.path.getsize(p):
+                con.put(open(p, 'rb').read(), rel)
+                sent += 1
+    for rel in sizes:   # results of an earlier run
+        if os.path.basename(rel).startswith('xenos_f') or rel == 'harissa64v2.log':
+            con.delete(rel)
+    print('uploaded %d files' % sent, flush=True)
+    con.xb('xbreboot.exe', cfg['xdir'] + '\\default.xex')
+    time.sleep(20)
+    t0 = time.time()
+    log = b''
+    while time.time() - t0 < a.timeout:
+        if con.wait_ftp(limit=10):
+            try:
+                log = con.get('harissa64v2.log') or b''
+            except Exception:
+                log = b''
+            if b'[rtest] done' in log:
+                break
+        time.sleep(5)
+    if b'[rtest] done' not in log:
+        sys.exit('no "[rtest] done" in the log after %d s' % a.timeout)
+    time.sleep(3)
+    os.makedirs(a.back, exist_ok=True)
+    open(os.path.join(a.back, 'harissa64v2.log'), 'wb').write(log)
+    n = 0
+    for rel in remote_sizes():
+        if os.path.basename(rel).startswith('xenos_f'):
+            p = os.path.join(a.back, rel.replace('/', os.sep))
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, 'wb').write(con.get(rel))
+            n += 1
+    print('fetched %d images; %s' % (n, [l for l in log.decode('utf-8', 'replace').splitlines() if 'done' in l][-1:]), flush=True)
 
 
 def img_to_rdram(img, out_rdram, out_cover):
@@ -114,6 +193,10 @@ def main():
     p.add_argument('out')
     p.add_argument('--only', action='append', default=[])
     p.add_argument('--scale', type=int, default=0, help='0: automatic (from the widest image)')
+    r = sub.add_parser('run', help='FTP upload of OUT, xbreboot launch, wait, fetch the images into BACK')
+    r.add_argument('out')
+    r.add_argument('back')
+    r.add_argument('--timeout', type=int, default=600)
     c = sub.add_parser('collect')
     c.add_argument('corpus')
     c.add_argument('back')
@@ -124,6 +207,9 @@ def main():
     a = ap.parse_args()
     if a.cmd == 'prepare':
         prepare(a)
+        return 0
+    if a.cmd == 'run':
+        run_console(a)
         return 0
     return collect(a)
 
