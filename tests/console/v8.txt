@@ -1,0 +1,3 @@
+# Vigilante 8 checks (explore list for console_regress.py --cases v8.txt).
+# name|rom|state|state frame|input|pauseat|extra ini keys
+v8_quest|Vigilante 8 (U).zip|v8_quest.h64s|0||60|

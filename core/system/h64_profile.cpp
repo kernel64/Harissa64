@@ -320,6 +320,11 @@ static const GameExtra s_extras[] = {
     // the RDP only draws the title over it: the GPU's frame was black with
     // the title (the frame's memory goes to the GPU first now).
     { "NLG", H64_GX_COPYBACK_ALPHA | H64_GX_CIMG_FROM_RDRAM },
+    // Its menus (character select: portrait, titles, help line) are in the
+    // frame's memory before the RDP draws the car and the bars over them
+    // (render test v8_quest: no RDP write there in 4 frames): the GPU's frame
+    // was black but for the car and the bars.
+    { "NV8", H64_GX_CIMG_FROM_RDRAM },
     // Builds its 2D pictures (title, menus, backgrounds) from quads whose
     // vertices only G_MODIFYVTX sets, without texture perspective: the
     // microcode halves their s, t as any vertex's (GitHub issue #22: textures
