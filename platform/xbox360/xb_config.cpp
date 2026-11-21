@@ -51,6 +51,7 @@ void ConfigDefaults(Config *c)
     c->hle = 1;
     c->shotCount = 0;
     c->softRenderer = 0;
+    c->shaderCache = 1;
     c->xenosDebug = 0;
     c->renderTest[0] = 0;
     c->renderTestScale = 0;
@@ -225,6 +226,7 @@ int ConfigParseFile(Config *c, const char *path)
         else if (!strcmp(line, "lateparse")) c->lateParse = atoi(eq + 1);
         else if (!strcmp(line, "cpi")) { c->cpi = atoi(eq + 1); c->cpiSet = 1; }
         else if (!strcmp(line, "xenosdebug")) c->xenosDebug = atoi(eq + 1);
+        else if (!strcmp(line, "shadercache")) c->shaderCache = atoi(eq + 1);
         else if (!strcmp(line, "rendertest")) { strncpy(c->renderTest, eq + 1, sizeof(c->renderTest) - 1); c->renderTest[sizeof(c->renderTest) - 1] = 0; }
         else if (!strcmp(line, "rendertestscale")) c->renderTestScale = atoi(eq + 1);
         else if (!strcmp(line, "pauseat")) c->pauseAt = (u32)atoi(eq + 1);

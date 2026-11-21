@@ -1485,6 +1485,18 @@ static int RunGame(IDirect3DDevice9 *dev, Config *c, const char *romPath)
             xb_audio_dump(wp, c->wavDump);
         }
     }
+    {
+        // Compiled shaders kept across sessions (h64_xenos_set_shader_cache).
+        char cache[64] = "";
+        if (c->shaderCache)
+        {
+            _snprintf(cache, sizeof(cache), "%s:\\cache", s_logDrive);
+            cache[sizeof(cache) - 1] = 0;
+            CreateDirectoryA(cache, NULL);
+            strcat(cache, "\\shaders.bin");
+        }
+        h64_xenos_set_shader_cache(cache);
+    }
     renderer = h64_xenos_create(sys, dev);
     if (!renderer) { MessageScreen(dev, Tr(T_RENDERER_FAILED), Tr(T_SEE_LOG), D3DCOLOR_XRGB(240, 60, 60)); FreeSystem(sys); return RG_DASHBOARD; }
     if (c->xenosDebug) h64_xenos_set_debug(renderer, c->xenosDebug);

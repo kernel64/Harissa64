@@ -57,6 +57,10 @@ u32 h64_xenos_copy_back_all(H64Renderer *r, u32 *addr, u32 *bytes, u32 max);
 // Debug output of combined primitives: 0 normal, 1 solid red, 2 shade
 // colour only, 3 texture 0 only.
 void h64_xenos_set_debug(H64Renderer *r, int mode);
+// Compiled pixel shaders are kept in this file (all games, all renderers) and
+// read back instead of compiling again: a drawing mode met for the first time
+// stutters once, not every session. "" (default): no cache.
+void h64_xenos_set_shader_cache(const char *path);
 
 struct H64XenosStats
 {

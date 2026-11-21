@@ -29,6 +29,8 @@ CASES = [   # name, ROM, state (tests/console/data); the release speed checks' f
 ]
 PROF = re.compile(r'\[prof\] ms/frame: run ([\d.]+) \(cpu ([\d.]+), gfx parse ([\d.]+), gfx hle ([\d.]+) incl. render ([\d.]+)')
 PERF = re.compile(r'\[perf\] vi/s=([\d.]+)')
+KEEP_LOGS = None
+SKIP = 1
 
 
 def one(con, xex_name, case, seconds):
@@ -44,15 +46,22 @@ def one(con, xex_name, case, seconds):
     time.sleep(10 + seconds)
     con.wait_ftp(limit=120)
     time.sleep(3)
-    log = (con.get('harissa64v2.log') or b'').decode('utf-8', 'replace')
+    raw = con.get('harissa64v2.log') or b''
+    if KEEP_LOGS:   # --keep-logs DIR: each run's log, for the [xprof]/[perf] breakdown
+        n = len([f for f in os.listdir(KEEP_LOGS) if f.startswith('%s_%s' % (name, xex_name))])
+        open(os.path.join(KEEP_LOGS, '%s_%s_%d.log' % (name, xex_name, n + 1)), 'wb').write(raw)
+    log = raw.decode('utf-8', 'replace')
     prof = [tuple(float(x) for x in m.groups()) for m in PROF.finditer(log)]
     vis = [float(m.group(1)) for m in PERF.finditer(log)]
-    prof, vis = prof[1:], vis[1:]   # the first period holds the state load
+    # the first period holds the state load; --skip more to leave out the first
+    # shader compilations (steady speed) and see them apart in 'warm'
+    warm = prof[1][0] if len(prof) > 1 else 0.0
+    prof, vis = prof[SKIP:], vis[SKIP:]
     if not prof:
         return None
     avg = [sum(p[i] for p in prof) / len(prof) for i in range(5)]
     return {'run': avg[0], 'cpu': avg[1], 'parse': avg[2], 'gfx': avg[3], 'render': avg[4],
-            'vis': sum(vis) / len(vis) if vis else 0.0, 'periods': len(prof)}
+            'vis': sum(vis) / len(vis) if vis else 0.0, 'periods': len(prof), 'warm': warm}
 
 
 def main():
@@ -62,7 +71,14 @@ def main():
     ap.add_argument('--only', action='append', default=[])
     ap.add_argument('--seconds', type=float, default=14)
     ap.add_argument('--runs', type=int, default=2)
+    ap.add_argument('--keep-logs', help='folder for each run\'s log')
+    ap.add_argument('--skip', type=int, default=1, help='2-s periods left out at the start (default 1: the state load)')
     a = ap.parse_args()
+    global KEEP_LOGS, SKIP
+    SKIP = max(1, a.skip)
+    if a.keep_logs:
+        os.makedirs(a.keep_logs, exist_ok=True)
+        KEEP_LOGS = a.keep_logs
     cfg = cr.load_settings()
     con = cr.Console(cfg)
     if not con.wait_ftp():
@@ -85,22 +101,40 @@ def main():
                 continue
             for r in range(a.runs):
                 for tag in ('old', 'new'):
-                    m = one(con, 'ab_%s.xex' % tag, case, a.seconds)
+                    try:
+                        m = one(con, 'ab_%s.xex' % tag, case, a.seconds)
+                    except (OSError, EOFError) as e:   # an FTP timeout loses this run only
+                        print('%-6s %s run %d: %s' % (case[0], tag, r + 1, e), flush=True)
+                        con.wait_ftp(limit=120)
+                        m = None
                     res.setdefault((case[0], tag), []).append(m)
                     print('%-6s %s run %d: %s' % (case[0], tag, r + 1,
                           'no [prof] lines' if not m else 'run %.2f gfx %.2f render %.2f parse %.2f ms/frame, %.1f VI/s'
-                          % (m['run'], m['gfx'], m['render'], m['parse'], m['vis'])), flush=True)
+                          ' (first period after the load: run %.1f)'
+                          % (m['run'], m['gfx'], m['render'], m['parse'], m['vis'], m['warm'])), flush=True)
     finally:
-        con.xb('xbreboot.exe')
+        # Each step retried on its own: an FTP timeout must not skip the ini and saves.
+        def step(what, fn):
+            for attempt in range(3):
+                try:
+                    return fn()
+                except (OSError, EOFError) as e:
+                    print('cleanup: %s failed (%s), retrying' % (what, e), flush=True)
+                    time.sleep(5)
+                    con.wait_ftp(limit=120)
+            print('cleanup: %s FAILED, do it by hand' % what, flush=True)
+            return None
+        step('back to the dashboard', lambda: con.xb('xbreboot.exe'))
         con.wait_ftp()
-        con.delete('ab_old.xex')
-        con.delete('ab_new.xex')
-        if installed is not None and con.get('harissa64v2.xex') != installed:
-            con.put(installed, 'harissa64v2.xex')
+        step('delete ab_old.xex', lambda: con.delete('ab_old.xex'))
+        step('delete ab_new.xex', lambda: con.delete('ab_new.xex'))
+        if installed is not None:
+            step('xex check', lambda: con.get('harissa64v2.xex') == installed or con.put(installed, 'harissa64v2.xex'))
         if user_ini is not None:
-            con.put(user_ini, 'harissa64v2.ini')
-            print('user ini restored:', con.get('harissa64v2.ini') == user_ini, flush=True)
-        print('saves restored:', 'identical' if con.restore_saves(backup) else 'MISMATCH, check ' + backup, flush=True)
+            step('user ini', lambda: con.put(user_ini, 'harissa64v2.ini'))
+            print('user ini restored:', step('ini check', lambda: con.get('harissa64v2.ini') == user_ini), flush=True)
+        ok = step('saves', lambda: con.restore_saves(backup))
+        print('saves restored:', 'identical' if ok else 'MISMATCH, check ' + backup, flush=True)
     print('\ncase    old run/gfx/render ms   new run/gfx/render ms   VI/s old -> new')
     for case in CASES:
         o = [m for m in res.get((case[0], 'old'), []) if m]

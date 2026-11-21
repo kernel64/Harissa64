@@ -20,6 +20,7 @@ struct Config
                         // (settings.ini, chosen in the file browser; default game:\roms\)
     int hle;            // hle=0: RSP tasks on the LLE RSP
     int softRenderer;   // renderer=soft: the software RDP draws into RDRAM, Xenos only shows RDRAM (diagnosis)
+    int shaderCache;    // shadercache=0: no compiled shaders kept in <drive>:\cache\shaders.bin (default 1)
     int xenosDebug;     // xenosdebug=1..4: renderer debug output (h64_xenos_set_debug)
     char renderTest[256];   // rendertest=FOLDER: draw every FOLDER\<case>\scene.rdp with Xenos, then the dashboard
     int renderTestScale;    // rendertestscale=N: internal resolution for them (default 0: from the widest image, 1:1 at least)

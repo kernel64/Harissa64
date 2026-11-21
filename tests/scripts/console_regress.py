@@ -380,6 +380,12 @@ def run():
     dpath = os.path.join(OUT, 'dashboard.bmp')
     run.dashboard = small(dpath) if con.capture(dpath) else None
     if a.xex:
+        # The installed xex is replaced (and stays): keep the one it replaces.
+        before = con.get('harissa64v2.xex')
+        if before:
+            keep = os.path.join(DATA, 'harissa64v2.before-%s.xex' % time.strftime('%Y%m%d-%H%M%S'))
+            open(keep, 'wb').write(before)
+            log('installed xex kept in ' + keep)
         con.put(open(a.xex, 'rb').read(), 'harissa64v2.xex')
         log('xex uploaded: ' + a.xex)
     results = []

@@ -316,12 +316,24 @@ static Xenos *X(H64Renderer *r) { return (Xenos *)r; }
 // ---------------------------------------------------------------- shaders
 static int s_logCompiles;   // xenosdebug=18: every pixel shader compile is logged first
 
-static IDirect3DPixelShader9 *compile_ps(IDirect3DDevice9 *dev, const char *src)
+// Compiles a pixel shader to microcode (any thread); NULL on error, logged with the source.
+static LPD3DXBUFFER compile_ps_code(const char *src)
 {
     LPD3DXBUFFER code = NULL, err = NULL;
-    IDirect3DPixelShader9 *ps = NULL;
+    LARGE_INTEGER q0, q1, qf;
+    HRESULT hr;
     if (s_logCompiles) H64_WARN("[xenos] compile_ps (%u bytes): %.200s", (u32)strlen(src), src + (strlen(src) > 600 ? strlen(src) - 600 : 0));
-    HRESULT hr = D3DXCompileShader(src, (UINT)strlen(src), NULL, NULL, "main", "ps_3_0", 0, &code, &err, NULL);
+    QueryPerformanceCounter(&q0);
+    hr = D3DXCompileShader(src, (UINT)strlen(src), NULL, NULL, "main", "ps_3_0", 0, &code, &err, NULL);
+    QueryPerformanceCounter(&q1);
+    {
+        double ms;
+        QueryPerformanceFrequency(&qf);
+        ms = (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+        if (ms > 20.0)   // the console's compiler is slow: a stutter the first time a mode is drawn
+            H64_INFO("[xenos] pixel shader compiled in %.0f ms (%u bytes%s)", ms, (u32)strlen(src),
+                     strstr(src, "#define LODMODE") ? ", texture LOD" : "");
+    }
     if (FAILED(hr))
     {
         // The error and the source, line by line (the log sink takes one line at a time).
@@ -340,11 +352,125 @@ static IDirect3DPixelShader9 *compile_ps(IDirect3DDevice9 *dev, const char *src)
             if (*p == '\n') p++;
         }
         if (err) err->Release();
+        if (code) code->Release();
         return NULL;
     }
-    dev->CreatePixelShader((const DWORD *)code->GetBufferPointer(), &ps);
-    code->Release();
     if (err) err->Release();
+    return code;
+}
+
+// ------------------------------------------------- pixel shader cache on disk
+// The console's compiler takes 20-40 ms an ordinary shader and 150-500 ms a
+// texture LOD one, so a drawing mode met for the first time stutters. Compiled
+// shaders are kept in one file (h64_xenos_set_shader_cache), keyed by a hash of
+// their source: the stutter happens once per mode, not once per session (as
+// Dolphin's and Xenia's shader caches do). File: "H64PSC01" then records
+// {u64 key, u32 bytes, microcode}, host order; a cut record ends the reading.
+// Only the device's thread compiles, so no lock.
+static const char s_cacheMagic[8] = { 'H', '6', '4', 'P', 'S', 'C', '0', '1' };
+static const u32 SHADER_CACHE_MAX = 16u << 20;   // larger: started again (old modes pile up)
+static char s_cachePath[160];
+static int s_cacheLoaded;
+static u32 s_cacheBytes, s_cacheHits, s_cacheAdds;
+static std::map<u64, std::vector<u8> > s_cache;
+
+static u64 shader_key(const char *src)
+{
+    u64 h = 0xCBF29CE484222325ull;
+    const u8 *p = (const u8 *)src;
+    while (*p) { h ^= *p++; h *= 0x100000001B3ull; }
+    return h ^ ((u64)(p - (const u8 *)src) << 40);
+}
+
+static void shader_cache_load(void)
+{
+    FILE *f;
+    long size;
+    u8 *data;
+    s_cacheLoaded = 1;
+    if (!s_cachePath[0]) return;
+    f = fopen(s_cachePath, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    data = size > 8 && size <= (long)SHADER_CACHE_MAX ? (u8 *)malloc(size) : NULL;
+    if (data && fread(data, 1, size, f) == (size_t)size && !memcmp(data, s_cacheMagic, 8))
+    {
+        long at = 8;
+        while (at + 12 <= size)
+        {
+            u64 key;
+            u32 n;
+            memcpy(&key, data + at, 8);
+            memcpy(&n, data + at + 8, 4);
+            if (n == 0 || n > (u32)(size - at - 12)) break;   // cut short (power off while writing)
+            s_cache[key].assign(data + at + 12, data + at + 12 + n);
+            at += 12 + n;
+        }
+        s_cacheBytes = (u32)at;
+    }
+    free(data);
+    fclose(f);
+    if (!s_cacheBytes) remove(s_cachePath);   // not ours, too large or damaged: start again
+    H64_INFO("[xenos] shader cache %s: %u shaders, %u KB", s_cachePath, (u32)s_cache.size(), s_cacheBytes >> 10);
+}
+
+static void shader_cache_add(u64 key, const void *code, u32 n)
+{
+    FILE *f;
+    if (!s_cachePath[0] || !n || s_cacheBytes + 12 + n > SHADER_CACHE_MAX) return;
+    s_cache[key].assign((const u8 *)code, (const u8 *)code + n);
+    // Appended with a seek to the end ("ab" is not trusted on the console:
+    // FILE_APPEND_DATA writes landed at offset 0).
+    f = s_cacheBytes ? fopen(s_cachePath, "r+b") : NULL;
+    if (!f)
+    {
+        f = fopen(s_cachePath, "wb");
+        if (!f) return;
+        fwrite(s_cacheMagic, 1, 8, f);
+        s_cacheBytes = 8;
+    }
+    fseek(f, 0, SEEK_END);
+    if (fwrite(&key, 8, 1, f) == 1 && fwrite(&n, 4, 1, f) == 1 && fwrite(code, 1, n, f) == n)
+        s_cacheBytes += 12 + n;
+    fclose(f);
+    s_cacheAdds++;
+}
+
+void h64_xenos_set_shader_cache(const char *path)
+{
+    if (!strcmp(s_cachePath, path ? path : "")) return;   // kept from the previous game
+    strncpy(s_cachePath, path ? path : "", sizeof(s_cachePath) - 1);
+    s_cachePath[sizeof(s_cachePath) - 1] = 0;
+    s_cache.clear();
+    s_cacheBytes = 0;
+    s_cacheLoaded = 0;
+}
+
+static IDirect3DPixelShader9 *compile_ps(IDirect3DDevice9 *dev, const char *src)
+{
+    IDirect3DPixelShader9 *ps = NULL;
+    LPD3DXBUFFER code;
+    u64 key = shader_key(src);
+    std::map<u64, std::vector<u8> >::iterator it;
+    if (!s_cacheLoaded) shader_cache_load();
+    it = s_cache.find(key);
+    if (it != s_cache.end())
+    {
+        dev->CreatePixelShader((const DWORD *)&it->second[0], &ps);
+        if (ps)
+        {
+            s_cacheHits++;
+            return ps;
+        }
+        s_cache.erase(it);   // refused: compiled again below
+    }
+    code = compile_ps_code(src);
+    if (!code) return NULL;
+    dev->CreatePixelShader((const DWORD *)code->GetBufferPointer(), &ps);
+    if (ps) shader_cache_add(key, code->GetBufferPointer(), (u32)code->GetBufferSize());
+    code->Release();
     return ps;
 }
 
@@ -474,7 +600,8 @@ static const char *a_c(u32 s)
     return t[s & 7];
 }
 
-enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16, KEY_LOD = 32 };
+// KEY_LODLIN: with KEY_LOD and without KEY_3POINT, bilinear (else point).
+enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16, KEY_LOD = 32, KEY_LODLIN = 64 };
 #define TRI_ZOUT 0x100   // batch flag beside H64_TRI_*: a vertex Z outside the RDP range
 
 // In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
@@ -520,30 +647,40 @@ static const char s_psLodSource[] =
     "float4 lodB(float k) {\n"
     "  return k < 0.5 ? mB0 : k < 1.5 ? mB1 : k < 2.5 ? mB2 : k < 3.5 ? mB3 : k < 4.5 ? mB4 : k < 5.5 ? mB5 : k < 6.5 ? mB6 : mB7;\n"
     "}\n"
-    "float lodaddr(float i, float sz, float mode) {\n"
-    "  float w = i - sz * floor(i / sz);\n"
-    "  float m = i - 2.0 * sz * floor(i / (2.0 * sz));\n"
+    // Texel addresses inside an entry: columns b.x, b.x + 1 and rows b.y, b.y + 1
+    // at once (one float4: the per-tap version took the console's compiler
+    // 150-380 ms per shader), each wrapped, clamped or mirrored as its axis says.
+    "float4 lodaddr(float2 b, float4 e) {\n"
+    "  float mt = floor(e.w * 0.25), ms = e.w - 4.0 * mt;\n"
+    "  float4 i = float4(b.x, b.x + 1.0, b.y, b.y + 1.0), sz = e.yyzz, md = float4(ms, ms, mt, mt);\n"
+    "  float4 w = i - sz * floor(i / sz);\n"
+    "  float4 m = i - 2.0 * sz * floor(i / (2.0 * sz));\n"
     "  m = m < sz ? m : 2.0 * sz - 1.0 - m;\n"
-    "  return mode < 0.5 ? w : (mode < 1.5 ? clamp(i, 0.0, sz - 1.0) : m);\n"
+    "  float4 a = md < 0.5 ? w : (md < 1.5 ? clamp(i, 0.0, sz - 1.0) : m);\n"
+    "  return float4((e.x + a.xy + 0.5) / atl.x, (a.zw + 0.5) / atl.y);\n"
     "}\n"
-    "float4 lodtap(sampler s, float2 i, float4 e, float ms, float mt) {\n"
-    "  float ax = lodaddr(i.x, e.y, ms), ay = lodaddr(i.y, e.z, mt);\n"
-    "  return tex2Dlod(s, float4((e.x + ax + 0.5) / atl.x, (ay + 0.5) / atl.y, 0.0, 0.0));\n"
-    "}\n"
-    "float4 lodfetch(sampler s, float2 sb, float k, float mode) {\n"
+    // LODMODE (defined before this text by the shader key): 0 point, 1 bilinear,
+    // 2 the RDP's 3-point; one filter per shader keeps it short.
+    "float4 lodfetch(sampler s, float2 sb, float k) {\n"
     "  float4 e = lodA(k), t = lodB(k);\n"
-    "  float mt = floor(e.w / 4.0), ms = e.w - 4.0 * mt;\n"
     "  float2 p = sb * t.xy + t.zw;\n"
     "  float2 b = floor(p);\n"
-    "  float4 c00 = lodtap(s, b, e, ms, mt);\n"
-    "  if (mode < 0.5) return c00;\n"
+    "  float4 uv = lodaddr(b, e);\n"
+    "  float4 c00 = tex2Dlod(s, float4(uv.x, uv.z, 0.0, 0.0));\n"
+    "#if LODMODE == 0\n"
+    "  return c00;\n"
+    "#else\n"
     "  float2 f = p - b;\n"
-    "  float4 c10 = lodtap(s, b + float2(1.0, 0.0), e, ms, mt);\n"
-    "  float4 c01 = lodtap(s, b + float2(0.0, 1.0), e, ms, mt);\n"
-    "  float4 c11 = lodtap(s, b + float2(1.0, 1.0), e, ms, mt);\n"
-    "  if (mode < 1.5) return lerp(lerp(c00, c10, f.x), lerp(c01, c11, f.x), f.y);\n"
+    "  float4 c10 = tex2Dlod(s, float4(uv.y, uv.z, 0.0, 0.0));\n"
+    "  float4 c01 = tex2Dlod(s, float4(uv.x, uv.w, 0.0, 0.0));\n"
+    "  float4 c11 = tex2Dlod(s, float4(uv.y, uv.w, 0.0, 0.0));\n"
+    "#if LODMODE == 1\n"
+    "  return lerp(lerp(c00, c10, f.x), lerp(c01, c11, f.x), f.y);\n"
+    "#else\n"
     "  return (f.x + f.y < 1.0) ? c00 + f.x * (c10 - c00) + f.y * (c01 - c00)\n"
     "                           : c11 + (1.0 - f.x) * (c01 - c11) + (1.0 - f.y) * (c10 - c11);\n"
+    "#endif\n"
+    "#endif\n"
     "}\n";
 // KEY_LOD's TEXEL0/TEXEL1; lodc2 (c28): x 0 plain, 1 detail, 2 sharpen.
 static const char s_psLodMain[] =
@@ -562,8 +699,8 @@ static const char s_psLodMain[] =
     "    k0 = 0.0; k1 = 1.0;\n"
     "    lfr = max(lodc.w, lodm) - (lodc2.x > 1.5 ? 1.0 : 0.0);\n"
     "  }\n"
-    "  float4 t0 = lodfetch(s0, sb, k0, lodc.y);\n"
-    "  float4 t1 = lodfetch(s1, sb, k1, lodc.y);\n"
+    "  float4 t0 = lodfetch(s0, sb, k0);\n"
+    "  float4 t1 = lodfetch(s1, sb, k1);\n"
     "  float4 lodv = lfr.xxxx;\n";
 
 static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int second, int last)
@@ -608,7 +745,8 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
 {
     u64 key = (x->combineRaw & 0x00FFFFFFFFFFFFFFull) | ((u64)flags << 56);
     std::map<u64, IDirect3DPixelShader9 *>::iterator it = x->shaders.find(key);
-    char src[8192], c0[512], c1[512], dbg[256], texs[2048];
+    // static: ~20 KB, too much for a worker thread's stack (one thread compiles shaders at a time)
+    static char src[12288], c0[512], c1[512], dbg[256], texs[2048], lodsrc[6144];
     IDirect3DPixelShader9 *ps;
     if (it != x->shaders.end())
     {
@@ -627,6 +765,10 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
         for (p = strstr(c0, "misc.w"); p; p = strstr(p + 4, "misc.w")) memcpy(p, "lodv", 4);
         for (p = strstr(c1, "misc.w"); p; p = strstr(p + 4, "misc.w")) memcpy(p, "lodv", 4);
     }
+    lodsrc[0] = 0;
+    if (flags & KEY_LOD)
+        sprintf_s(lodsrc, sizeof(lodsrc), "#define LODMODE %d\n%s",
+                  (flags & KEY_3POINT) ? 2 : (flags & KEY_LODLIN) ? 1 : 0, s_psLodSource);
     {
         // TEXEL0/TEXEL1: one tile each, or (texture LOD) the pixel's levels of the mip chain.
         if (flags & KEY_LOD) strcpy(texs, s_psLodMain);
@@ -674,7 +816,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "%s%s"
               "  return o;\n"
               "}\n",
-              s_psWrap9Source, (flags & KEY_3POINT) ? s_ps3PointSource : "", (flags & KEY_LOD) ? s_psLodSource : "",
+              s_psWrap9Source, (flags & KEY_3POINT) ? s_ps3PointSource : "", lodsrc,
               (flags & KEY_DEPTH) ? "float d : DEPTH;" : "",
               texs,
               c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
@@ -1545,7 +1687,25 @@ static IDirect3DTexture9 *get_mip_texture(Xenos *x, u32 tile, u32 levels, int de
         key = fnv64(key, (const u8 *)k, sizeof(k));
     }
     key = fnv64(key, (const u8 *)&rf, sizeof(rf));
-    key = mem_hash(key, st->tmem, 4096);
+    {
+        // Only the TMEM rows the entries decode (+ the palette): all 4 KB at
+        // every TMEM change cost DK64 ~2 ms a frame (it loads textures all the time).
+        u32 span = tlut ? 2048 : 4096;
+        for (lv = 0; lv < count; lv++)
+        {
+            const H64RdpTile *t = &st->tiles[(tile + lv) & 7];
+            u32 rowBytes = t->stride ? t->stride : 8;
+            u32 rows = t->maskT && lb[lv].h >= (1u << t->maskT) ? (1u << t->maskT) : lb[lv].h;
+            u32 nb = rows * rowBytes, off = t->offset & (span - 1), first;
+            if (nb > span) nb = span;
+            first = off + nb > span ? span - off : nb;
+            key = mem_hash(key, st->tmem + off, first);
+            if (first < nb) key = mem_hash(key, st->tmem, nb - first);
+            if (t->size == 3 && t->fmt == 0)
+                key = mem_hash(key, st->tmem + ((off | 0x800) & 0xFFF), first > 2048 ? 2048 : first);   // 32-bit: the other halves
+        }
+        if (tlut) key = mem_hash(key, st->tmem + 0x800, t0->size == 0 ? 2048 : 2048);
+    }
     it = x->mips.find(key);
     if (it != x->mips.end() && x->debug != 12)
         x->mipMemo.e = it->second;
@@ -2935,8 +3095,14 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     if ((st->rasterFlags & RS_TEX_LOD) && !(st->rasterFlags & RS_COPY) && x->curLevels > 1 &&
         !x->hdOn && x->debug != 21)   // xenosdebug=21: no mip-mapping (diagnosis)
         mipTex = get_mip_texture(x, tile, x->curLevels, lodMode == 1, &mipB, &mipN);
-    if (mipTex) flags |= KEY_LOD;
-    ps = combiner_shader(x, flags);
+    ps = NULL;
+    if (mipTex)
+    {
+        ps = combiner_shader(x, flags | KEY_LOD |
+                             ((st->rasterFlags & RS_SAMPLE_QUAD) && x->texFilter == 1 ? KEY_LODLIN : 0));
+        if (!ps) mipTex = NULL;   // its shader did not compile (logged): drawn without LOD
+    }
+    if (!ps) ps = combiner_shader(x, flags);
     x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);
     set_color_const(x, 1, st->envColor);
