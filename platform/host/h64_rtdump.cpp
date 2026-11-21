@@ -136,6 +136,19 @@ static void start(H64System *sys)
     memset(s_rec.cache, 0, H64_RDRAM_SIZE);
     memcpy(s_rec.cache, st->tmem, 4096);   // block 0 holds the TMEM image: rewritten where it differs
     put_ram_changes(sys->rdram);
+    // The scissor in force when the recording starts, if no SET_SCISSOR was
+    // seen since the state was loaded: the software RDP's (restored with the
+    // state). Mario Party 3 clears its depth image before it sets the
+    // scissor: in the scene, the references' clear was clipped to nothing (no
+    // scissor yet), the old depth stayed and hid its blocks (render test
+    // mp3_stacked, 14.5 % on Xenos, which was right).
+    if (!s_rec.stateSet[0x2D] && (st->scissorXhi || st->scissorYhi))
+    {
+        u32 f = (st->rasterFlags & RS_INTERLACE_FIELD ? 1u << 25 : 0) | (st->rasterFlags & RS_INTERLACE_KEEP_ODD ? 1u << 24 : 0);
+        s_rec.state[0x2D] = (u64)((0x2Du << 24) | (st->scissorXlo << 12) | st->scissorYlo) << 32 |
+                            (f | (st->scissorXhi << 12) | st->scissorYhi);
+        s_rec.stateSet[0x2D] = 1;
+    }
     put_state_commands();
     s_rec.lastCycles = sys->cpu.cycles;
     s_rec.haveCycles = 1;
