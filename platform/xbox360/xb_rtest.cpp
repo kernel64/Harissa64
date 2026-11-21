@@ -12,6 +12,49 @@
 #include "../../core/system/h64_system.h"
 #include "../../render/api.h"
 #include "../../render/xenos/h64_xenos.h"
+#include "xb_ui.h"
+
+// Progress on the TV between cases (after HarissaCube's xb_rtest.cpp): a
+// black screen for a minute looked like a hung console, and turning it off
+// then breaks the run.
+static struct { u32 index, total; char name[64]; } s_prog;
+
+static void Progress(IDirect3DDevice9 *dev, const char *status)
+{
+    IDirect3DSurface9 *bb = NULL;
+    D3DVIEWPORT9 vp;
+    char line[160];
+    float x = UI_SAFE_X, w = UI_WIDTH - 2 * UI_SAFE_X, frac;
+    if (!dev || FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb))) return;
+    dev->SetRenderTarget(0, bb);
+    dev->SetDepthStencilSurface(NULL);
+    vp.X = vp.Y = 0;
+    vp.Width = UI_WIDTH;
+    vp.Height = UI_HEIGHT;
+    vp.MinZ = 0.0f;
+    vp.MaxZ = 1.0f;
+    dev->SetViewport(&vp);
+    dev->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    dev->SetRenderState(D3DRS_COLORWRITEENABLE, 0xF);
+    dev->Clear(0, NULL, D3DCLEAR_TARGET, UI_COL_BG_BOTTOM, 1.0f, 0);
+    UiBegin(dev);
+    UiBackdrop();
+    UiText(UI_BOLD, 34, x, 120, UI_COL_TEXT, "Render tests", UI_LEFT);
+    _snprintf(line, sizeof(line), "Case %u of %u", s_prog.index, s_prog.total);
+    line[sizeof(line) - 1] = 0;
+    UiText(UI_REGULAR, 26, x, 220, UI_COL_TEXT, line, UI_LEFT);
+    UiText(UI_BOLD, 26, x, 270, UI_COL_ACCENT_HI, s_prog.name, UI_LEFT);
+    UiText(UI_REGULAR, 22, x, 320, UI_COL_TEXT2, status, UI_LEFT);
+    frac = s_prog.total ? (float)(s_prog.index ? s_prog.index - 1 : 0) / (float)s_prog.total : 0.0f;
+    if (s_prog.index > s_prog.total) frac = 1.0f;
+    UiRoundRect(x, 380, w, 14, 7, D3DCOLOR_ARGB(255, 40, 42, 52), D3DCOLOR_ARGB(255, 40, 42, 52));
+    if (frac > 0) UiRoundRect(x, 380, w * frac, 14, 7, UI_COL_ACCENT_HI, UI_COL_ACCENT);
+    UiText(UI_REGULAR, 20, x, 450, UI_COL_TEXT3,
+           "A test is running: please do not turn off the console. It returns to the dashboard by itself.", UI_LEFT);
+    UiEnd();
+    dev->Present(NULL, NULL, NULL, NULL);
+    bb->Release();
+}
 
 static u8 *ReadAll(const char *path, u32 *size)
 {
@@ -131,12 +174,27 @@ int XbRenderTest(IDirect3DDevice9 *dev, const char *folder, int scale)
     pattern[sizeof(pattern) - 1] = 0;
     f = FindFirstFileA(pattern, &fd);
     if (f == INVALID_HANDLE_VALUE) { H64_ERROR("[rtest] no folder %s", folder); return 0; }
+    memset(&s_prog, 0, sizeof(s_prog));
+    do
+        if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.') s_prog.total++;
+    while (FindNextFileA(f, &fd));
+    FindClose(f);
+    f = FindFirstFileA(pattern, &fd);
+    if (f == INVALID_HANDLE_VALUE) return 0;
     do
     {
         if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != '.')
+        {
+            s_prog.index++;
+            strncpy(s_prog.name, fd.cFileName, sizeof(s_prog.name) - 1);
+            Progress(dev, "Drawing the scene with the Xenos renderer and reading the pictures back");
             cases += RunCase(dev, folder, fd.cFileName, scale);
+        }
     } while (FindNextFileA(f, &fd));
     FindClose(f);
+    s_prog.index = s_prog.total + 1;
+    strcpy(s_prog.name, "All cases drawn");
+    Progress(dev, "Writing the log, then back to the dashboard");
     H64_INFO("[rtest] done: %d cases", cases);
     return cases;
 }

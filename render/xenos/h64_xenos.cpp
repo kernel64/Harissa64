@@ -462,17 +462,28 @@ enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHE
 // pixel's texel 0 (pipelining; ParaLLEl-RDP's shading follows it): t0 and t1
 // swap there. OoT's Kokiri paths take their alpha from "TEXEL1" in cycle 2,
 // i.e. from the I4 mask in tile 0: with t1 they came out opaque.
-static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int second)
+// The RDP computes (a - b) * c + d in 9-bit signed arithmetic around 128
+// (ParaLLEl-RDP combiner.h, clamping.h): a result over 383 wraps to dark
+// values, under -128 to white, and only then is it clamped to 0..255 (the
+// last cycle; the first of two passes its result on unclamped). Saturating
+// instead turned (1 - PRIM) * TEXEL0 + 1 white where the RDP shows the wrapped
+// texture (render tests, combiner_1cycle). In 0..1 units: 1.0 = 255.
+static const char s_psWrap9Source[] =
+    "float4 w9n(float4 x) { float4 t = x * 255.0 - 128.0; t -= 512.0 * floor((t + 256.0) / 512.0); return (t + 128.0) / 255.0; }\n"
+    "float4 w9(float4 x) { return saturate(w9n(x)); }\n";
+
+static void combiner_cycle(char *out, size_t len, const H64RdpCombiner *c, int second, int last)
 {
     char *p;
     const char *ra = rgb_a(c->rgbMulAdd), *rb = rgb_b(c->rgbMulSub), *rc = rgb_c(c->rgbMul), *rd = rgb_d(c->rgbAdd);
     // Only constants (0.0, 1.0) make a scalar, which the XDK's float3() does
     // not take: the shader did not compile and the fallback drew instead.
     int scalar = isdigit((u8)ra[0]) && isdigit((u8)rb[0]) && isdigit((u8)rc[0]) && isdigit((u8)rd[0]);
-    sprintf_s(out, len,
-              scalar ? "  comb = float4(saturate((%s - %s) * %s + %s).xxx, saturate((%s - %s) * %s + %s));\n"
-                     : "  comb = float4(float3(saturate((%s - %s) * %s + %s)), saturate((%s - %s) * %s + %s));\n",
-              ra, rb, rc, rd, a_abd(c->aMulAdd), a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
+    char fmt[128];
+    sprintf_s(fmt, sizeof(fmt), scalar ? "  comb = %s(float4(((%%s - %%s) * %%s + %%s).xxx, (%%s - %%s) * %%s + %%s));\n"
+                                       : "  comb = %s(float4(float3((%%s - %%s) * %%s + %%s), (%%s - %%s) * %%s + %%s));\n",
+              last ? "w9" : "w9n");
+    sprintf_s(out, len, fmt, ra, rb, rc, rd, a_abd(c->aMulAdd), a_abd(c->aMulSub), a_c(c->aMul), a_abd(c->aAdd));
     if (!second) return;
     for (p = out; *p; p++)
         if (p[0] == 't' && (p[1] == '0' || p[1] == '1') && p[2] == '.')
@@ -503,15 +514,15 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
 {
     u64 key = (x->combineRaw & 0x00FFFFFFFFFFFFFFull) | ((u64)flags << 56);
     std::map<u64, IDirect3DPixelShader9 *>::iterator it = x->shaders.find(key);
-    char src[4096], c0[512], c1[512], dbg[256];
+    char src[6144], c0[512], c1[512], dbg[256];
     IDirect3DPixelShader9 *ps;
     if (it != x->shaders.end())
     {
         x->usesT1 = x->shaderT1[key];
         return it->second;
     }
-    combiner_cycle(c0, sizeof(c0), &x->st->combiner[0], 0);
-    if (flags & KEY_TWO_CYCLE) combiner_cycle(c1, sizeof(c1), &x->st->combiner[1], 1);
+    combiner_cycle(c0, sizeof(c0), &x->st->combiner[0], 0, !(flags & KEY_TWO_CYCLE));
+    if (flags & KEY_TWO_CYCLE) combiner_cycle(c1, sizeof(c1), &x->st->combiner[1], 1, 1);
     else c1[0] = 0;
     x->usesT1 = strstr(c0, "t1.") || strstr(c1, "t1.");
     x->shaderT1[key] = x->usesT1;
@@ -539,7 +550,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "float4 zbias : register(c7);\n"
               "float4 tsize0 : register(c8);\n"
               "float4 tsize1 : register(c9);\n"
-              "%s"
+              "%s%s"
               "struct PSOUT { float4 c : COLOR; %s };\n"
               "PSOUT main(float4 col : COLOR0, float4 tc : TEXCOORD0, float4 lcol : TEXCOORD1, float4 lw : TEXCOORD2, float2 vpos : VPOS) {\n"
               "  PSOUT o;\n"
@@ -553,7 +564,7 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               "%s%s"
               "  return o;\n"
               "}\n",
-              (flags & KEY_3POINT) ? s_ps3PointSource : "",
+              s_psWrap9Source, (flags & KEY_3POINT) ? s_ps3PointSource : "",
               (flags & KEY_DEPTH) ? "float d : DEPTH;" : "",
               (flags & KEY_3POINT) ? "tex3p(s0, tc.xy, tsize0)" : "tex2D(s0, tc.xy)",
               (flags & KEY_3POINT) ? "tex3p(s1, tc.zw, tsize1)" : "tex2D(s1, tc.zw)",
@@ -2831,11 +2842,55 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         for (i = 1; i < 3; i++) { if (v[i]->x < lo) lo = v[i]->x; if (v[i]->x > hi) hi = v[i]->x; }
         wsFull = (lo > -0.6f && lo < 0.6f && hi > fbw - 0.6f && hi < fbw + 0.6f) || (flat && ws_wide(hi - lo, fbw));
     }
+    // The RDP evaluates a triangle's attributes at each pixel's top-left
+    // corner, the GPU at its centre: each attribute plane (s/w, t/w, 1/w and
+    // shade, all linear on the screen) is moved half an N64 pixel back, as the
+    // rectangles' texture coordinates are; the edges stay. Without it, a
+    // magnified or 1:1 texture was sampled on its texel boundaries (render
+    // tests, tri_persp_point: every checker edge one pixel off). Not for
+    // slivers (under half a square pixel), whose gradients are meaningless.
+    float as[3], at[3], am[3], ac[3][4];
+    {
+        float x0 = v[0]->x, y0 = v[0]->y;
+        float dx1 = v[1]->x - x0, dy1 = v[1]->y - y0, dx2 = v[2]->x - x0, dy2 = v[2]->y - y0;
+        float det = dx1 * dy2 - dx2 * dy1;
+        int shift = det > 1.0f || det < -1.0f;
+        float k1 = 0.0f, k2 = 0.0f;   // half-pixel shift of a plane = k1 * (A1 - A0) + k2 * (A2 - A0)
+        if (shift)
+        {
+            // dA/dx + dA/dy = ((A1-A0)(dy2-dx2) + (A2-A0)(dx1-dy1)) / det
+            float inv = -0.5f / det;
+            k1 = (dy2 - dx2) * inv;
+            k2 = (dx1 - dy1) * inv;
+        }
+        for (i = 0; i < 3; i++)
+        {
+            float m = persp && v[i]->invw > 0 ? v[i]->invw : 1.0f;
+            am[i] = m;
+            as[i] = v[i]->s * m;
+            at[i] = v[i]->t * m;
+            ac[i][0] = v[i]->r; ac[i][1] = v[i]->g; ac[i][2] = v[i]->b; ac[i][3] = v[i]->a;
+        }
+        if (shift)
+        {
+            float dm = k1 * (am[1] - am[0]) + k2 * (am[2] - am[0]);
+            float ds = k1 * (as[1] - as[0]) + k2 * (as[2] - as[0]);
+            float dt = k1 * (at[1] - at[0]) + k2 * (at[2] - at[0]);
+            float dc[4];
+            int k;
+            for (k = 0; k < 4; k++) dc[k] = k1 * (ac[1][k] - ac[0][k]) + k2 * (ac[2][k] - ac[0][k]);
+            if (am[0] + dm > 0.0f && am[1] + dm > 0.0f && am[2] + dm > 0.0f)
+                for (i = 0; i < 3; i++) { am[i] += dm; as[i] += ds; at[i] += dt; }
+            for (i = 0; i < 3; i++)
+                for (k = 0; k < 4; k++) ac[i][k] += dc[k];
+        }
+    }
     q = &x->batch[x->batchN];
     x->batchN += 3;
     for (i = 0; i < 3; i++)
     {
-        float w = persp && v[i]->invw > 0 ? 1.0f / v[i]->invw : 1.0f;
+        float w = persp ? 1.0f / am[i] : 1.0f;
+        float vs = as[i] / am[i], vt = at[i] / am[i];
         float z = st->usePrimDepth ? (float)(st->primDepth >> 16) : v[i]->z;
         q[i].x = wsFull ? v[i]->x : ws_x(x, v[i]->x, (float)(st->colorWidth ? st->colorWidth : 320));
         q[i].y = v[i]->y;
@@ -2843,17 +2898,17 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         q[i].w = w;
         if (flags & H64_TRI_SHADE)
         {
-            q[i].col[0] = v[i]->r * (1.0f / 255.0f);
-            q[i].col[1] = v[i]->g * (1.0f / 255.0f);
-            q[i].col[2] = v[i]->b * (1.0f / 255.0f);
-            q[i].col[3] = v[i]->a * (1.0f / 255.0f);
+            q[i].col[0] = ac[i][0] * (1.0f / 255.0f);
+            q[i].col[1] = ac[i][1] * (1.0f / 255.0f);
+            q[i].col[2] = ac[i][2] * (1.0f / 255.0f);
+            q[i].col[3] = ac[i][3] * (1.0f / 255.0f);
         }
         else
             q[i].col[0] = q[i].col[1] = q[i].col[2] = q[i].col[3] = 0.0f;
-        q[i].u0 = v[i]->s * x->batchA[0] + x->batchB[0];
-        q[i].v0 = v[i]->t * x->batchA[1] + x->batchB[1];
-        q[i].u1 = v[i]->s * x->batchA[2] + x->batchB[2];
-        q[i].v1 = v[i]->t * x->batchA[3] + x->batchB[3];
+        q[i].u0 = vs * x->batchA[0] + x->batchB[0];
+        q[i].v0 = vt * x->batchA[1] + x->batchB[1];
+        q[i].u1 = vs * x->batchA[2] + x->batchB[2];
+        q[i].v1 = vt * x->batchA[3] + x->batchB[3];
     }
     x->stats.triangles++;
 }
@@ -3335,9 +3390,12 @@ static void tex_rect(Xenos *x, const u32 *w, int flip)
         q[i].v1 = tex_coord(tt, t1->shiftT, t1->tlo, tb1.h);
         if (fbSrc)
         {
-            // Tile texel -> pixel of the source image -> its texture.
-            q[i].u0 = (fbMap[0] + ss / 32.0f - t0->slo / 4.0f) * fbMap[2];
-            q[i].v0 = (fbMap[1] + tt / 32.0f - t0->tlo / 4.0f) * fbMap[3];
+            // Tile texel -> pixel of the source image -> its texture, with the
+            // half texel tex_coord adds (N64 texels at integer coordinates, the
+            // GPU's at their centres): without it the frame came out half a
+            // texel up and left (render tests, rtt_texture: 16 % of pixels).
+            q[i].u0 = (fbMap[0] + ss / 32.0f - t0->slo / 4.0f + 0.5f) * fbMap[2];
+            q[i].v0 = (fbMap[1] + tt / 32.0f - t0->tlo / 4.0f + 0.5f) * fbMap[3];
         }
     }
     if (x->debug == 17 && x->debugLines < 120)
