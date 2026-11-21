@@ -113,10 +113,14 @@ static s32 normalize_dzpix(s32 dz)
 }
 
 // ---- Noise (noise.h) ----
+// `prim` is st->primitives, already counting the primitive being drawn: the
+// seed is its index from 0, as ParaLLEl's primitive_index and Angrylion's
+// primitive_count (incremented after drawing). Found by the render tests:
+// Smash's "?" boxes and Mario Party 3's dithered decals differed from both.
 static void reseed_noise(H64RdpState *st, u32 x, u32 y, u32 prim)
 {
     const u32 P = 1103515245u;
-    u32 s0 = x, s1 = y, s2 = prim, n0, n1, n2, r;
+    u32 s0 = x, s1 = y, s2 = prim - 1, n0, n1, n2, r;
     for (r = 0; r < 3; r++)
     {
         n0 = ((s0 >> 8) ^ s1) * P;
