@@ -602,7 +602,9 @@ static const char *a_c(u32 s)
 }
 
 // KEY_LODLIN: with KEY_LOD and without KEY_3POINT, bilinear (else point).
-enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16, KEY_LOD = 32, KEY_LODLIN = 64 };
+// KEY_FOG: fog by shade alpha; KEY_FOGC: fog by the combined alpha (2 cycles).
+enum { KEY_TWO_CYCLE = 1, KEY_FOG = 2, KEY_DEPTH = 4, KEY_3POINT = 8, KEY_ADITHER = 16, KEY_LOD = 32, KEY_LODLIN = 64,
+       KEY_FOGC = 128 };
 #define TRI_ZOUT 0x100   // batch flag beside H64_TRI_*: a vertex Z outside the RDP range
 
 // In the second cycle the RDP's TEXEL0 input is texel 1 and TEXEL1 is the next
@@ -820,7 +822,8 @@ static IDirect3DPixelShader9 *combiner_shader(Xenos *x, u32 flags)
               s_psWrap9Source, (flags & KEY_3POINT) ? s_ps3PointSource : "", lodsrc,
               (flags & KEY_DEPTH) ? "float d : DEPTH;" : "",
               texs,
-              c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" : "",
+              c0, c1, (flags & KEY_FOG) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, shade.a);\n" :
+                      (flags & KEY_FOGC) ? "  comb.rgb = lerp(comb.rgb, fogc.rgb, saturate(comb.a));\n" : "",
               // Dithered alpha compare: the RDP keeps a pixel whose alpha is at
               // least a random threshold (pixel noise): a grainy translucency.
               (flags & KEY_ADITHER) ? "  clip(comb.a - noise.x);\n" : "",
@@ -3088,6 +3091,11 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
     IDirect3DPixelShader9 *ps;
     if (two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
     if (!two && b0[0] == 3 && b0[1] == 2 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOG;
+    // Two cycles, the first blender cycle fog * combined alpha + in * (1 - A)
+    // (the second passing it on): ISS 64 lightens its pitch so (render test
+    // iss64: the grass 15-17 % too dark). Not in one cycle, where the blender
+    // without force blend gives the fog colour itself.
+    if (two && b0[0] == 3 && b0[1] == 0 && b0[2] == 0 && b0[3] == 0) flags |= KEY_FOGC;
     if (zOut && hasDepth && (st->depthBlendFlags & (DB_DEPTH_TEST | DB_DEPTH_UPDATE))) flags |= KEY_DEPTH;
     if (x->texFilter == 0 && (st->rasterFlags & RS_SAMPLE_QUAD) && !(st->rasterFlags & RS_COPY)) flags |= KEY_3POINT;
     if (x->sys->options.gfxAlphaDither && (st->rasterFlags & (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER)) == (RS_ALPHA_TEST | RS_ALPHA_TEST_DITHER))
