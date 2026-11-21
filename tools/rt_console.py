@@ -41,6 +41,35 @@ def scenes(corpus, only):
     return out
 
 
+def game_code(name):
+    """The 4-letter game code of a scene from tests/states.txt (its ROM's header), or None
+    (synthetic cases)."""
+    import zipfile
+    roms = os.path.join(ROOT, 'xbox64', 'Release', 'roms')
+    for line in open(os.path.join(ROOT, 'tests', 'states.txt'), encoding='utf-8'):
+        p = line.strip().split('|')
+        if line.startswith('#') or len(p) < 2 or p[0] != name:
+            continue
+        path = os.path.join(roms, p[1])
+        if not os.path.isfile(path):
+            return None
+        if path.lower().endswith('.zip'):
+            with zipfile.ZipFile(path) as z:
+                inner = [i for i in z.namelist() if i.lower().endswith(('.z64', '.n64', '.v64'))]
+                head = z.open(inner[0]).read(0x40) if inner else b''
+        else:
+            head = open(path, 'rb').read(0x40)
+        if len(head) < 0x40:
+            return None
+        if head[:4] == b'\x37\x80\x40\x12':     # .v64: 16-bit words swapped
+            head = bytes(head[i ^ 1] for i in range(0x40))
+        elif head[:4] == b'\x40\x12\x37\x80':   # .n64: 32-bit words reversed
+            head = bytes(head[i ^ 3] for i in range(0x40))
+        code = head[0x3B:0x3F].decode('ascii', 'replace')
+        return code if code.isalnum() else None
+    return None
+
+
 def prepare(a):
     os.makedirs(os.path.join(a.out, 'cases'), exist_ok=True)
     shutil.copyfile(XEX, os.path.join(a.out, 'default.xex'))
@@ -51,6 +80,9 @@ def prepare(a):
         d = os.path.join(a.out, 'cases', name)
         os.makedirs(d, exist_ok=True)
         shutil.copyfile(p, os.path.join(d, 'scene.rdp'))
+        code = game_code(name)
+        if code:   # the console player applies that game's profile
+            open(os.path.join(d, 'game.txt'), 'w').write(code)
         n += 1
     print('%d cases in %s' % (n, a.out))
 

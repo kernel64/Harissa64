@@ -315,13 +315,21 @@ int h64_rtdump_play(int argc, char **argv)
     std::string dump, out;
     std::set<u32> frames;
     std::vector<u8> data;
-    int all = 0, last = 1, i, rc;
+    int all = 0, last = 1, i, rc, probe = 0;
+    u32 probeX = 0, probeY = 0, probeFrame = 0;
     FILE *f;
     long n;
     H64RtScene sc;
     H64System *sys;
     for (i = 0; i < argc; i++)
     {
+        if (!strcmp(argv[i], "--probe") && i + 1 < argc)
+        {
+            // Every software-RDP write to pixel X,Y during scene frame FRAME (mode, colours, before/after).
+            if (sscanf(argv[++i], "%u,%u,%u", &probeX, &probeY, &probeFrame) != 3) { fprintf(stderr, "--probe takes X,Y,FRAME\n"); return 3; }
+            probe = 1;
+            continue;
+        }
         if (!strcmp(argv[i], "--frames") && i + 1 < argc)
         {
             const char *s = argv[++i];
@@ -338,7 +346,7 @@ int h64_rtdump_play(int argc, char **argv)
         else if (dump.empty()) dump = argv[i];
         else if (out.empty()) out = argv[i];
     }
-    if (dump.empty() || out.empty()) { fprintf(stderr, "usage: h64test --rt-play SCENE OUTDIR [--frames all|last|N,..]\n"); return 3; }
+    if (dump.empty() || out.empty()) { fprintf(stderr, "usage: h64test --rt-play SCENE OUTDIR [--frames all|last|N,..] [--probe X,Y,FRAME]\n"); return 3; }
     f = fopen(dump.c_str(), "rb");
     if (!f) { fprintf(stderr, "cannot read %s\n", dump.c_str()); return 3; }
     fseek(f, 0, SEEK_END);
@@ -351,8 +359,16 @@ int h64_rtdump_play(int argc, char **argv)
     sys = (H64System *)calloc(1, sizeof(H64System));
     sys->rdram = (u8 *)calloc(1, H64_RDRAM_SIZE);
     h64_rdp_state(sys);   // allocates the hidden RDRAM too
-    while ((rc = h64_rtscene_play_frame(&sc, sys, 0)) == 1)
+    for (;;)
     {
+        if (probe)
+        {
+            H64RdpState *ps = h64_rdp_state(sys);
+            ps->probeOn = sc.frame == probeFrame;
+            ps->probeX = probeX;
+            ps->probeY = probeY;
+        }
+        if ((rc = h64_rtscene_play_frame(&sc, sys, 0)) != 1) break;
         u32 fr = sc.frame - 1;
         if (all || frames.count(fr))
         {

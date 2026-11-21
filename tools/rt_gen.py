@@ -484,7 +484,36 @@ def tri_mip(filt):
     return build
 
 
+def tri_detail_shift(filt):
+    """ISS 64's grass (render test iss64_user1): two textures blended by the shade colour, the second a small
+    noise tile magnified by its shift (12: coordinates x16), 2 cycles:
+    cycle 0 (TEXEL0 - TEXEL1) * SHADE + TEXEL1, cycle 1 (COMBINED - TEXEL1) * PRIM + TEXEL1 (texels swapped there)."""
+    def build(s, rnd):
+        s.clear(0x0001)
+        s.texture(TEXBASE, tex_rgba16(32, 32, rnd, 'gradient'), FMT_RGBA, SZ_16, 32, 32, tile=0, tmem=0,
+                  masks=5, maskt=5, shifts=1, shiftt=1)
+        s.texture(TEXBASE + 0x1000, tex_rgba16(32, 32, rnd, 'checker'), FMT_RGBA, SZ_16, 32, 32, tile=1, tmem=0x100,
+                  masks=5, maskt=5, shifts=12, shiftt=12)
+        s.put(0x3A000000, 0x808080E8)   # SET_PRIM_COLOR, as the game
+        s.other_modes(cycle=1, filt=filt, persp=1)
+        s.combine((A_TEX0, B_TEX1, C_SHADE, D_TEX1), (AA_ZERO, AA_ZERO, AA_ZERO, AA_ONE),
+                  (A_COMB, B_TEX1, C_PRIM, D_TEX1), (AA_ZERO, AA_ZERO, AA_ZERO, AA_COMB))
+        s.sync()
+        for k in range(2):
+            v = [vtx(rnd) for _ in range(3)]
+            for p in v:
+                p['s'] = rnd.uniform(0, 128) * 32
+                p['t'] = rnd.uniform(0, 128) * 32
+            s.tri(v[0], v[1], v[2], texture=True)
+        quad_persp(s, rnd, 10, 120, 310, 236, 1.0, 0.3, texels=128, shade=True)
+    return build
+
+
 CASES = [
+    ('tri_detail_point', 'combiner', 'two textures blended by shade, the second shifted x16 (ISS 64 grass), point',
+     tri_detail_shift(FILT_POINT)),
+    ('tri_detail_bilerp', 'combiner', 'two textures blended by shade, the second shifted x16, 3-point filter',
+     tri_detail_shift(FILT_BILERP)),
     ('tri_mip_point', 'lod', 'mip-mapped receding floor, 6 levels, point sampling', tri_mip(FILT_POINT)),
     ('tri_mip_bilerp', 'lod', 'mip-mapped receding floor, 6 levels, 3-point filter', tri_mip(FILT_BILERP)),
     ('tri_shade', 'triangle', 'Gouraud-shaded triangles, 1 cycle', tri_shade),

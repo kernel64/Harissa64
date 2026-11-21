@@ -198,6 +198,7 @@ struct Xenos
     u32 batchFlags, batchTile;
     TexBinding batchTb0, batchTb1;
     float batchA[4], batchB[4];   // u0, v0, u1, v1 = s or t * A + B for the batch's tiles
+    int pointFloor;               // setup_combined: the GPU point-samples what the RDP point-samples (tc_affine)
 
     // Texture of each tile until TMEM or the tile changes.
     u32 tmemGen;
@@ -1864,13 +1865,18 @@ static float tex_coord(float s, u32 shift, s32 lo, u32 size)
     return (v + 0.5f) / (float)size;
 }
 
-// tex_coord(s, shift, lo, size) = s * A + B.
-static void tc_affine(u32 shift, s32 lo, u32 size, float *a, float *b)
+// tex_coord(s, shift, lo, size) = s * A + B. pointFloor: the RDP point-samples
+// texel floor(s) (ParaLLEl: s >> 5) where the GPU takes floor(u * size): no
+// half texel then (it made floor(s + 0.5): every texel edge of a point-sampled
+// triangle half a texel off, render test tri_persp_point), only 1/64 texel so
+// that an s exactly on a texel edge (s10.5 steps are 1/32) is not lost to rounding.
+// Bilinear keeps the half texel: the GPU samples at u * size - 0.5 = s.
+static void tc_affine(u32 shift, s32 lo, u32 size, int pointFloor, float *a, float *b)
 {
     float scale = shift > 10 ? (float)(1 << (16 - shift)) : shift ? 1.0f / (float)(1 << shift) : 1.0f;
     float sz = (float)(size ? size : 1);
     *a = scale / 32.0f / sz;
-    *b = (0.5f - (float)lo / 4.0f) / sz;
+    *b = ((pointFloor ? 1.0f / 64.0f : 0.5f) - (float)lo / 4.0f) / sz;
 }
 
 // ---------------------------------------------------------------- framebuffers
@@ -3103,6 +3109,9 @@ static void setup_combined(Xenos *x, int hasDepth, TexBinding *tb0, TexBinding *
         if (!ps) mipTex = NULL;   // its shader did not compile (logged): drawn without LOD
     }
     if (!ps) ps = combiner_shader(x, flags);
+    // Point sampling as the game asked for it (the user's "nearest" over a
+    // filtered texture keeps rounding: closer to the filtered picture).
+    x->pointFloor = !mipTex && !(st->rasterFlags & (RS_SAMPLE_QUAD | RS_COPY)) && !(flags & KEY_3POINT);
     x->dev->SetPixelShader(ps ? ps : x->psFallback);
     set_color_const(x, 0, st->primColor);
     set_color_const(x, 1, st->envColor);
@@ -3313,10 +3322,10 @@ static void xenos_triangle(void *user, const H64RenderVertex *a, const H64Render
         x->stateDirty = 0;
         // tex_coord as s * A + B, once a batch (it took int-to-float
         // conversions and divisions, four times a vertex).
-        tc_affine(t0->shiftS, (s32)t0->slo, x->batchTb0.w, &x->batchA[0], &x->batchB[0]);
-        tc_affine(t0->shiftT, (s32)t0->tlo, x->batchTb0.h, &x->batchA[1], &x->batchB[1]);
-        tc_affine(t1->shiftS, (s32)t1->slo, x->batchTb1.w, &x->batchA[2], &x->batchB[2]);
-        tc_affine(t1->shiftT, (s32)t1->tlo, x->batchTb1.h, &x->batchA[3], &x->batchB[3]);
+        tc_affine(t0->shiftS, (s32)t0->slo, x->batchTb0.w, x->pointFloor, &x->batchA[0], &x->batchB[0]);
+        tc_affine(t0->shiftT, (s32)t0->tlo, x->batchTb0.h, x->pointFloor, &x->batchA[1], &x->batchB[1]);
+        tc_affine(t1->shiftS, (s32)t1->slo, x->batchTb1.w, x->pointFloor, &x->batchA[2], &x->batchB[2]);
+        tc_affine(t1->shiftT, (s32)t1->tlo, x->batchTb1.h, x->pointFloor, &x->batchA[3], &x->batchB[3]);
     }
     v[0] = a; v[1] = b; v[2] = c;
     wsFull = 1;

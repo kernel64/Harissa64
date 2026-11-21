@@ -9,6 +9,7 @@
 #include "../../core/rdp/h64_rdp.h"
 #include "../../core/rdp/h64_rdp_state.h"
 #include "../../core/rtest/h64_rtscene.h"
+#include "../../core/system/h64_profile.h"
 #include "../../core/system/h64_system.h"
 #include "../../render/api.h"
 #include "../../render/xenos/h64_xenos.h"
@@ -117,6 +118,24 @@ static int RunCase(IDirect3DDevice9 *dev, const char *dir, const char *name, int
     sys->rdram = (u8 *)calloc(1, H64_RDRAM_SIZE);
     if (!sys->rdram) { H64_ERROR("[rtest] out of memory"); free(sys); free(data); return 0; }
     h64_rdp_state(sys);
+    {
+        // The game's profile (game.txt: its 4-letter code), as in the game:
+        // the renderer's per-game options (RE2's memory copies, frame slots
+        // by width...) change what Xenos draws. The scene itself was recorded
+        // with the profile on (h64test applies it), so only these matter here.
+        u32 n = 0;
+        u8 *code;
+        _snprintf(path, sizeof(path), "%s\\%s\\game.txt", dir, name);
+        path[sizeof(path) - 1] = 0;
+        code = ReadAll(path, &n);
+        if (code && n >= 4)
+        {
+            memcpy(sys->rom.gameCode, code, 4);
+            sys->rom.gameCode[4] = 0;
+            h64_apply_game_profile(sys);
+        }
+        free(code);
+    }
     r = h64_xenos_create(sys, dev);   // sets options.rdpStateOnly: the software RDP keeps state only
     if (!r) { H64_ERROR("[rtest] %s: no renderer", name); h64_rdp_free(sys); free(sys->rdram); free(sys); free(data); return 0; }
     memset(&o, 0, sizeof(o));
@@ -132,6 +151,15 @@ static int RunCase(IDirect3DDevice9 *dev, const char *dir, const char *name, int
     o.zoom = 100;
     h64_xenos_set_options(r, &o);
     sys->renderer = r;
+    // Warm-up: the whole scene once, nothing written. A scene starts in the
+    // middle of a game, where Xenos already knows each colour image's size;
+    // met for the first time, an unusual one (Banjo-Tooie's 304 x 270, Rogue
+    // Squadron's 512 x 448) is drawn at the height guessed from its width for
+    // that frame (in the game: one frame when the size changes), and the
+    // measured frame came back squashed (render tests: 46-62 % instead of 3-5).
+    while (h64_rtscene_play_frame(&sc, sys, r) == 1)
+        h64_xenos_present_vi(r, sys->vi.regs);
+    h64_rtscene_open(&sc, data, size);
     while ((rc = h64_rtscene_play_frame(&sc, sys, r)) == 1)
     {
         u32 f = sc.frame - 1;
