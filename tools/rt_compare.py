@@ -45,10 +45,19 @@ def parse_scene(path):
     def word(p):
         return struct.unpack_from('<I', data, p)[0]
 
-    def note(kind, key):
+    # Lowest line each image gets drawn on (per frame): its compared height.
+    # The scissor's height alone counted lines no primitive reaches: Mario
+    # Party 3's minigames set a 339-line scissor over a 240-line frame, and
+    # the 99 lines below (the other frame buffer's memory) were compared.
+    bottom = {}
+
+    def note(kind, key, ybot=None):
         images.setdefault(frame, {})
         if key not in images[frame]:
             images[frame][key] = kind
+        if ybot is not None:
+            k = (frame, key)
+            bottom[k] = max(bottom.get(k, 0), min(ybot, key[4]))
     while pos + 4 <= n:
         rec = word(pos)
         pos += 4
@@ -68,9 +77,16 @@ def parse_scene(path):
                 scissor_h = ((w[1] & 0xFFF) + 3) >> 2
             elif op in (0x24, 0x25, 0x36) or 0x08 <= op <= 0x0F:
                 if color:
-                    note('color', color + (scissor_h,))
+                    # Bottom line: rectangles' YL (10.2), triangles' YL (11.2, signed 14 bits).
+                    if op in (0x24, 0x25, 0x36):
+                        ybot = ((w[0] & 0xFFF) + 3) >> 2
+                    else:
+                        yl = w[0] & 0x3FFF
+                        yl = yl - 0x4000 if yl & 0x2000 else yl
+                        ybot = max(0, (yl + 3) >> 2)
+                    note('color', color + (scissor_h,), ybot)
                     if zaddr is not None and 0x08 <= op <= 0x0F and (op & 1):
-                        note('depth', (0, 2, color[2], zaddr, scissor_h))
+                        note('depth', (0, 2, color[2], zaddr, scissor_h), ybot)
         elif rec == 3:
             pos += 8
         elif rec == 0x48:
@@ -87,6 +103,8 @@ def parse_scene(path):
         lst = []
         for key, kind in imgs.items():
             fmt, size, width, addr, h = key
+            if (fr, key) in bottom and bottom[(fr, key)] > 0:
+                h = bottom[(fr, key)]
             # keep the tallest height seen for an address
             lst.append((kind, addr, fmt, size, width, h))
         merged = {}
