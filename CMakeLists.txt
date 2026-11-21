@@ -54,7 +54,7 @@ target_link_libraries(h64core PUBLIC h64zlib h64rcheevos)
 file(GLOB H64_UNIT_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tests/unit/*.cpp")
 
 # ---- Headless runner ----
-add_executable(h64test platform/host/h64test.cpp platform/host/png_write.cpp ${H64_UNIT_SOURCES})
+add_executable(h64test platform/host/h64test.cpp platform/host/png_write.cpp platform/host/h64_rtdump.cpp platform/host/h64_gfxcheck.cpp ${H64_UNIT_SOURCES})
 target_link_libraries(h64test PRIVATE h64core)
 
 # ---- Hi-res texture pack converter (PC tool, C++17 for <filesystem>) ----

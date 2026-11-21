@@ -396,6 +396,7 @@ void h64_sp_write(H64System *sys, u32 reg, u32 v)
                     rsp->gfxMeasure = 1;
                     rsp->gfxClocks0 = rsp->clocks;
                 }
+                if (sys->rspTaskHook) sys->rspTaskHook(sys, 1);
                 h64_sched_set(&sys->sched, H64_EV_RSP, sys->cpu.cycles + H64_RSP_SLICE);
             }
         }
@@ -587,6 +588,7 @@ void h64_rsp_advance(H64System *sys, u32 cpuCycles)
                          rsp->gfxVerts, rsp->gfxTris, rsp->gfxCommands);
             }
             if (sys->options.hleAudioCheck) h64_hle_check_end(sys);
+            if (sys->rspTaskHook) sys->rspTaskHook(sys, 0);
             return;
         }
     }

@@ -36,6 +36,8 @@
 #include "../../core/common/h64_fenv.h"
 #include "../../render/api.h"
 #include "png_write.h"
+#include "h64_rtdump.h"
+#include "h64_gfxcheck.h"
 #include "../../core/cheat/h64_cheat.h"
 #include "../../core/ra/h64_ra.h"
 extern "C" {
@@ -58,6 +60,9 @@ static void RC_CCONV ra_event(const rc_runtime_event_t *e)
         printf("[ra] achievement %u active from frame %u\n", (unsigned)e->id, s_raSys->vi.frames);
 }
 static void ra_frame(H64System *sys) { rc_runtime_do_frame(&s_raRuntime, ra_event, ra_read, sys, NULL); }
+// --rdp-dump: the scene recorder sees every VI, after the achievements if any.
+static int s_raOn;
+static void vi_hooks(H64System *sys) { if (s_raOn) ra_frame(sys); h64_rtdump_vi(sys); }
 #include "../../tests/unit/unit_tests.h"
 
 #ifdef _WIN32
@@ -470,17 +475,35 @@ static void null_rdp(void *user, const u64 *w, u32 n)
     u32 k;
     for (k = 0; k < n; k++) { hash_word((u32)(w[k] >> 32)); hash_word((u32)w[k]); }
     s_nullCmds++;
+    h64_rtdump_rdp((H64System *)user, w, n);
     h64_rdp_command((H64System *)user, w, n);
 }
 static void null_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
                           u32 flags, u32 tile, u32 levels)
 {
-    (void)user;
+    h64_rtdump_triangle((H64System *)user, a, b, c, flags, tile, levels);
     hash_vertex(a); hash_vertex(b); hash_vertex(c);
     hash_word(flags); hash_word(tile); hash_word(levels);
     s_nullTris++;
 }
 static H64Renderer s_nullRenderer;
+// --rdp-dump-soft: records while the software RDP draws (diagnosis: RDRAM
+// changes then include what the RDP drew, so a replay is not independent).
+static void rec_rdp(void *user, const u64 *w, u32 n)
+{
+    h64_rtdump_rdp((H64System *)user, w, n);
+    h64_rdp_command((H64System *)user, w, n);
+}
+static void rec_triangle(void *user, const H64RenderVertex *a, const H64RenderVertex *b, const H64RenderVertex *c,
+                         u32 flags, u32 tile, u32 levels)
+{
+    u64 w[22];
+    u32 n = h64_rdp_build_triangle(a, b, c, flags, tile, levels, w);
+    h64_rtdump_triangle((H64System *)user, a, b, c, flags, tile, levels);
+    h64_rdp_command((H64System *)user, w, n);
+}
+static int s_recSoft;
+static const char *s_gfxCheckDir;   // --hle-gfx-check DIR
 
 // --pad-plug P:FIRST-LAST: port P (2-4) plugged in only during VI frames
 // FIRST..LAST (a controller connected or removed while the game runs).
@@ -688,6 +711,16 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--hle-gfx")) hleGfx = 1;
         else if (!strcmp(argv[i], "--null-renderer")) nullRenderer = 1;
         else if (!strcmp(argv[i], "--render-hash")) nullRenderer = renderHash = 1;
+        else if (!strcmp(argv[i], "--rdp-dump") && i + 1 < argc)
+        {
+            // FIRST:COUNT:FILE: a render test scene of COUNT VI frames from FIRST (h64_rtdump.h)
+            unsigned dfirst = 0, dcount = 0; int pos = 0;
+            if (sscanf(argv[++i], "%u:%u:%n", &dfirst, &dcount, &pos) < 2 || !pos || h64_rtdump_open(argv[i] + pos, dfirst, dcount))
+            { fprintf(stderr, "bad --rdp-dump FIRST:COUNT:FILE\n"); return 2; }
+            nullRenderer = 1;
+        }
+        else if (!strcmp(argv[i], "--rdp-dump-soft")) s_recSoft = 1;
+        else if (!strcmp(argv[i], "--hle-gfx-check") && i + 1 < argc) s_gfxCheckDir = argv[++i];
         else if (!strcmp(argv[i], "--no-fpu-flags")) h64_fenv_disable_host_flags();
         else if (!strcmp(argv[i], "--jit-ops")) jitOps = 1;
         else if (!strcmp(argv[i], "--no-jit-fpu")) noJitFpu = 1;
@@ -801,7 +834,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
             printf("[ra] achievement %d \"%s\": %s\n", k + 1, raTrigger[k],
                    rc_runtime_activate_achievement(&s_raRuntime, (uint32_t)(k + 1), raTrigger[k], NULL, 0) == 0 ? "ok" : "NOT understood");
         s_raSys = sys;
-        sys->viHook = ra_frame;
+        s_raOn = 1;
+        sys->viHook = vi_hooks;
     }
     if (cheatFile)
     {
@@ -867,7 +901,14 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         sys->asyncAudioWait = async_wait;
         sys->asyncAudioCycles = 100000;
     }
-    if (nullRenderer)
+    if (nullRenderer && s_recSoft)
+    {
+        s_nullRenderer.user = sys;
+        s_nullRenderer.rdp = rec_rdp;
+        s_nullRenderer.triangle = rec_triangle;
+        sys->renderer = &s_nullRenderer;
+    }
+    else if (nullRenderer)
     {
         s_nullRenderer.user = sys;
         s_nullRenderer.rdp = null_rdp;
@@ -876,6 +917,13 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         sys->options.rdpStateOnly = 1;
     }
     sys->padHook = apply_input;
+    if (h64_rtdump_active() && !sys->viHook) sys->viHook = vi_hooks;
+    if (s_gfxCheckDir)
+    {
+        // Graphics tasks on the LLE RSP, each also run by the HLE on a copy (h64_gfxcheck.h).
+        if (nullRenderer || sys->options.hleGfx) { fprintf(stderr, "--hle-gfx-check runs the graphics on the LLE RSP: no --hle/--hle-gfx/--null-renderer\n"); return 2; }
+        if (h64_gfxcheck_begin(sys, strcmp(s_gfxCheckDir, "-") ? s_gfxCheckDir : 0, 20)) return 2;
+    }
 
     limit = seconds > 0 ? (u64)(seconds * 93750000.0) : (u64)frames * sys->vi.frameCycles;
     if (loadState)
@@ -1109,6 +1157,8 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         }
     }
     if (nullRenderer) printf("[run] null renderer: %u triangles\n", s_nullTris);
+    h64_rtdump_close();
+    if (s_gfxCheckDir) h64_gfxcheck_end(sys);
     if (renderHash) printf("[run] render hash %08X (%u commands, %u triangles)\n", s_renderHash, s_nullCmds, s_nullTris);
     printf("[run] interrupts raised: SP %u, SI %u, AI %u, VI %u, PI %u, DP %u\n", sys->miRaised[0], sys->miRaised[1],
            sys->miRaised[2], sys->miRaised[3], sys->miRaised[4], sys->miRaised[5]);
@@ -1170,6 +1220,7 @@ int main(int argc, char **argv)
     for (i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--verbose")) h64_log_set_level(H64_LOG_DEBUG);
     if (argc < 2) { usage(); return 2; }
+    if (!strcmp(argv[1], "--rt-play")) return h64_rtdump_play(argc - 2, argv + 2);
     if (!strcmp(argv[1], "--version") || !strcmp(argv[1], "--unit"))
     {
         printf("Harissa64 V2 %s, %s-endian host, %d-bit pointers\n", H64_VERSION_STRING,

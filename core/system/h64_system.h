@@ -247,6 +247,8 @@ struct H64System
     void *aiUser;
     struct H64CheatList *cheats;   // optional (core/cheat/h64_cheat.h, owned by the platform): run at each VI event
     void (*viHook)(H64System *sys);   // optional: called at each VI event, after the cheats (achievements)
+    // optional (test tools): an RSP task the LLE runs starts (1) or the RSP halts (0)
+    void (*rspTaskHook)(H64System *sys, int start);
     void *viUser;
     int cheatButton;               // the GameShark's "GS button" is held (set by the platform; codes 88/89)
 
