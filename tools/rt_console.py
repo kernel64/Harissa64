@@ -2,7 +2,7 @@
 """Render tests on the console: prepare the test folder, then score what the
 console wrote (docs-local/render_tests_study.md, platform/xbox360/xb_rtest.h).
 
-  python tools/rt_console.py prepare CORPUS OUT [--only NAME ...] [--scale 1]
+  python tools/rt_console.py prepare CORPUS OUT [--only NAME ...] [--scale 0]
       OUT gets default.xex, harissa64v2.ini (rendertest=game:\\cases) and
       cases\\<name>\\scene.rdp for each scene of CORPUS (tools/rt_states.py's
       folder). Send OUT to its own console folder (never the user's install),
@@ -113,7 +113,7 @@ def main():
     p.add_argument('corpus')
     p.add_argument('out')
     p.add_argument('--only', action='append', default=[])
-    p.add_argument('--scale', type=int, default=1)
+    p.add_argument('--scale', type=int, default=0, help='0: automatic (from the widest image)')
     c = sub.add_parser('collect')
     c.add_argument('corpus')
     c.add_argument('back')
