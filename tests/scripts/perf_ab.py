@@ -33,13 +33,13 @@ KEEP_LOGS = None
 SKIP = 1
 
 
-def one(con, xex_name, case, seconds):
+def one(con, xex_name, case, seconds, extra=()):
     name, rom, state = case
     folder = cr.save_folder(rom)
     con.put(open(os.path.join(cr.DATA, state), 'rb').read(), 'saves/%s/state%d.h64s' % (folder, cr.SLOT))
     frames = int(seconds * 60)
     ini = ['mode=play', 'cpu=dynarec', 'hle=1', 'rom=game:\\roms\\' + rom, 'stateslot=%d' % cr.SLOT, 'loadstate=1',
-           'exitafter=%d' % frames]
+           'exitafter=%d' % frames] + list(extra)
     con.put(('\r\n'.join(ini) + '\r\n').encode(), 'harissa64v2.ini')
     con.delete('harissa64v2.log')
     con.xb('xbreboot.exe', con.cfg['xdir'] + '\\' + xex_name)
@@ -72,6 +72,9 @@ def main():
     ap.add_argument('--seconds', type=float, default=14)
     ap.add_argument('--runs', type=int, default=2)
     ap.add_argument('--keep-logs', help='folder for each run\'s log')
+    ap.add_argument('--old-ini', action='append', default=[], help='extra ini key for the old side (key=value)')
+    ap.add_argument('--new-ini', action='append', default=[], help='extra ini key for the new side (key=value)')
+    ap.add_argument('--case', action='append', default=[], help='extra case NAME|ROM|STATE (tests/console/data)')
     ap.add_argument('--skip', type=int, default=1, help='2-s periods left out at the start (default 1: the state load)')
     a = ap.parse_args()
     global KEEP_LOGS, SKIP
@@ -79,6 +82,7 @@ def main():
     if a.keep_logs:
         os.makedirs(a.keep_logs, exist_ok=True)
         KEEP_LOGS = a.keep_logs
+    cases = CASES + [tuple(c.split('|')) for c in a.case]
     cfg = cr.load_settings()
     con = cr.Console(cfg)
     if not con.wait_ftp():
@@ -96,13 +100,13 @@ def main():
     con.put(open(a.new, 'rb').read(), 'ab_new.xex')
     res = {}
     try:
-        for case in CASES:
+        for case in cases:
             if a.only and case[0] not in a.only:
                 continue
             for r in range(a.runs):
                 for tag in ('old', 'new'):
                     try:
-                        m = one(con, 'ab_%s.xex' % tag, case, a.seconds)
+                        m = one(con, 'ab_%s.xex' % tag, case, a.seconds, a.old_ini if tag == 'old' else a.new_ini)
                     except (OSError, EOFError) as e:   # an FTP timeout loses this run only
                         print('%-6s %s run %d: %s' % (case[0], tag, r + 1, e), flush=True)
                         con.wait_ftp(limit=120)
@@ -136,7 +140,7 @@ def main():
         ok = step('saves', lambda: con.restore_saves(backup))
         print('saves restored:', 'identical' if ok else 'MISMATCH, check ' + backup, flush=True)
     print('\ncase    old run/gfx/render ms   new run/gfx/render ms   VI/s old -> new')
-    for case in CASES:
+    for case in cases:
         o = [m for m in res.get((case[0], 'old'), []) if m]
         n = [m for m in res.get((case[0], 'new'), []) if m]
         if not o or not n:
