@@ -104,6 +104,7 @@ struct H64Options
                             // microcodes do
     int gfxKeepOffscreen;   // 16:9 widescreen: gfxViewportClip off (more than the viewport is shown)
     int gfxOtherModeInit;   // graphics HLE (game profile): each task starts from the microcode's other modes
+    int gfxNoOmInitF3dex2;  // graphics HLE: F3DEX2 tasks keep the previous modes (before 2026-11-22; h64test --no-om-init)
     int gfxNoCopyBack;      // GPU renderer (game profile): frames it drew are never copied back for texture loads
     int gfxS2dex1;          // graphics HLE (game profile): S2DEX 1.05+ in C++ (else the LLE RSP runs it)
     int gfxCopyBackFull;    // GPU renderer (game profile): copy back only images at least 320 pixels wide

@@ -584,7 +584,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     u8 *file;
     u32 size;
     u32 watchPc = 0, jumpLimit = 0;
-    int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1, strictCpu = 0; u32 gameFlags = 0;
+    int logPc = 0, gfxCostLog = 0, gfxTiming = 0, keepOffscreen = 0, noProfile = 0, padCount = 1, strictCpu = 0, noOmInit = 0; u32 gameFlags = 0;
     int profileInfo = 0, renderHash = 0, inputAfterLoad = 0; u32 moreFrames = 0;
     u32 rdpLogFrame = 0, peekVa = 0;
     const char *cheatFile = NULL, *cheatOn[16];
@@ -617,6 +617,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
         else if (!strcmp(argv[i], "--gfx-cost-log")) gfxCostLog = 1;
         else if (!strcmp(argv[i], "--keep-offscreen")) keepOffscreen = 1;
         else if (!strcmp(argv[i], "--no-profile")) noProfile = 1;
+        else if (!strcmp(argv[i], "--no-om-init")) noOmInit = 1;
         else if (!strcmp(argv[i], "--profile-info")) profileInfo = 1;
         else if (!strcmp(argv[i], "--more-frames") && i + 1 < argc) moreFrames = (u32)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--input-after-load")) inputAfterLoad = 1;
@@ -871,6 +872,7 @@ static int run_rom(const char *path, int argc, char **argv, int first)
     sys->options.strictCpu = strictCpu;   // --strict: no ROM hack tolerance (test ROMs)
     if (!noProfile) h64_apply_game_profile(sys);   // --no-profile: none of the per-game settings
     else if (noProfile == 2) h64_apply_profile_flags(sys, gameFlags);   // --gameflags HEX: these instead (as the ini's gameflags=)
+    sys->options.gfxNoOmInitF3dex2 = noOmInit;   // --no-om-init: F3DEX2 tasks keep the previous modes (A/B)
     if (hiresKeysPath) h64_rdp_hires_enable(sys, 1);
     if (profileInfo)
     {

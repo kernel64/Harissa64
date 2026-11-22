@@ -4152,7 +4152,15 @@ static int parse_task_lists(H64System *sys, H64Gfx *g, int *fullSync)
     // ... and with it the other modes' default (F3DEX2: perspective, texture
     // filter, dithers). Mario Golf never sets the texture conversion and
     // relies on it: from 0 its textures were read as YUV (grey courses).
-    if (g->sys->options.gfxOtherModeInit || u->omInit) { g->omH = 0x080CFF; g->omL = 0; }
+    // F3DEX2 too, every task: the real microcode's other modes live in its
+    // DMEM data, loaded again with each task (Level B render tests: the LLE
+    // RSP sends 0x080CFF's dither-off bits where the HLE carried the previous
+    // task's modes or 0). Before, only per-game profiles had it.
+    if (g->sys->options.gfxOtherModeInit || u->omInit || (u->type == UC_F3DEX2 && !g->sys->options.gfxNoOmInitF3dex2))
+    {
+        g->omH = 0x080CFF;
+        g->omL = 0;
+    }
     g->uc = u;
     if (u->type == UC_ZSORT || u->type == UC_BOSS)   // the task loads the microcode's data into DMEM
     {
